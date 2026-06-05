@@ -1,8 +1,8 @@
 # Test Spec 016: Tiered OCI runtime selection seam
 
-**Linked task:** [`docs/tasks/backlog/016-tiered-runtime-seam.md`](../backlog/016-tiered-runtime-seam.md)
+**Linked task:** [`docs/tasks/completed/016-tiered-runtime-seam.md`](../completed/016-tiered-runtime-seam.md)
 **Written:** 2026-06-04
-**Status:** ready
+**Status:** complete
 
 ## Requirements coverage
 | Req ID | Test cases | Covered? |

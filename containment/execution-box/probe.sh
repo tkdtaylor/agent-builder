@@ -12,6 +12,34 @@ pass() {
 
 mkdir -p /work/.execution-box-probe/nested /scratch/probe /scratch/home /scratch/cache
 
+runtime="${EXEC_BOX_RUNTIME:-unknown}"
+workload="${EXEC_BOX_WORKLOAD:-unknown}"
+pass TC-016-RUNTIME "workload=$workload runtime=$runtime"
+
+if [ "$runtime" = "runsc" ]; then
+    compat_dir="/scratch/go-compat"
+    mkdir -p "$compat_dir"
+    cat > "$compat_dir/go.mod" <<'EOF'
+module example.com/execution-box-runtime-probe
+
+go 1.26
+EOF
+    cat > "$compat_dir/main.go" <<'EOF'
+package main
+
+func main() {}
+EOF
+    if (
+        cd "$compat_dir"
+        CGO_ENABLED=0 go build -o runtime-probe .
+    ) >/scratch/go-compat.out 2>&1; then
+        pass TC-016-GO 'go build trivial module succeeded under runsc'
+    else
+        output="$(cat /scratch/go-compat.out 2>/dev/null || true)"
+        fail TC-016-GO "go build trivial module failed under runsc: $output"
+    fi
+fi
+
 printf 'worktree\n' > /work/.execution-box-probe/nested/write.txt ||
     fail TC-001 'worktree mount is not writable'
 printf 'scratch\n' > /scratch/probe/write.txt ||

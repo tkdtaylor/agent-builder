@@ -46,7 +46,7 @@ When the structure changes, both files update in the same commit. The tables her
 | Name | Technology | Responsibility | Source path | Depends on |
 |------|------------|----------------|-------------|------------|
 | agent-builder CLI | Go | Entrypoint process for the autonomous builder scaffold | `cmd/agent-builder` | |
-| execution-box profile | Rootless Podman / OCI image | Product containment artifact for running one target repo worktree with read-only rootfs, scratch tmpfs, non-root execution, dropped workload capabilities, resource quotas, and default-deny egress | `containment/execution-box` | |
+| execution-box profile | Rootless Podman / OCI image with selectable OCI runtime | Product containment artifact for running one target repo worktree with read-only rootfs, scratch tmpfs, non-root execution, dropped workload capabilities, resource quotas, default-deny egress, and workload-tier runtime defaults (`agent` -> `runsc`, `dev` -> `runc`) | `containment/execution-box` | |
 | execution-box egress sidecar | Rootless Podman / nftables sidecar | Trusted per-run network filter that installs default-deny egress rules for the execution-box pod namespace before the workload starts | `containment/execution-box` | execution-box profile |
 
 **Invariants for this table**
@@ -82,6 +82,7 @@ When the structure changes, both files update in the same commit. The tables her
 - ADR 013: Retry escalation policy — non-negative attempt bound, mandatory stop condition, needs-human status write, and substitutable escalation hook.
 - ADR 014: Rootless Podman execution-box profile — product containment artifact under `containment/execution-box` with read-only rootfs, writable worktree and scratch only, non-root/drop-all-caps execution, no host home or container-engine socket mount, and explicit resource quotas.
 - ADR 015: Default-deny execution-box egress allowlist — plain-text exact host:port allowlist, launcher-validated fail-closed parsing, sidecar-owned network administration, and nftables default-drop filtering before workload start.
+- ADR 016: Tiered runtime selection seam — execution-box launcher maps workload tiers to Podman OCI runtimes (`agent` -> `runsc`, `dev` -> `runc`), exposes explicit `--runtime`, and records `runsc` Go-toolchain compatibility through the containment probe.
 - ADR 020: exec-sandbox run adapter seam — typed command/worktree/limits request, result plus exit code plus error response, fake backend for tests.
 - ADR 024: armor ingestion and tool-call boundary — repo-owned in-box boundary for attacker-reachable content and tool-call candidates, with fail-closed guard decisions before executor release.
 - Task 025: armor guard adapter — external process/service invocation seam maps armor allow/findings/failure output into ingestion allow/block/quarantine decisions without editing armor source.

@@ -54,7 +54,9 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 
 | Variable | Type | Default | Required | Effect |
 |----------|------|---------|----------|--------|
-| `EXEC_BOX_IMAGE` | string | `localhost/agent-builder/execution-box:014` | no | Image tag built and run by the execution-box launcher |
+| `EXEC_BOX_IMAGE` | string | `localhost/agent-builder/execution-box:016` | no | Image tag built and run by the execution-box launcher |
+| `EXEC_BOX_WORKLOAD` | enum: `agent`, `dev` | `agent` | no | Workload tier used to choose the default OCI runtime: `agent` -> `runsc`, `dev` -> `runc` |
+| `EXEC_BOX_RUNTIME` | enum: `runc`, `runsc`, `kata` | workload default | no | OCI runtime passed to Podman `--runtime`; overrides `EXEC_BOX_WORKLOAD` default mapping |
 | `EXEC_BOX_CPUS` | number/string accepted by Podman | `2` | no | CPU quota passed as `--cpus` |
 | `EXEC_BOX_MEMORY` | size string | `2g` | no | Memory quota passed as `--memory` |
 | `EXEC_BOX_PIDS_LIMIT` | integer | `256` | no | PID quota passed as `--pids-limit` |
@@ -76,6 +78,12 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 ## Runtime flags
 
 > CLI flags that affect runtime mode rather than acting like commands. List here if [interfaces.md](interfaces.md) doesn't already cover them — avoid duplication. Cross-reference rather than restate.
+
+The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.md#executable-artifact-execution-box-launcher). The configuration contract for those flags is:
+
+- `--workload agent|dev`: selects the default runtime tier (`agent` -> `runsc`, `dev` -> `runc`).
+- `--runtime runc|runsc|kata`: overrides the workload default and passes the selected value to Podman `--runtime`.
+- `--print-runtime-plan`: prints the resolved workload, runtime, and source without requiring Podman.
 
 ## Runtime parameters
 
@@ -114,10 +122,11 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 
 | Aspect | Value | Notes |
 |--------|-------|-------|
-| Container image | `localhost/agent-builder/execution-box:014` by default | Built from `containment/execution-box/Containerfile`; override with `EXEC_BOX_IMAGE` |
+| Container image | `localhost/agent-builder/execution-box:016` by default | Built from `containment/execution-box/Containerfile`; override with `EXEC_BOX_IMAGE` |
 | Ports exposed | none | The profile exposes no inbound ports and defaults outbound egress to deny |
 | Volumes / mounts | `/work` bind mount from the supplied worktree; `/scratch` tmpfs | Rootfs is read-only; host home and container-engine sockets are not mounted |
 | Resource floor (CPU / RAM / disk) | `2` CPU / `2g` memory / `4G` overlay storage by default | PID limit `256`, shared memory `64m`, scratch tmpfs `512m` |
+| OCI runtime tier | `agent` workload -> `runsc`; `dev` workload -> `runc`; explicit `--runtime` wins | Passed to rootless Podman as `--runtime`; accepted values are `runc`, `runsc`, and future `kata` |
 | Runtime user/caps | workload: current non-root host uid/gid through `--userns=keep-id`; `--cap-drop=all`; egress sidecar: rootless namespace with `CAP_NET_ADMIN` only | Network administration is isolated to the trusted sidecar; no workload capability add-backs |
 | Egress | default-deny; exact host:port allowlist only | Sidecar installs nftables rules before workload start; workload DNS is disabled except launcher-provided host records for allowlisted destinations |
 
@@ -125,4 +134,4 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 
 ## Defaults policy
 
-Defaults are safe and bounded. The execution-box profile starts from read-only, non-root, no-new-privileges, dropped workload capabilities, no host-home or container-engine socket mounts, explicit resource quotas, and default-deny egress; overrides may tune quota sizes or choose a different allowlist file but must not weaken those containment guarantees without an ADR.
+Defaults are safe and bounded. The execution-box profile starts from read-only, non-root, no-new-privileges, dropped workload capabilities, no host-home or container-engine socket mounts, explicit resource quotas, default-deny egress, and the agent workload mapped to `runsc`. Overrides may tune quota sizes, choose a different allowlist file, or select `runc`/`kata` explicitly, but must not weaken the underlying containment guarantees without an ADR.

@@ -45,7 +45,7 @@ C4Container
 
     System_Boundary(boundary, "agent-builder") {
         Container(cli, "agent-builder CLI", "Go", "Entrypoint process for the autonomous builder scaffold")
-        Container(execBox, "execution-box profile", "Rootless Podman / OCI image", "Product containment artifact for one target repo worktree")
+        Container(execBox, "execution-box profile", "Rootless Podman / OCI image + selectable OCI runtime", "Product containment artifact for one target repo worktree")
         Container(egressSidecar, "execution-box egress sidecar", "Rootless Podman / nftables", "Trusted default-deny egress filter for the execution-box pod namespace")
     }
 
@@ -111,6 +111,7 @@ C4Component
 - The task source is read-only and only selects tasks; the task status writer is the separate constrained mutation component.
 - ADR 014 defines the execution-box profile artifact; supervisor wiring to launch it is deferred to the dispatch task.
 - ADR 015 defines the execution-box egress sidecar and allowlist contract; it changes the execution-box runtime topology without changing the agent-builder CLI component graph.
+- ADR 016 defines the execution-box runtime tier seam; workload containers run with Podman `--runtime` selected by workload default (`agent` -> `runsc`, `dev` -> `runc`) or explicit override, without changing the CLI component graph.
 
 ---
 

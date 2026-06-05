@@ -4,21 +4,24 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  containment/execution-box/run.sh [--worktree PATH] [--probe] [--egress-probe] [--egress-allowlist PATH] [--print-egress-plan] [--name NAME] [--image IMAGE] [-- COMMAND...]
+  containment/execution-box/run.sh [--worktree PATH] [--workload agent|dev] [--runtime runc|runsc|kata] [--probe] [--egress-probe] [--egress-allowlist PATH] [--print-runtime-plan] [--print-egress-plan] [--name NAME] [--image IMAGE] [-- COMMAND...]
 
 Runs a target repo worktree inside the rootless Podman execution-box profile.
 
 Options:
   --worktree PATH          host repo worktree to mount at /work (default: current directory)
+  --workload agent|dev     workload tier for default runtime mapping (default: agent)
+  --runtime NAME           OCI runtime passed to Podman --runtime (overrides workload default)
   --probe                  run the runtime containment probe instead of an interactive shell
   --egress-probe           run the runtime egress allowlist probe
   --egress-allowlist PATH  plain-text host:port allowlist (default: containment/execution-box/egress.allowlist)
   --egress-allow-host H:P  allowlisted host:port expected to succeed during --egress-probe
   --egress-deny-host H:P   non-allowlisted host:port expected to fail during --egress-probe
   --egress-deny-ip H:P     direct IP literal host:port expected to fail during --egress-probe
+  --print-runtime-plan     print selected runtime without requiring Podman
   --print-egress-plan      parse and print the allowlist without requiring Podman
   --name NAME              container name prefix (default: agent-builder-execution-box)
-  --image IMAGE            image tag to build/use (default: localhost/agent-builder/execution-box:014)
+  --image IMAGE            image tag to build/use (default: localhost/agent-builder/execution-box:016)
 EOF
 }
 
@@ -31,9 +34,14 @@ box_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 worktree="$(pwd)"
 probe=false
 egress_probe=false
+print_runtime_plan=false
 print_egress_plan=false
 name="agent-builder-execution-box"
-image="${EXEC_BOX_IMAGE:-localhost/agent-builder/execution-box:014}"
+image="${EXEC_BOX_IMAGE:-localhost/agent-builder/execution-box:016}"
+workload="${EXEC_BOX_WORKLOAD:-agent}"
+runtime_override="${EXEC_BOX_RUNTIME:-}"
+runtime_source="default"
+[ -n "$runtime_override" ] && runtime_source="env"
 egress_allowlist="${EXEC_BOX_EGRESS_ALLOWLIST:-$box_dir/egress.allowlist}"
 egress_allow_host="${EXEC_BOX_EGRESS_PROBE_ALLOW_HOST:-api.github.com:443}"
 egress_deny_host="${EXEC_BOX_EGRESS_PROBE_DENY_HOST:-example.com:443}"
@@ -44,6 +52,17 @@ while [ "$#" -gt 0 ]; do
         --worktree)
             [ "$#" -ge 2 ] || die '--worktree requires a path'
             worktree="$2"
+            shift 2
+            ;;
+        --workload)
+            [ "$#" -ge 2 ] || die '--workload requires agent or dev'
+            workload="$2"
+            shift 2
+            ;;
+        --runtime)
+            [ "$#" -ge 2 ] || die '--runtime requires a value'
+            runtime_override="$2"
+            runtime_source="flag"
             shift 2
             ;;
         --probe)
@@ -73,6 +92,10 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || die '--egress-deny-ip requires a host:port value'
             egress_deny_ip="$2"
             shift 2
+            ;;
+        --print-runtime-plan)
+            print_runtime_plan=true
+            shift
             ;;
         --print-egress-plan)
             print_egress_plan=true
@@ -104,6 +127,81 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+
+default_runtime_for_workload() {
+    case "$1" in
+        agent)
+            printf 'runsc'
+            ;;
+        dev)
+            printf 'runc'
+            ;;
+        *)
+            die "unknown workload tier: $1"
+            ;;
+    esac
+}
+
+validate_runtime_name() {
+    case "$1" in
+        runc|runsc|kata)
+            ;;
+        *)
+            die "unknown OCI runtime: $1"
+            ;;
+    esac
+}
+
+resolve_runtime() {
+    local selected
+
+    case "$workload" in
+        agent|dev)
+            ;;
+        *)
+            die "unknown workload tier: $workload"
+            ;;
+    esac
+
+    if [ -n "$runtime_override" ]; then
+        selected="$runtime_override"
+    else
+        selected="$(default_runtime_for_workload "$workload")"
+    fi
+    validate_runtime_name "$selected"
+    printf '%s' "$selected"
+}
+
+print_runtime_plan_file() {
+    printf 'TC-016 PLAN: workload=%s runtime=%s source=%s\n' "$workload" "$runtime" "$runtime_source"
+}
+
+validate_runtime_available() {
+    local runtime_name="$1"
+    local known_runtimes
+
+    known_runtimes="$(podman info --format '{{json .Host.OCIRuntimes}}' 2>/dev/null || true)"
+    if [ -n "$known_runtimes" ]; then
+        case "$known_runtimes" in
+            *\""$runtime_name"\"*)
+                return 0
+                ;;
+        esac
+    fi
+
+    if command -v "$runtime_name" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    die "OCI runtime unavailable to Podman or PATH: $runtime_name"
+}
+
+runtime="$(resolve_runtime)"
+
+if [ "$print_runtime_plan" = true ]; then
+    print_runtime_plan_file
+    exit 0
+fi
 
 trim() {
     local value="$1"
@@ -257,6 +355,7 @@ fi
 
 command -v podman >/dev/null 2>&1 || die 'podman unavailable on PATH'
 podman info >/dev/null 2>&1 || die 'podman info failed; rootless Podman is unavailable for this user'
+validate_runtime_available "$runtime"
 
 [ -d "$worktree" ] || die "worktree does not exist: $worktree"
 worktree="$(cd "$worktree" && pwd)"
@@ -279,6 +378,9 @@ container_name="${name}-$(date +%s)-$$"
 common_args=(
     --name "$container_name"
     --label agent-builder.profile=execution-box
+    --label "agent-builder.workload=$workload"
+    --label "agent-builder.runtime=$runtime"
+    --runtime "$runtime"
     --userns=keep-id
     --user "$host_uid:$host_gid"
     --workdir /work
@@ -293,6 +395,8 @@ common_args=(
     --env HOME=/scratch/home
     --env TMPDIR=/scratch
     --env XDG_CACHE_HOME=/scratch/cache
+    --env "EXEC_BOX_WORKLOAD=$workload"
+    --env "EXEC_BOX_RUNTIME=$runtime"
     --mount "type=bind,source=$worktree,target=/work,rw,relabel=private"
     --tmpfs "/scratch:rw,noexec,nosuid,nodev,mode=1777,size=$scratch_size"
 )
@@ -313,6 +417,9 @@ if [ "$probe" = true ]; then
             ;;
     esac
     printf 'TC-003 PASS: host inspect shows explicit cpu/memory/pids/shm/storage limits\n'
+    runtime_inspect="$(podman inspect --format '{{.HostConfig.Runtime}}' "$cid")"
+    printf 'TC-016 HOST: workload=%s runtime=%s\n' "$workload" "$runtime_inspect"
+    [ "$runtime_inspect" = "$runtime" ] || die "TC-016 FAIL: host inspect runtime=$runtime_inspect expected $runtime"
     podman start --attach "$cid"
     exit 0
 fi

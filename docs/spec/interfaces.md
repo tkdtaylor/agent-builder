@@ -64,7 +64,7 @@ There is no `verify` flag that skips, bypasses, or weakens the Gate. The Gate is
 
 | Dependency | What we call | Library / version | Failure mode |
 |------------|-------------|-------------------|--------------|
-| Podman | `podman build`, `podman pod create`, `podman create`, `podman inspect`, `podman start`, `podman run`, `podman logs`, `podman pod rm`, and `podman rm` from `containment/execution-box/run.sh` | process `PATH`; rootless Podman for the current non-root user | Missing binary, failed `podman info`, failed image build, absent quota fields, egress sidecar startup failure, or failed in-box probe exits non-zero and names the failing check |
+| Podman | `podman build`, `podman pod create`, `podman create`, `podman inspect`, `podman start`, `podman run --runtime <oci-runtime>`, `podman logs`, `podman pod rm`, and `podman rm` from `containment/execution-box/run.sh` | process `PATH`; rootless Podman for the current non-root user; configured OCI runtime names `runc`, `runsc`, or future `kata` | Missing binary, failed `podman info`, unavailable selected OCI runtime, failed image build, absent quota/runtime fields, egress sidecar startup failure, or failed in-box probe exits non-zero and names the failing check |
 | Claude Code CLI | `claude -p <prompt>` in the configured task worktree | process `PATH` or `executor.ClaudeCLIConfig.CLIPath`; auth supplied through `ANTHROPIC_API_KEY` | Missing binary, blank config, missing token, subprocess non-zero exit, or missing/blank produced branch file fails the executor attempt |
 | armor | armor-compatible command configured by `armor.Config.Command` and invoked with JSON stdin/stdout | process `PATH` or caller-supplied command path; fakeable through `armor.Runner` | Missing command, subprocess timeout, non-zero exit, malformed JSON, malformed decision, or armor error output maps to a fail-closed `block` decision |
 | Go toolchain | `go build ./...`, `go vet ./...`, `go test ./...` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `go` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
@@ -355,14 +355,17 @@ func (l *RetryingLoop) RunOnce() (RetryOutcome, error)
 ### Executable artifact: execution-box launcher
 
 ```bash
-containment/execution-box/run.sh [--worktree PATH] [--probe] [--egress-probe] [--egress-allowlist PATH] [--print-egress-plan] [--name NAME] [--image IMAGE] [-- COMMAND...]
+containment/execution-box/run.sh [--worktree PATH] [--workload agent|dev] [--runtime runc|runsc|kata] [--probe] [--egress-probe] [--egress-allowlist PATH] [--print-runtime-plan] [--print-egress-plan] [--name NAME] [--image IMAGE] [-- COMMAND...]
 ```
 
 - `--worktree PATH` mounts the supplied repo worktree at `/work`; default is the current directory.
-- `--probe` runs the containment probe and prints `TC-001` through `TC-005` PASS/FAIL output plus host-side quota inspection for `TC-003`.
+- `--workload agent|dev` selects the workload tier used for default OCI runtime mapping. `agent` defaults to `runsc`; `dev` defaults to `runc`.
+- `--runtime runc|runsc|kata` overrides the workload default and is passed to Podman as `--runtime`.
+- `--probe` runs the containment probe and prints `TC-001` through `TC-005` PASS/FAIL output plus host-side quota inspection for `TC-003`, host-side runtime inspection for `TC-016`, and in-box `TC-016-RUNTIME` output. When the runtime is `runsc`, the probe also runs a trivial `go build` and prints `TC-016-GO`.
 - `--egress-probe` runs the egress allowlist probe and prints allowlisted success (`TC-003`) and non-allowlisted/direct-IP denial (`TC-004`) lines.
 - `--egress-allowlist PATH` overrides the plain-text allowlist file; `EXEC_BOX_EGRESS_ALLOWLIST` provides the default override.
 - `--egress-allow-host HOST:PORT`, `--egress-deny-host HOST:PORT`, and `--egress-deny-ip HOST:PORT` override runtime egress probe targets.
+- `--print-runtime-plan` validates and prints the resolved workload/runtime/source without requiring Podman.
 - `--print-egress-plan` validates and prints the parsed allowlist without requiring Podman.
 - `--name NAME` sets the temporary container-name prefix.
 - `--image IMAGE` overrides the local image tag; `EXEC_BOX_IMAGE` provides the default override.

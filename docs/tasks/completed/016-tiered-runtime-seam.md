@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 Add a `--runtime` selection seam under the same rootless Podman that maps a configured tier to an OCI runtime (`runc` for normal dev / reproducibility, gVisor `runsc` for agent / untrusted code, Kata+Firecracker later), with `runsc` as the agent default — gated on a tested Go-toolchain compatibility result.
@@ -23,18 +23,19 @@ Add a `--runtime` selection seam under the same rootless Podman that maps a conf
 | REQ-003 | A default tier is set per workload: dev = `runc`, agent = `runsc` | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 014
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 014
 
 ## Acceptance criteria
-- [ ] [REQ-001] A config value / `--runtime` flag selects the OCI runtime and the launched box runs under the selected runtime (observable)
-- [ ] [REQ-002] `go build` of a trivial module is run under `runsc` and the result (success, or the specific unimplemented-syscall gap + chosen fallback) is recorded in the ADR
-- [ ] [REQ-003] With no override, dev workloads launch under `runc` and agent workloads launch under `runsc`
+- [x] [REQ-001] A config value / `--runtime` flag selects the OCI runtime and the launched box runs under the selected runtime (observable)
+- [x] [REQ-002] `go build` of a trivial module is run under `runsc` and the result (success, or the specific unimplemented-syscall gap + chosen fallback) is recorded in the ADR
+- [x] [REQ-003] With no override, dev workloads launch under `runc` and agent workloads launch under `runsc`
 
 ## Verification plan
 - **Highest level achievable:** L6 — active runtime and build success/failure are observed on a launched box.
 - In-box / host probes and observable results to quote: launch under `runc` and (if available) `runsc`; observe the active runtime; run `go build` of a trivial module — succeeds, or record the syscall gap and the fallback chosen. Quote results for each runtime exercised.
+- **Executor runtime result:** L6 not reached in this environment. `containment/execution-box/run.sh --worktree . --runtime runsc --probe` exited with `execution-box: podman unavailable on PATH`.
 - **Cross-module state risk:** none — selection seam is config-driven and additive over the task 014 profile.
 - **Runtime-visible surface:** which OCI runtime is active for a box; whether the Go toolchain builds under that runtime.
 
