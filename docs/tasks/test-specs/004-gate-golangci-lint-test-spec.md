@@ -1,6 +1,6 @@
 # Test Spec 004: golangci-lint gate step
 
-**Linked task:** [`docs/tasks/active/004-gate-golangci-lint.md`](../active/004-gate-golangci-lint.md)
+**Linked task:** [`docs/tasks/completed/004-gate-golangci-lint.md`](../completed/004-gate-golangci-lint.md)
 **Written:** 2026-06-04
 **Status:** ready for implementation
 

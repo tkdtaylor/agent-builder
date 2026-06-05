@@ -1,6 +1,6 @@
 # Test Spec 006: code-scanner blocking gate step (malware/backdoor)
 
-**Linked task:** [`docs/tasks/active/006-gate-code-scanner.md`](../active/006-gate-code-scanner.md)
+**Linked task:** [`docs/tasks/completed/006-gate-code-scanner.md`](../completed/006-gate-code-scanner.md)
 **Written:** 2026-06-04
 **Status:** ready for implementation
 

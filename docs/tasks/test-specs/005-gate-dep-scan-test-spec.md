@@ -1,6 +1,6 @@
 # Test Spec 005: dep-scan blocking gate step (supply-chain CVE)
 
-**Linked task:** [`docs/tasks/active/005-gate-dep-scan.md`](../active/005-gate-dep-scan.md)
+**Linked task:** [`docs/tasks/completed/005-gate-dep-scan.md`](../completed/005-gate-dep-scan.md)
 **Written:** 2026-06-04
 **Status:** ready for implementation
 

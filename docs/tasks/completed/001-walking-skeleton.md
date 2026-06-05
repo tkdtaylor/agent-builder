@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** active (skeleton built + green; pending formal spec-verifier pass before ✅)
+**Status:** completed (code merged + green; tracker remains 🟡 pending formal spec-verifier pass before ✅)
 
 ## Goal
 

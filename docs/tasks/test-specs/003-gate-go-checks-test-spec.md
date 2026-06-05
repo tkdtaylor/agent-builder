@@ -1,6 +1,6 @@
 # Test Spec 003: Native Go gate steps (build/vet/test/gofmt)
 
-**Linked task:** [`docs/tasks/active/003-gate-go-checks.md`](../active/003-gate-go-checks.md)
+**Linked task:** [`docs/tasks/completed/003-gate-go-checks.md`](../completed/003-gate-go-checks.md)
 **Written:** 2026-06-04
 **Status:** ready for implementation
 

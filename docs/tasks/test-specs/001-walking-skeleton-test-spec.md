@@ -1,6 +1,6 @@
 # Test Spec 001: Walking skeleton & project setup
 
-**Linked task:** [`docs/tasks/active/001-walking-skeleton.md`](../active/001-walking-skeleton.md)
+**Linked task:** [`docs/tasks/completed/001-walking-skeleton.md`](../completed/001-walking-skeleton.md)
 **Written:** 2026-06-04
 
 ## Requirements coverage

@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** active (verified L5; pending merge)
+**Status:** completed (verified L5 and merged)
 
 ## Goal
 Implement gate Steps that shell out to `go build ./...`, `go vet ./...`, `go test ./...`, and `gofmt -l .` against the target worktree, each blocking and failing (with captured output) on non-zero exit or non-empty `gofmt -l` output.

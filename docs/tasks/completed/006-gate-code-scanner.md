@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** active (verified L5; pending merge)
+**Status:** completed (verified L5 and merged)
 
 ## Goal
 Add a blocking gate Step that invokes code-scanner (malware / backdoor / credential-harvest scan) over the produced diff/worktree, failing the gate on findings, with tool-absent treated as a hard failure rather than a silent skip.

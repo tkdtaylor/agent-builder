@@ -1,6 +1,6 @@
 # Test Spec 002: Gate orchestrator core + Verdict model
 
-**Linked task:** [`docs/tasks/active/002-gate-orchestrator-core.md`](../active/002-gate-orchestrator-core.md)
+**Linked task:** [`docs/tasks/completed/002-gate-orchestrator-core.md`](../completed/002-gate-orchestrator-core.md)
 **Written:** 2026-06-04
 **Status:** ready for implementation
 

@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** active (verified L5; pending merge)
+**Status:** completed (verified L5 and merged)
 
 ## Goal
 Add a blocking gate Step that runs `golangci-lint run` in the target worktree and fails on any finding, capturing the linter output into its StepResult.
