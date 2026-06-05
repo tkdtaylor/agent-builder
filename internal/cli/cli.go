@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/tkdtaylor/agent-builder/internal/gate"
+	runtimewiring "github.com/tkdtaylor/agent-builder/internal/runtime"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
 
@@ -46,7 +47,7 @@ func Main(config Config) int {
 	}
 	if config.Run == nil {
 		config.Run = func() error {
-			return supervisor.New().Run()
+			return runtimewiring.RunFromEnv(config.Stdout)
 		}
 	}
 	if config.Gate == nil {

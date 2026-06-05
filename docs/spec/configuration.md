@@ -68,6 +68,13 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `EXEC_BOX_EGRESS_PROBE_DENY_HOST` | `host:port` | `example.com:443` | no | Non-allowlisted probe target expected to be blocked during `--egress-probe` |
 | `EXEC_BOX_EGRESS_PROBE_DENY_IP` | `host:port` IP literal | `1.1.1.1:443` | no | Direct-IP probe target expected to be blocked during `--egress-probe` |
 | `ANTHROPIC_API_KEY` | secret string | none | yes for `executor.ClaudeCLI` | Independently revocable Claude Code CLI credential injected into the subprocess environment. The executor fails before subprocess start when absent. |
+| `AGENT_BUILDER_TASK_ROOT` | path | none | yes for `agent-builder run` | Root containing `docs/plans/roadmap.md` and `docs/tasks/{backlog,active,completed}` for task selection and constrained status writes |
+| `AGENT_BUILDER_WORKTREE` | path | none | yes for `agent-builder run` | Target repo worktree passed to the Claude CLI Executor, Gate, and sandbox-runtime containment probe |
+| `AGENT_BUILDER_CLAUDE_CLI` | path/name | `claude` | no | Claude Code CLI executable used by default run wiring |
+| `AGENT_BUILDER_SANDBOX_RUNTIME` | path/name | none | yes for `agent-builder run` | `srt` executable used by the default run containment adapter |
+| `AGENT_BUILDER_RUN_RECORD` | path | disabled | no | Host-side RunRecord NDJSON path for `agent-builder run`; blank disables record writing without disabling dispatch |
+| `AGENT_BUILDER_RUN_TIMEOUT` | duration string | none | yes for `agent-builder run` | Explicit supervisor wall-clock timeout and sandbox request timeout for one default run |
+| `AGENT_BUILDER_MAX_ATTEMPTS` | non-negative integer | none | yes for `agent-builder run` | Explicit bounded retry attempt count for the selected task |
 
 **Hook profile env vars** (consumed by `.claude/scripts/`, not the application itself):
 - `CLAUDE_HOOK_PROFILE` — `minimal` / `standard` / `strict` (default `standard`)
@@ -103,6 +110,7 @@ The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.m
 | `executorharness.ArmorConfig.Armor` | `armor.Config` | zero value | no | Armor runner/command settings used by `NewArmorGuarded`. Zero value is accepted but fails closed at review time because armor is unavailable. |
 | `executorharness.ArmorConfig.BrokerTimeout` | `time.Duration` | disabled (`0`) | no | Optional timeout around the ingestion broker review in the armor-guarded executor harness. Positive values produce fail-closed block decisions on timeout. |
 | `executorharness.ArmorConfig.Trace` | `executorharness.TraceRecorder` | nil | no | Optional in-process trace sink for producer-consumer evidence; nil disables trace recording without changing allow/block behavior. |
+| `runtime.Config` | struct | none | yes for default `run` | Host-side assembly input for one Phase 0 run. Environment variables are parsed into this struct by `runtime.ConfigFromEnv`; tests may construct it directly. |
 
 ---
 

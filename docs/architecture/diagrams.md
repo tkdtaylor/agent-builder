@@ -73,6 +73,7 @@ C4Component
 
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
+        Component(runtime, "Default Run Wiring", "internal/runtime", "CLI bootstrap that composes configured Phase 0 adapters")
         Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher, lifecycle logger, run-record writer, and stable seams")
         Component(agentloop, "Agent Loop", "internal/loop", "Inside-the-box pick-attempt-verify cycle plus bounded retry policy")
         Component(ingestion, "Ingestion Boundary", "internal/ingestion", "Typed content/tool-call candidates plus guard/broker release seam")
@@ -86,7 +87,14 @@ C4Component
         Component(gate, "Verification Gate", "internal/gate", "Ordered blocking checks with structured Verdicts")
     }
 
-    Rel(main, supervisor, "Starts")
+    Rel(main, runtime, "Runs default pipeline")
+    Rel(runtime, tasksource, "Selects one ready task")
+    Rel(runtime, executor, "Constructs")
+    Rel(runtime, gate, "Constructs production Gate")
+    Rel(runtime, sandboxRuntimeAdapter, "Constructs")
+    Rel(runtime, agentloop, "Constructs retrying in-box loop")
+    Rel(runtime, statuswriter, "Constructs for escalation")
+    Rel(runtime, supervisor, "Starts configured Run")
     Rel(supervisor, sandbox, "Stores Runner / box seam")
     Rel(sandboxRuntimeAdapter, sandbox, "Implements Runner seam")
     Rel(sandboxRuntimeAdapter, sandboxRuntime, "Invokes with generated settings")
@@ -119,6 +127,7 @@ C4Component
 - Task 022 fixes the Claude CLI executor adapter: `claude -p` runs in the task worktree, receives `ANTHROPIC_API_KEY` through env, and reports the produced branch through an executor-owned temp file.
 - Task 017 fixes the supervisor dispatch lifecycle: create one box, run one in-box loop, and tear the box down exactly once.
 - Task 019 fixes the run-record seam: command/stdout/stderr events stream to host-side NDJSON and close before box teardown.
+- Task 028 fixes the default CLI run wiring: `internal/runtime` parses explicit environment configuration, selects one ready task, composes the Phase 0 adapters, and calls the supervisor without adding executor/web/LLM imports to `internal/supervisor`.
 - The supervisor remains trusted and dumb; the gate contains verification orchestration only, not executor/LLM/web logic.
 - The task source is read-only and only selects tasks; the task status writer is the separate constrained mutation component.
 - ADR 014 defines the execution-box profile artifact; supervisor wiring to launch it is deferred to the dispatch task.
@@ -134,6 +143,7 @@ C4Component
 ```mermaid
 sequenceDiagram
     autonumber
+    participant Runtime as Default Run Wiring
     participant Supervisor
     participant Box as Containment Box
     participant AgentLoop as Agent Loop
@@ -146,6 +156,15 @@ sequenceDiagram
     participant Roadmap as docs/plans/roadmap.md
     participant Tasks as docs/tasks/*.md
 
+    Runtime->>TaskSource: Next()
+    TaskSource->>Roadmap: read
+    TaskSource->>Tasks: read task files
+    TaskSource-->>Runtime: first ready Task or empty result
+    alt no ready task
+        Runtime-->>Runtime: print idle and return
+    else ready task
+        Runtime->>Supervisor: Run(Task, Box, InBoxLoop, timeout, RunRecord)
+    end
     Supervisor->>Box: Create(Task)
     Box-->>Supervisor: BoxHandle
     Supervisor-->>Supervisor: log box.created
@@ -154,10 +173,7 @@ sequenceDiagram
     Supervisor->>RunRecord: write command
     Supervisor->>AgentLoop: RunInside(BoxHandle, Task, RunStreams)
     AgentLoop-->>RunRecord: stream stdout/stderr/commands
-    AgentLoop->>TaskSource: Next()
-    TaskSource->>Roadmap: read
-    TaskSource->>Tasks: read task files
-    TaskSource-->>AgentLoop: first ready Task or empty result
+    AgentLoop-->>AgentLoop: pick configured Task
     loop up to MaxAttempts
         AgentLoop->>Executor: Run(Task)
         Executor-->>AgentLoop: Result{Branch, OK}

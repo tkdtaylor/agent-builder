@@ -159,6 +159,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Armor `block` or `quarantine` decisions, allow-with-findings responses, missing armor command, runner errors, timeouts, malformed armor decisions, invalid event fields, and unavailable armor all prevent continuation or tool execution.
 - **References:** ADR 024; `docs/tasks/test-specs/026-armor-ingestion-wiring-test-spec.md`.
 
+### B-018: Run one configured Phase 0 task through default CLI wiring
+
+- **Trigger:** An operator invokes `agent-builder run` with the required runtime environment configured.
+- **Response:** The CLI reads the configured task root, selects the lowest-ID ready task whose dependencies are complete, constructs the Claude CLI Executor, production Gate, sandbox-runtime-backed containment box, bounded retrying in-box loop, task status writer, supervisor timeout, and optional RunRecord path, then dispatches that one task through `Supervisor.Run()`. A successful run prints `run completed: task <id>` to stdout.
+- **Side effects:** The sandbox-runtime adapter is invoked once during box creation, the Executor attempts the selected task at most `AGENT_BUILDER_MAX_ATTEMPTS` times, the Gate verifies the configured worktree after a successful Executor attempt, and the RunRecord file, when configured, contains command/stdout/stderr evidence for pick, attempt, verify, Gate summary, branch, and terminal outcome. With no ready task, the command prints `run idle: no ready task` and does not invoke containment, Executor, Gate, or status mutation.
+- **Failure modes:** Missing task root, worktree, executor token, sandbox runtime, run timeout, or max-attempts configuration fails before task selection can mutate status or the Executor can run. A missing scanner tool fails in the Gate after a successful Executor attempt and records a failed terminal outcome naming the missing tool. Exhausted failed attempts are marked `needs-human` through the constrained status writer and return a failed supervisor run.
+- **References:** ADR 012; ADR 013; ADR 020; `docs/tasks/test-specs/028-default-run-wiring-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -200,3 +208,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - The armor adapter invokes armor as an external seam and does not vendor or edit armor source.
 - Executor-facing web/tool events use broker-reviewed release values before continuation or execution.
 - Armor-guarded executor harness wiring fails closed and releases only armor-allowed candidates.
+- The default `agent-builder run` wiring dispatches at most one ready task per invocation; an idle run does not create a box or run an Executor.
