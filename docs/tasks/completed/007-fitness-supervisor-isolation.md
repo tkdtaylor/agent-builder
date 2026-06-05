@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed (code merged + green; pending formal spec-verifier pass before ✅)
+**Status:** completed (verified L6)
 
 ## Goal
 Add a fitness check (`make fitness-supervisor-isolation`) that fails if `internal/supervisor`'s transitive import set contains any executor/LLM/web-fetch package, keeping the supervisor dumb by design so a hijacked in-box agent can never reach back through it.
@@ -49,6 +49,7 @@ Add a fitness check (`make fitness-supervisor-isolation`) that fails if `interna
 - **Negative fitness check:** temporary `internal/supervisor -> internal/supervisor/probe -> internal/webfetch` import chain made `make fitness-supervisor-isolation` fail and name `github.com/tkdtaylor/agent-builder/internal/webfetch`; temporary files removed before commit.
 - **Umbrella fitness:** `make fitness` → `Fitness checks passed.`
 - **Repo checks:** `go test ./...` → `ok github.com/tkdtaylor/agent-builder/internal/supervisor`; `go build ./...` → success; `env PATH=/tmp/agent-builder-tools:$PATH make check` → `All checks passed.`
+- **Spec-verifier:** read-only verifier APPROVE — all REQ/TC assertions satisfied; lifecycle hygiene confirmed (`completed/`, not `active/` or `backlog/`).
 
 ## Notes
 - The forbidden set should be matched by package-path pattern (e.g. anything under an `executor`, `llm`, or `webfetch`/`web` package), so the rule keeps working as those packages are introduced without coupling this task to them.
