@@ -85,6 +85,42 @@ Duration    time.Duration   elapsed time measured by the gate
 - **Dependency scan output:** `Output` stores combined stdout/stderr for `gods` failures, including high-or-above CVE findings and scanner/tool errors. Missing `gods` stores a human-readable lookup failure naming the absent executable.
 - **Code scan output:** `Output` stores combined stdout/stderr for `code-scanner` failures, including malware, backdoor, credential-harvest, and scanner/tool errors. Missing `code-scanner` stores a human-readable lookup failure naming the absent executable.
 
+### State: Task Source
+
+- **Shape:** `*tasksource.Source` stores an `fs.FS`, one roadmap path, and an ordered list of task directories. It owns no cache and has no write-capable filesystem handle.
+- **Owner:** callers construct it with `tasksource.New(fsys, roadmapPath, taskDirs...)`.
+- **Lifetime:** process-local; each `Candidates()` or `Next()` call reparses the source files and returns fresh values.
+- **Concurrency rules:** no internal mutation occurs after construction.
+- **Bounds:** bounded by the number of `.md` task files in the configured directories.
+
+#### Value: `supervisor.Task`
+
+```
+field       type      notes
+────────────────────────────────────────────────────────────
+ID          string    zero-padded task ID from `# Task NNN:`
+Repo        string    project/repo name from `**Project:**`
+Spec        string    path to the task file the executor must satisfy
+```
+
+- **Identity:** `ID` is unique across parsed task files.
+- **Lifecycle:** produced by task-source parsing and later consumed by the supervisor/agent loop and executor seam.
+- **Relationships:** embedded in `tasksource.Candidate`.
+
+#### Value: `tasksource.Candidate`
+
+```
+field           type                notes
+────────────────────────────────────────────────────────────
+Task            supervisor.Task     executor-facing task shape
+Status          tasksource.Status   normalized ready/active/blocked/completed state
+Dependencies    []string            task IDs that must be completed before this task is ready
+```
+
+- **Identity:** inherits `Task.ID`.
+- **Lifecycle:** produced by `Source.Candidates`; consumed by `Source.Next`.
+- **Relationships:** dependencies must reference parsed candidate IDs. `Next()` treats only `StatusReady` candidates with all dependencies in `StatusCompleted` as actionable.
+
 ---
 
 ## Wire / interchange formats
@@ -127,3 +163,5 @@ Duration    time.Duration   elapsed time measured by the gate
 
 - A Verdict with `OK == true` contains only passing StepResults.
 - A Verdict with `OK == false` ends at the first failing StepResult; later configured steps do not run and do not appear in Results.
+- A parsed task dependency references another parsed task ID; missing dependency references fail parsing.
+- Task-source selection is deterministic: candidates are ordered by task ID, with task path as the duplicate-ID tiebreaker used only for diagnostics.

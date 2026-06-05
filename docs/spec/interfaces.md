@@ -101,6 +101,20 @@ type Gate interface {
 - **Stability:** governed by ADR 002.
 - **Required behavior:** `Verify` has no skip or bypass parameter. It returns OK only when every configured blocking step passes.
 
+### Interface: `tasksource.Source`
+
+```go
+func New(fsys fs.FS, roadmapPath string, taskDirs ...string) *Source
+
+func (s *Source) Candidates() ([]Candidate, error)
+func (s *Source) Next() (supervisor.Task, bool, error)
+```
+
+- **Implementors:** `*tasksource.Source`.
+- **Consumers:** future supervisor/agent-loop task picking code.
+- **Stability:** governed by `docs/tasks/test-specs/010-roadmap-task-source-test-spec.md`.
+- **Required behavior:** the source reads through `fs.FS`, parses task files into deterministic candidate order, returns the first ready task whose dependencies are completed, and exposes no write-side operation.
+
 ---
 
 ## Extension points
@@ -108,3 +122,4 @@ type Gate interface {
 > Plugin slots, hook points, registration mechanisms — anything designed for external code to extend the system without modification. If there are none, say "None — extension is by source modification" so it's an explicit choice.
 
 - Gate checks are extended by registering additional `gate.Step` implementations with `gate.New(steps ...Step)`. Registration rejects nil, blank-name, and duplicate-name steps.
+- Task-source input locations are supplied by constructing `tasksource.Source` with a different `fs.FS`, roadmap path, or task directory list.

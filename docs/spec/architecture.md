@@ -59,6 +59,7 @@ When the structure changes, both files update in the same commit. The tables her
 |-----------|-----------|-------------|----------------|------------|
 | agent-builder CLI | Supervisor | `internal/supervisor` | Trusted outside-the-box dispatcher and stable seams | Verification Gate model |
 | agent-builder CLI | Verification Gate | `internal/gate` | Runs ordered blocking verification Steps and returns structured Verdicts | code-scanner |
+| agent-builder CLI | Task Source | `internal/tasksource` | Reads roadmap/task metadata and selects the next ready task without writing task state | Supervisor Task model |
 
 ---
 

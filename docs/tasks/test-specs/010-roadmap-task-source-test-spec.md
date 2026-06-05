@@ -1,6 +1,6 @@
 # Test Spec 010: Roadmap task-source reader (read-only)
 
-**Linked task:** [`docs/tasks/backlog/010-roadmap-task-source.md`](../backlog/010-roadmap-task-source.md)
+**Linked task:** [`docs/tasks/completed/010-roadmap-task-source.md`](../completed/010-roadmap-task-source.md)
 **Written:** 2026-06-04
 **Status:** ready for implementation
 

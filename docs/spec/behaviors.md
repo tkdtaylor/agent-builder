@@ -71,6 +71,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Any non-zero scanner exit fails the Step and surfaces combined stdout/stderr, including scanner findings. A missing `code-scanner` binary on `PATH` is a hard failure that identifies the missing tool.
 - **References:** `docs/tasks/test-specs/006-gate-code-scanner-test-spec.md`.
 
+### B-007: Select the next ready roadmap task without writing task state
+
+- **Trigger:** A caller asks the task source for parsed candidates or the next task.
+- **Response:** The task source reads the roadmap and configured task directories through `fs.FS`, parses each task file into a candidate, sorts candidates by task ID, and returns the first ready task whose dependencies are completed.
+- **Side effects:** The task source performs read-side filesystem operations only. It creates no files, opens no write handle, and mutates no task status.
+- **Failure modes:** Missing roadmap reads, unreadable task directories, malformed task metadata, duplicate task IDs, and dependencies that reference no parsed task return errors. When all parsed tasks are blocked, active, completed, or cyclically dependent on incomplete tasks, `Next()` returns no task and no error.
+- **References:** `docs/tasks/test-specs/010-roadmap-task-source-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -101,3 +109,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - The golangci-lint Step always runs in the caller-supplied worktree, never implicitly in the agent-builder repo.
 - The dep-scan Step always runs in the caller-supplied worktree, never implicitly in the agent-builder repo.
 - The code-scanner Step always runs in the caller-supplied worktree, never implicitly in the agent-builder repo.
+- Task selection is read-only; writing task status is handled by a separate status-writer component.

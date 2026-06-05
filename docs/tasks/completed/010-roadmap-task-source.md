@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** completed (code merged + green; pending formal spec-verifier pass before ✅)
 
 ## Goal
 A read-only component that parses the roadmap and task files and yields the next actionable `Task` whose dependencies are satisfied and whose status is not-started.
@@ -22,14 +22,14 @@ A read-only component that parses the roadmap and task files and yields the next
 | REQ-003 | Strictly read-only: open no file for writing, create no file, mutate nothing on disk | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 001
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 001
 
 ## Acceptance criteria
-- [ ] [REQ-001] Given a fixture directory of task files + a roadmap, the reader returns the expected candidate `Task` set with parsed status and dependencies
-- [ ] [REQ-002] `Next()` (or equivalent) returns the deterministically-first ready task; tasks with unmet deps or non-ready status are excluded; same input yields same selection every run
-- [ ] [REQ-003] No file is opened for writing during parse or selection; a read-only fixture (or write-detecting fake FS) confirms zero writes
+- [x] [REQ-001] Given a fixture directory of task files + a roadmap, the reader returns the expected candidate `Task` set with parsed status and dependencies
+- [x] [REQ-002] `Next()` (or equivalent) returns the deterministically-first ready task; tasks with unmet deps or non-ready status are excluded; same input yields same selection every run
+- [x] [REQ-003] No file is opened for writing during parse or selection; a read-only fixture (or write-detecting fake FS) confirms zero writes
 
 ## Verification plan
 - **Highest level achievable:** L5 — pure-Go component driven by a fixture set of task files; selection order and read-only behaviour are observable in test.
