@@ -36,7 +36,7 @@
 | 022 | Claude Code CLI executor adapter | 022-claude-cli-executor-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5 stubbed CLI harness: `go test -count=1 -v ./tests/executor -run TestClaudeCLIRunInvokesSubprocessAgainstWorktreeAndCapturesBranch` -> `Result.Branch = task/022-claude-cli-executor`, `Result.OK == true`; L6 real Claude CLI/auth pending |
 | 023 | CLI subcommand surface (run/version/verify) | 023-cli-subcommands-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L6 runtime-visible CLI checks: `agent-builder version`, `agent-builder verify <clean-repo>`, `agent-builder verify <failing-repo>`, and `agent-builder bogus` |
 | 024 | Web-ingestion/tool-call boundary seam | 024-ingestion-tool-call-boundary-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test -count=1 ./internal/ingestion/... ./tests/ingestion/...` -> `ok github.com/tkdtaylor/agent-builder/tests/ingestion`; `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.` |
-| 025 | armor guard adapter | 025-armor-guard-adapter-test-spec.md | ✅ | 🟡 | L5: `go test -count=1 ./internal/armor/... ./tests/armor/...` -> `ok github.com/tkdtaylor/agent-builder/tests/armor`; `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.` |
+| 025 | armor guard adapter | 025-armor-guard-adapter-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test -count=1 ./internal/armor/... ./tests/armor/...` -> `ok github.com/tkdtaylor/agent-builder/tests/armor`; `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.` |
 | 026 | armor on web-ingestion / tool-call path | 026-armor-ingestion-wiring-test-spec.md | stub | ❌ | — |
 
 ## Status key
