@@ -102,6 +102,38 @@ type Gate interface {
 - **Stability:** governed by ADR 002.
 - **Required behavior:** `Verify` has no skip or bypass parameter. It returns OK only when every configured blocking step passes.
 
+### Interface: exec-sandbox `run()` adapter seam
+
+```go
+type Runner interface {
+	Run(Request) (Result, int, error)
+}
+
+type Request struct {
+	Command  []string
+	Worktree string
+	Limits   Limits
+}
+
+type Limits struct {
+	WallClockTimeout time.Duration
+	MemoryBytes      int64
+	CPUCount         int
+	EgressAllowlist  []string
+}
+
+type Result struct {
+	Stdout   string
+	Stderr   string
+	Duration time.Duration
+}
+```
+
+- **Implementors:** in-process `sandbox.FakeRunner` for tests; rented and produced concrete backends live behind this interface when added.
+- **Consumers:** supervisor construction accepts the interface. Dispatch lifecycle code uses the interface when task execution is implemented.
+- **Stability:** governed by ADR 020 and updated with any task that changes contained-run inputs, outputs, or error semantics.
+- **Required behavior:** `Command` is argv-style and must contain a non-blank executable at index 0. `Worktree` is the target repo worktree path mounted or made available to the backend. `Limits` is a typed struct, not a map, and carries wall-clock, memory, CPU, and egress allowlist values. `Result` captures stdout, stderr, and duration. The integer return is the process exit code. A non-zero exit code is returned with nil error when the backend ran the command; non-nil error means adapter/backend failure or invalid request.
+
 ### Interface: `tasksource.Source`
 
 ```go

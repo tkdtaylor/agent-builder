@@ -31,7 +31,7 @@
 | 017 | Supervisor dispatch-one-task lifecycle | 017-supervisor-dispatch-test-spec.md | stub | ❌ | — |
 | 018 | Wall-clock timeout / runaway kill | 018-wall-clock-kill-test-spec.md | stub | ❌ | — |
 | 019 | Run log collection (audit-trail seam) | 019-run-log-collection-test-spec.md | stub | ❌ | — |
-| 020 | exec-sandbox run() adapter seam | 020-exec-sandbox-adapter-seam-test-spec.md | stub | ❌ | — |
+| 020 | exec-sandbox run() adapter seam | 020-exec-sandbox-adapter-seam-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L2/L3: `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.`; unit-test-only; no runtime surface |
 | 021 | sandbox-runtime backing adapter | 021-sandbox-runtime-adapter-test-spec.md | stub | ❌ | — |
 | 022 | Claude Code CLI executor adapter | 022-claude-cli-executor-test-spec.md | stub | ❌ | — |
 | 023 | CLI subcommand surface (run/version/verify) | 023-cli-subcommands-test-spec.md | stub | ❌ | — |
