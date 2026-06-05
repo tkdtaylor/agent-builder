@@ -12,6 +12,7 @@ const (
 	goTestStepName  = "go test ./..."
 	goFmtStepName   = "gofmt -l ."
 	goLintStepName  = "golangci-lint run"
+	depScanStepName = "gods"
 )
 
 // GoBuildStep runs go build across every package in a target worktree.
@@ -72,6 +73,17 @@ func (GolangciLintStep) Name() string {
 
 func (GolangciLintStep) Run(repoPath string) StepResult {
 	return runCommandStep(repoPath, "golangci-lint", "run")
+}
+
+// DepScanStep runs the Go dependency CVE scanner in a target worktree.
+type DepScanStep struct{}
+
+func (DepScanStep) Name() string {
+	return depScanStepName
+}
+
+func (DepScanStep) Run(repoPath string) StepResult {
+	return runCommandStep(repoPath, "gods")
 }
 
 func runCommandStep(repoPath, tool string, args ...string) StepResult {

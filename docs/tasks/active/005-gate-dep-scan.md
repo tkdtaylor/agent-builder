@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** in progress
+**Status:** active (dep-scan gate step built + green; pending spec-verifier pass before ✅)
 
 ## Goal
 Add a blocking gate Step that invokes dep-scan (`gods` for Go modules) as a supply-chain CVE gate, failing on any high-or-above severity finding, with tool-absent treated as a hard failure rather than a silent skip.
@@ -28,10 +28,10 @@ Add a blocking gate Step that invokes dep-scan (`gods` for Go modules) as a supp
 - [x] Blocking tasks complete: 002
 
 ## Acceptance criteria
-- [ ] [REQ-001] The Step runs the `gods` Go scan against repoPath
-- [ ] [REQ-002] A module with a known-vulnerable (high+) dependency fails the step; a clean module passes
-- [ ] [REQ-003] Failing StepResult output contains the scanner findings
-- [ ] [REQ-004] Tool-absent produces a failed StepResult naming the missing tool; there is no skip route
+- [x] [REQ-001] The Step runs the `gods` Go scan against repoPath
+- [x] [REQ-002] A module with a known-vulnerable (high+) dependency fails the step; a clean module passes
+- [x] [REQ-003] Failing StepResult output contains the scanner findings
+- [x] [REQ-004] Tool-absent produces a failed StepResult naming the missing tool; there is no skip route
 
 ## Verification plan
 - **Highest level achievable:** L5/L6 — run the Step against a Go module fixture with a known-vulnerable dependency (or a stubbed scanner output stream) → step fails; clean module → passes.
@@ -39,6 +39,11 @@ Add a blocking gate Step that invokes dep-scan (`gods` for Go modules) as a supp
 - **Operator path:** point the gate at a worktree pulling a flagged dependency and observe the failing Verdict + captured findings; remove the tool and observe a hard failure (not a skip).
 - **Cross-module state risk:** none (consumes 002 types).
 - **Runtime-visible surface:** captured scanner output in StepResult.
+
+## Verification evidence
+
+- **Level 5 — validation harness:** `go test ./internal/gate/... -run TestDepScan -count=1` → `ok github.com/tkdtaylor/agent-builder/internal/gate`
+- **Repo checks:** `go test ./...` → `ok github.com/tkdtaylor/agent-builder/internal/gate`; `go build ./...` → success; `env PATH=/tmp/agent-builder-tools:/snap/go/current/bin:$PATH GOMODCACHE=/tmp/agent-builder-gomodcache GOCACHE=/tmp/agent-builder-gocache GOLANGCI_LINT_CACHE=/tmp/agent-builder-golangci-cache make check` → `All checks passed.`
 
 ## Out of scope
 - code-scanner step (006)

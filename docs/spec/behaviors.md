@@ -55,6 +55,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Any non-zero linter exit fails the Step and surfaces combined stdout/stderr. A missing `golangci-lint` binary on `PATH` is a hard failure that identifies the missing tool.
 - **References:** `docs/tasks/test-specs/004-gate-golangci-lint-test-spec.md`.
 
+### B-005: Run dep-scan against the target worktree
+
+- **Trigger:** A gate is configured with the dep-scan Step and invoked with a target repository worktree path.
+- **Response:** The Step shells out in the supplied worktree to `gods`, the Go dependency CVE scanner, and returns a StepResult. The scanner's exit code represents the high-or-above severity gate.
+- **Side effects:** The Step spawns a local `gods` subprocess with the target worktree as the working directory. It writes no persistent state itself.
+- **Failure modes:** Any non-zero scanner exit fails the Step and surfaces combined stdout/stderr, including CVE findings. A missing `gods` binary on `PATH` is a hard failure that identifies the missing tool.
+- **References:** `docs/tasks/test-specs/005-gate-dep-scan-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -83,3 +91,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - There is no gate skip or bypass input. All configured Steps are blocking.
 - Native Go Steps always run in the caller-supplied worktree, never implicitly in the agent-builder repo.
 - The golangci-lint Step always runs in the caller-supplied worktree, never implicitly in the agent-builder repo.
+- The dep-scan Step always runs in the caller-supplied worktree, never implicitly in the agent-builder repo.
