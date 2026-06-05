@@ -4,7 +4,7 @@ set -euo pipefail
 usage() {
     cat <<'EOF'
 Usage:
-  containment/execution-box/run.sh [--worktree PATH] [--workload agent|dev] [--runtime runc|runsc|kata] [--probe] [--egress-probe] [--egress-allowlist PATH] [--print-runtime-plan] [--print-egress-plan] [--name NAME] [--image IMAGE] [-- COMMAND...]
+  containment/execution-box/run.sh [--worktree PATH] [--workload agent|dev] [--runtime runc|runsc|kata] [--gate-tools PATH] [--probe] [--egress-probe] [--egress-allowlist PATH] [--print-runtime-plan] [--print-egress-plan] [--print-toolchain-plan] [--name NAME] [--image IMAGE] [-- COMMAND...]
 
 Runs a target repo worktree inside the rootless Podman execution-box profile.
 
@@ -12,6 +12,7 @@ Options:
   --worktree PATH          host repo worktree to mount at /work (default: current directory)
   --workload agent|dev     workload tier for default runtime mapping (default: agent)
   --runtime NAME           OCI runtime passed to Podman --runtime (overrides workload default)
+  --gate-tools PATH        directory containing golangci-lint, gods, and code-scanner (default: containment/execution-box/gate-tools)
   --probe                  run the runtime containment probe instead of an interactive shell
   --egress-probe           run the runtime egress allowlist probe
   --egress-allowlist PATH  plain-text host:port allowlist (default: containment/execution-box/egress.allowlist)
@@ -20,8 +21,9 @@ Options:
   --egress-deny-ip H:P     direct IP literal host:port expected to fail during --egress-probe
   --print-runtime-plan     print selected runtime without requiring Podman
   --print-egress-plan      parse and print the allowlist without requiring Podman
+  --print-toolchain-plan   validate and print the Gate toolchain plan without requiring Podman
   --name NAME              container name prefix (default: agent-builder-execution-box)
-  --image IMAGE            image tag to build/use (default: localhost/agent-builder/execution-box:016)
+  --image IMAGE            image tag to build/use (default: localhost/agent-builder/execution-box:033)
 EOF
 }
 
@@ -36,13 +38,17 @@ probe=false
 egress_probe=false
 print_runtime_plan=false
 print_egress_plan=false
+print_toolchain_plan=false
 name="agent-builder-execution-box"
-image="${EXEC_BOX_IMAGE:-localhost/agent-builder/execution-box:016}"
+image="${EXEC_BOX_IMAGE:-localhost/agent-builder/execution-box:033}"
 workload="${EXEC_BOX_WORKLOAD:-agent}"
 runtime_override="${EXEC_BOX_RUNTIME:-}"
 runtime_source="default"
 [ -n "$runtime_override" ] && runtime_source="env"
 egress_allowlist="${EXEC_BOX_EGRESS_ALLOWLIST:-$box_dir/egress.allowlist}"
+gate_tools="${EXEC_BOX_GATE_TOOLS:-$box_dir/gate-tools}"
+gate_tool_mount="/opt/agent-builder/gate-tools"
+gate_tool_path="$gate_tool_mount:/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 egress_allow_host="${EXEC_BOX_EGRESS_PROBE_ALLOW_HOST:-api.github.com:443}"
 egress_deny_host="${EXEC_BOX_EGRESS_PROBE_DENY_HOST:-example.com:443}"
 egress_deny_ip="${EXEC_BOX_EGRESS_PROBE_DENY_IP:-1.1.1.1:443}"
@@ -63,6 +69,11 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || die '--runtime requires a value'
             runtime_override="$2"
             runtime_source="flag"
+            shift 2
+            ;;
+        --gate-tools)
+            [ "$#" -ge 2 ] || die '--gate-tools requires a path'
+            gate_tools="$2"
             shift 2
             ;;
         --probe)
@@ -99,6 +110,10 @@ while [ "$#" -gt 0 ]; do
             ;;
         --print-egress-plan)
             print_egress_plan=true
+            shift
+            ;;
+        --print-toolchain-plan)
+            print_toolchain_plan=true
             shift
             ;;
         --name)
@@ -174,6 +189,48 @@ resolve_runtime() {
 
 print_runtime_plan_file() {
     printf 'TC-016 PLAN: workload=%s runtime=%s source=%s\n' "$workload" "$runtime" "$runtime_source"
+}
+
+required_mounted_gate_tools() {
+    printf '%s\n' golangci-lint gods code-scanner
+}
+
+resolve_gate_tools() {
+    [ -d "$gate_tools" ] || die "Gate toolchain directory does not exist: $gate_tools"
+    gate_tools="$(cd "$gate_tools" && pwd)"
+
+    local tool
+    while read -r tool; do
+        [ -n "$tool" ] || continue
+        [ -x "$gate_tools/$tool" ] || die "missing Gate tool $tool in $gate_tools"
+    done <<EOF
+$(required_mounted_gate_tools)
+EOF
+}
+
+tool_version_line() {
+    local tool="$1"
+    local path="$2"
+    local version
+
+    version="$("$path" --version 2>&1 | sed -n '1p' || true)"
+    [ -n "$version" ] || version="path-only"
+    printf 'TC-002 PLAN: %s version=%s\n' "$tool" "$version"
+}
+
+print_toolchain_plan_file() {
+    local tool
+
+    printf 'TC-001 PLAN: base-image go on PATH\n'
+    printf 'TC-001 PLAN: base-image gofmt on PATH\n'
+    while read -r tool; do
+        [ -n "$tool" ] || continue
+        printf 'TC-001 PLAN: mount %s=%s\n' "$tool" "$gate_tools/$tool"
+        tool_version_line "$tool" "$gate_tools/$tool"
+    done <<EOF
+$(required_mounted_gate_tools)
+EOF
+    printf 'TC-002 PLAN: mounted Gate tools are read-only at %s and require no in-box network fetch\n' "$gate_tool_mount"
 }
 
 validate_runtime_available() {
@@ -345,9 +402,17 @@ if [ "$print_egress_plan" = true ]; then
     exit 0
 fi
 
+if [ "$print_toolchain_plan" = true ]; then
+    resolve_gate_tools
+    print_toolchain_plan_file
+    exit 0
+fi
+
 if [ "$probe" = true ] && [ "$egress_probe" = true ]; then
     die '--probe and --egress-probe are mutually exclusive'
 fi
+
+resolve_gate_tools
 
 if [ "$(id -u)" -eq 0 ]; then
     die 'refusing to run as root; use rootless Podman as an unprivileged user'
@@ -397,7 +462,9 @@ common_args=(
     --env XDG_CACHE_HOME=/scratch/cache
     --env "EXEC_BOX_WORKLOAD=$workload"
     --env "EXEC_BOX_RUNTIME=$runtime"
+    --env "PATH=$gate_tool_path"
     --mount "type=bind,source=$worktree,target=/work,rw,relabel=private"
+    --mount "type=bind,source=$gate_tools,target=$gate_tool_mount,ro,relabel=private"
     --tmpfs "/scratch:rw,noexec,nosuid,nodev,mode=1777,size=$scratch_size"
 )
 

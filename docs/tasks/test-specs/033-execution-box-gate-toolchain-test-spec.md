@@ -1,6 +1,6 @@
 # Test Spec 033: execution-box gate toolchain
 
-**Linked task:** [`docs/tasks/backlog/033-execution-box-gate-toolchain.md`](../backlog/033-execution-box-gate-toolchain.md)
+**Linked task:** [`docs/tasks/completed/033-execution-box-gate-toolchain.md`](../completed/033-execution-box-gate-toolchain.md)
 **Written:** 2026-06-05
 **Status:** ready
 

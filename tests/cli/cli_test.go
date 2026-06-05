@@ -336,6 +336,41 @@ func TestRuntimeBinaryCLI(t *testing.T) {
 	})
 }
 
+func TestVerifyMissingGateToolFailsBeforeSuccess_TC003(t *testing.T) {
+	binary := buildBinary(t)
+	repo := writeRepo(t, "missingtool", false)
+	pathWithHost := writeNamedToolShims(t, map[string]string{
+		"go":            "#!/bin/sh\nexit 0\n",
+		"gofmt":         "#!/bin/sh\nexit 0\n",
+		"golangci-lint": "#!/bin/sh\nexit 0\n",
+		"code-scanner":  "#!/bin/sh\nexit 0\n",
+	})
+	path := strings.Split(pathWithHost, string(os.PathListSeparator))[0]
+
+	stdout, stderr, code := runBinary(t, binary, []string{"PATH=" + path}, "verify", repo)
+	t.Logf("agent-builder verify missing gods: stdout=%q stderr=%q exit=%d", stdout, stderr, code)
+
+	if code != 1 {
+		t.Fatalf("TC-003 runtime exit code = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "PASS go build ./...") ||
+		!strings.Contains(stdout, "PASS go vet ./...") ||
+		!strings.Contains(stdout, "PASS go test ./...") ||
+		!strings.Contains(stdout, "PASS gofmt -l .") ||
+		!strings.Contains(stdout, "PASS golangci-lint run") {
+		t.Fatalf("TC-003 stdout = %q, want earlier Gate steps to pass", stdout)
+	}
+	if !strings.Contains(stdout, "FAIL gods") || !strings.Contains(stdout, "missing tool") {
+		t.Fatalf("TC-003 stdout = %q, want missing gods failure", stdout)
+	}
+	if strings.Contains(stdout, "verification passed:") {
+		t.Fatalf("TC-003 stdout = %q, must not report verification success", stdout)
+	}
+	if !strings.Contains(stderr, "verification failed:") {
+		t.Fatalf("TC-003 stderr = %q, want failure summary", stderr)
+	}
+}
+
 func runCLI(t *testing.T, config cli.Config) (string, string, int) {
 	t.Helper()
 
@@ -389,9 +424,19 @@ func writeRepo(t *testing.T, name string, failing bool) string {
 func writeToolShims(t *testing.T) string {
 	t.Helper()
 
+	return writeNamedToolShims(t, map[string]string{
+		"golangci-lint": "#!/bin/sh\nexit 0\n",
+		"gods":          "#!/bin/sh\nexit 0\n",
+		"code-scanner":  "#!/bin/sh\nexit 0\n",
+	})
+}
+
+func writeNamedToolShims(t *testing.T, tools map[string]string) string {
+	t.Helper()
+
 	dir := t.TempDir()
-	for _, tool := range []string{"golangci-lint", "gods", "code-scanner"} {
-		writeFile(t, filepath.Join(dir, tool), "#!/bin/sh\nexit 0\n")
+	for tool, script := range tools {
+		writeFile(t, filepath.Join(dir, tool), script)
 		if err := os.Chmod(filepath.Join(dir, tool), 0o755); err != nil {
 			t.Fatalf("chmod shim %s: %v", tool, err)
 		}

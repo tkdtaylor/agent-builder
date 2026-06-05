@@ -22,6 +22,17 @@ Not in this file:
 
 The image supplies the Go toolchain, `/work`, `/scratch`, and the in-box probe binary. Runtime security and quota settings live in the launcher, not in the image file, because they are host/container run arguments.
 
+### File: `containment/execution-box/gate-toolchain.manifest`
+
+- **Location:** `containment/execution-box/gate-toolchain.manifest`
+- **Format:** plain UTF-8 key/value manifest
+- **Required vs optional:** required documentation for the execution-box Gate toolchain contract
+- **Reload behavior:** read by contributors/operators as the version/source contract; runtime validation is performed by `containment/execution-box/run.sh`
+
+The manifest records that `go` and `gofmt` are supplied by the execution-box base image. The production Gate scanner/linter tools, `golangci-lint`, `gods`, and `code-scanner`, are supplied by a read-only artifact directory mounted at `/opt/agent-builder/gate-tools`. Those mounted artifacts are version-reported rather than fetched during task execution: `containment/execution-box/run.sh --print-toolchain-plan` validates the host-side directory and prints each mounted executable path plus the first `--version` line when available, and `--probe` repeats path/version reporting from inside the box.
+
+The default host-side artifact directory is `containment/execution-box/gate-tools`; override it with `EXEC_BOX_GATE_TOOLS` or `--gate-tools`. The directory must contain executable files named exactly `golangci-lint`, `gods`, and `code-scanner`. Missing directories or missing executables fail closed before Podman starts. The workload container mounts the directory read-only and prepends it to `PATH`, so the Gate does not need broad network egress to fetch tools during task execution.
+
 ### File: `containment/execution-box/egress.allowlist`
 
 - **Location:** `containment/execution-box/egress.allowlist`
@@ -54,9 +65,10 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 
 | Variable | Type | Default | Required | Effect |
 |----------|------|---------|----------|--------|
-| `EXEC_BOX_IMAGE` | string | `localhost/agent-builder/execution-box:016` | no | Image tag built and run by the execution-box launcher |
+| `EXEC_BOX_IMAGE` | string | `localhost/agent-builder/execution-box:033` | no | Image tag built and run by the execution-box launcher |
 | `EXEC_BOX_WORKLOAD` | enum: `agent`, `dev` | `agent` | no | Workload tier used to choose the default OCI runtime: `agent` -> `runsc`, `dev` -> `runc` |
 | `EXEC_BOX_RUNTIME` | enum: `runc`, `runsc`, `kata` | workload default | no | OCI runtime passed to Podman `--runtime`; overrides `EXEC_BOX_WORKLOAD` default mapping |
+| `EXEC_BOX_GATE_TOOLS` | path | `containment/execution-box/gate-tools` | no | Host artifact directory containing executable `golangci-lint`, `gods`, and `code-scanner`; mounted read-only into the execution-box at `/opt/agent-builder/gate-tools` |
 | `EXEC_BOX_CPUS` | number/string accepted by Podman | `2` | no | CPU quota passed as `--cpus` |
 | `EXEC_BOX_MEMORY` | size string | `2g` | no | Memory quota passed as `--memory` |
 | `EXEC_BOX_PIDS_LIMIT` | integer | `256` | no | PID quota passed as `--pids-limit` |
@@ -83,7 +95,9 @@ The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.m
 
 - `--workload agent|dev`: selects the default runtime tier (`agent` -> `runsc`, `dev` -> `runc`).
 - `--runtime runc|runsc|kata`: overrides the workload default and passes the selected value to Podman `--runtime`.
+- `--gate-tools PATH`: overrides the host artifact directory mounted read-only at `/opt/agent-builder/gate-tools`.
 - `--print-runtime-plan`: prints the resolved workload, runtime, and source without requiring Podman.
+- `--print-toolchain-plan`: validates and prints the Gate toolchain plan without requiring Podman.
 
 ## Runtime parameters
 
@@ -126,9 +140,9 @@ The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.m
 
 | Aspect | Value | Notes |
 |--------|-------|-------|
-| Container image | `localhost/agent-builder/execution-box:016` by default | Built from `containment/execution-box/Containerfile`; override with `EXEC_BOX_IMAGE` |
+| Container image | `localhost/agent-builder/execution-box:033` by default | Built from `containment/execution-box/Containerfile`; override with `EXEC_BOX_IMAGE` |
 | Ports exposed | none | The profile exposes no inbound ports and defaults outbound egress to deny |
-| Volumes / mounts | `/work` bind mount from the supplied worktree; `/scratch` tmpfs | Rootfs is read-only; host home and container-engine sockets are not mounted |
+| Volumes / mounts | `/work` bind mount from the supplied worktree; `/scratch` tmpfs; `/opt/agent-builder/gate-tools` read-only bind mount from `EXEC_BOX_GATE_TOOLS` / `--gate-tools` | Rootfs is read-only; host home and container-engine sockets are not mounted |
 | Resource floor (CPU / RAM / disk) | `2` CPU / `2g` memory / `4G` overlay storage by default | PID limit `256`, shared memory `64m`, scratch tmpfs `512m` |
 | OCI runtime tier | `agent` workload -> `runsc`; `dev` workload -> `runc`; explicit `--runtime` wins | Passed to rootless Podman as `--runtime`; accepted values are `runc`, `runsc`, and future `kata` |
 | Runtime user/caps | workload: current non-root host uid/gid through `--userns=keep-id`; `--cap-drop=all`; egress sidecar: rootless namespace with `CAP_NET_ADMIN` only | Network administration is isolated to the trusted sidecar; no workload capability add-backs |
