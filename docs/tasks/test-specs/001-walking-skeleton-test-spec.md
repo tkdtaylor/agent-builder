@@ -34,15 +34,17 @@
 
 - **Requirement:** REQ-002
 - **Input:** `go test ./...` (exercises `internal/supervisor`)
-- **Expected output:** `Version` is non-empty; `Supervisor.Run()` returns `ErrNotImplemented` (stub is deliberate, not silently passing). Covered by `internal/supervisor/supervisor_test.go` (`TestVersionSet`, `TestRunNotYetImplemented`).
+- **Expected output:** `Version` is non-empty (covered by `internal/supervisor/supervisor_test.go` `TestVersionSet`); the stubbed seams expose `ErrNotImplemented` rather than silently passing.
 - **Edge cases:** `Executor` and `Gate` interfaces and `Task`/`Result` types compile against the SPEC invariants
+- **Note (superseded):** the original assertion that `Supervisor.Run()` itself returns `ErrNotImplemented` (via `TestRunNotYetImplemented`) was retired by **task 017**, which gave `Run()` a real dispatch lifecycle. `ErrNotImplemented` now marks only the still-stubbed seams; the live behaviour of `Run()` is covered by `TestRunDispatchesOneTaskAndLogsLifecycle` and `TestRunRejectsMissingDispatchDependencies`.
 
 ### TC-003: Entrypoint runs and reports status without crashing
 
 - **Requirement:** REQ-003
-- **Input:** `go run ./cmd/agent-builder`
-- **Expected output:** prints version banner + "loop not yet implemented — see docs/plans/roadmap.md (Phase 0)"; exits 0
-- **Edge cases:** does not treat the `ErrNotImplemented` stub as a fatal error
+- **Input:** `go run ./cmd/agent-builder version`
+- **Expected output:** prints the version banner (`agent-builder <version>`) and exits 0.
+- **Edge cases:** the bare `go run ./cmd/agent-builder` (no subcommand) prints CLI usage and exits 2 — a usage error, not a crash.
+- **Note (superseded):** the original Phase 0 banner string ("loop not yet implemented…") and the bare-invocation-exits-0 behaviour were replaced by **task 023**, which introduced the `run`/`version`/`verify` subcommand surface; bare invocation is now a usage error by design.
 
 ---
 
