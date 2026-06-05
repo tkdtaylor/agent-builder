@@ -24,10 +24,12 @@ C4Context
     Person(user, "User", "The person who interacts with the system")
     System(system, "agent-builder", "What this system does in one line")
     System_Ext(claudeCLI, "Claude Code CLI", "Cloud executor harness/model subprocess")
+    System_Ext(sandboxRuntime, "@anthropic-ai/sandbox-runtime", "Rented bootstrap isolation CLI")
     System_Ext(codeScanner, "code-scanner", "Malware/backdoor scanner used as a blocking gate step")
 
     Rel(user, system, "Uses")
     Rel(system, claudeCLI, "Runs", "process PATH")
+    Rel(system, sandboxRuntime, "Runs", "srt --settings")
     Rel(system, codeScanner, "Runs", "process PATH")
 ```
 
@@ -66,6 +68,7 @@ C4Component
 
     System_Ext(codeScanner, "code-scanner", "Malware/backdoor scanner CLI")
     System_Ext(claudeCLI, "Claude Code CLI", "Cloud executor harness/model subprocess")
+    System_Ext(sandboxRuntime, "@anthropic-ai/sandbox-runtime", "Rented bootstrap isolation CLI")
     System_Ext(armorTool, "armor", "External LLM guard process/service")
 
     Container_Boundary(boundary, "agent-builder CLI") {
@@ -76,6 +79,7 @@ C4Component
         Component(armorAdapter, "Armor Guard Adapter", "internal/armor", "External armor invocation adapter for ingestion decisions")
         Component(executor, "Claude CLI Executor", "internal/executor", "Concrete supervisor.Executor adapter")
         Component(sandbox, "exec-sandbox Run Adapter", "internal/sandbox", "Typed contained-command seam and test fake")
+        Component(sandboxRuntimeAdapter, "sandbox-runtime Adapter", "internal/sandbox/sandboxruntime", "Concrete srt-backed sandbox.Runner")
         Component(tasksource, "Task Source", "internal/tasksource", "Read-only roadmap/task parser and next-task selector")
         Component(statuswriter, "Task Status Writer", "internal/tasksource", "Constrained task status mutation")
         Component(gate, "Verification Gate", "internal/gate", "Ordered blocking checks with structured Verdicts")
@@ -83,6 +87,8 @@ C4Component
 
     Rel(main, supervisor, "Starts")
     Rel(supervisor, sandbox, "Stores Runner / box seam")
+    Rel(sandboxRuntimeAdapter, sandbox, "Implements Runner seam")
+    Rel(sandboxRuntimeAdapter, sandboxRuntime, "Invokes with generated settings")
     Rel(supervisor, gate, "Consumes Verdict model / Gate seam")
     Rel(agentloop, supervisor, "Consumes Task / Executor / Gate seams")
     Rel(executor, supervisor, "Implements Executor seam")
@@ -102,6 +108,7 @@ C4Component
 - ADR 012 fixes the agent loop shape: pick -> attempt -> verify -> advance states, done/idle/fail outcomes, and policy-free fail reporting.
 - ADR 013 fixes the retry escalation policy: non-negative `MaxAttempts`, mandatory stop, status-writer `needs-human` marking, and substitutable escalation hook.
 - ADR 020 fixes the exec-sandbox run adapter seam: command/worktree/typed limits in, result/exit/error out.
+- Task 021 fixes the sandbox-runtime backing adapter: `internal/sandbox/sandboxruntime` generates per-request settings and invokes `srt --settings` while callers continue to depend on the ADR 020 seam.
 - ADR 024 fixes the ingestion boundary shape: typed web-content and tool-call candidates, guard decisions of allow/block/quarantine, and fail-closed broker release.
 - Task 025 fixes the armor guard adapter shape: external JSON process/service invocation maps allow/findings/failure output to ingestion decisions without vendoring armor source.
 - Task 022 fixes the Claude CLI executor adapter: `claude -p` runs in the task worktree, receives `ANTHROPIC_API_KEY` through env, and reports the produced branch through an executor-owned temp file.

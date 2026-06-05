@@ -65,6 +65,7 @@ There is no `verify` flag that skips, bypasses, or weakens the Gate. The Gate is
 | Dependency | What we call | Library / version | Failure mode |
 |------------|-------------|-------------------|--------------|
 | Podman | `podman build`, `podman pod create`, `podman create`, `podman inspect`, `podman start`, `podman run --runtime <oci-runtime>`, `podman logs`, `podman pod rm`, and `podman rm` from `containment/execution-box/run.sh` | process `PATH`; rootless Podman for the current non-root user; configured OCI runtime names `runc`, `runsc`, or future `kata` | Missing binary, failed `podman info`, unavailable selected OCI runtime, failed image build, absent quota/runtime fields, egress sidecar startup failure, or failed in-box probe exits non-zero and names the failing check |
+| @anthropic-ai/sandbox-runtime | `srt --settings <generated-json> <command...>` from `internal/sandbox/sandboxruntime` | process `PATH` or `sandboxruntime.Config.CLIPath`; settings generated per request | Missing `srt`, invalid worktree, malformed egress allowlist, subprocess timeout, or settings write failure returns adapter error. Wrapped command non-zero exits return the command exit code with nil adapter error. |
 | Claude Code CLI | `claude -p <prompt>` in the configured task worktree | process `PATH` or `executor.ClaudeCLIConfig.CLIPath`; auth supplied through `ANTHROPIC_API_KEY` | Missing binary, blank config, missing token, subprocess non-zero exit, or missing/blank produced branch file fails the executor attempt |
 | armor | armor-compatible command configured by `armor.Config.Command` and invoked with JSON stdin/stdout | process `PATH` or caller-supplied command path; fakeable through `armor.Runner` | Missing command, subprocess timeout, non-zero exit, malformed JSON, malformed decision, or armor error output maps to a fail-closed `block` decision |
 | Go toolchain | `go build ./...`, `go vet ./...`, `go test ./...` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `go` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
@@ -199,10 +200,25 @@ type Result struct {
 }
 ```
 
-- **Implementors:** in-process `sandbox.FakeRunner` for tests; rented and produced concrete backends live behind this interface when added.
+- **Implementors:** in-process `sandbox.FakeRunner` for tests; `sandboxruntime.Runner` for rented `@anthropic-ai/sandbox-runtime`; produced exec-sandbox v0 backend when added.
 - **Consumers:** supervisor construction accepts the interface. Dispatch lifecycle code uses the interface when task execution is implemented.
 - **Stability:** governed by ADR 020 and updated with any task that changes contained-run inputs, outputs, or error semantics.
 - **Required behavior:** `Command` is argv-style and must contain a non-blank executable at index 0. `Worktree` is the target repo worktree path mounted or made available to the backend. `Limits` is a typed struct, not a map, and carries wall-clock, memory, CPU, and egress allowlist values. `Result` captures stdout, stderr, and duration. The integer return is the process exit code. A non-zero exit code is returned with nil error when the backend ran the command; non-nil error means adapter/backend failure or invalid request.
+
+### Concrete backend: `sandboxruntime.Runner`
+
+```go
+type Config struct {
+	CLIPath string
+}
+
+func New(Config) *Runner
+func (r *Runner) Run(sandbox.Request) (sandbox.Result, int, error)
+```
+
+- **Outbound call:** `srt --settings <temp-settings-json> <Command...>` with `cmd.Dir` set to the validated worktree.
+- **Settings contract:** `Limits.EgressAllowlist` is converted from exact `host:port` entries to sandbox-runtime `network.allowedDomains` hostnames; an empty allowlist writes an empty `allowedDomains` list. Filesystem settings allow reads/writes for the worktree, allow writes to temp, deny writes to `.env`, and deny reads from common credential directories.
+- **Failure contract:** invalid command, missing/non-directory worktree, malformed allowlist entries, missing `srt`, settings-file failure, and wall-clock timeout return non-nil adapter errors. A wrapped command that exits non-zero returns that exit code with nil adapter error.
 
 ### Interface: `tasksource.Source`
 

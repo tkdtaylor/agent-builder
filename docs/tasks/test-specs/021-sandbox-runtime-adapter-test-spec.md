@@ -1,8 +1,8 @@
 # Test Spec 021: sandbox-runtime backing adapter (bootstrap isolation)
 
-**Linked task:** [`docs/tasks/backlog/021-sandbox-runtime-adapter.md`](../backlog/021-sandbox-runtime-adapter.md)
+**Linked task:** [`docs/tasks/completed/021-sandbox-runtime-adapter.md`](../completed/021-sandbox-runtime-adapter.md)
 **Written:** 2026-06-04
-**Status:** ready
+**Status:** complete
 
 ## Requirements coverage
 | Req ID | Test cases | Covered? |

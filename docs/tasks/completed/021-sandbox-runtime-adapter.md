@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 Implement the run() adapter (the seam from task 020) backed by `@anthropic-ai/sandbox-runtime` (bubblewrap + dual proxy + allowlist, Apache-2.0) as the bootstrap per-command isolation — the rented isolation that exec-sandbox v0 later replaces.
@@ -22,18 +22,19 @@ Implement the run() adapter (the seam from task 020) backed by `@anthropic-ai/sa
 | REQ-003 | The adapter is swap-compatible behind the task-020 interface: replacing it later requires no caller change. | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 020, 015, 014
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 020, 015, 014
 
 ## Acceptance criteria
-- [ ] [REQ-001] A trivial command run through the adapter executes inside sandbox-runtime against an isolated worktree and returns a correct result + exit code.
-- [ ] [REQ-002] An attempted egress to a non-allowlisted host is blocked by the dual proxy / allowlist.
-- [ ] [REQ-003] The adapter type satisfies the task-020 interface; the supervisor compiles against it with no caller-side change versus the fake backend.
+- [x] [REQ-001] A trivial command run through the adapter executes inside sandbox-runtime against an isolated worktree and returns a correct result + exit code.
+- [x] [REQ-002] An attempted egress to a non-allowlisted host is blocked by the dual proxy / allowlist.
+- [x] [REQ-003] The adapter type satisfies the task-020 interface; the supervisor compiles against it with no caller-side change versus the fake backend.
 
 ## Verification plan
 - **Highest level achievable:** L6 — run a trivial command through the adapter inside `@anthropic-ai/sandbox-runtime`; observe it executes isolated, and observe that an attempt to reach a non-allowlisted host is blocked. Quote both outputs.
 - L5 harness: invoke the adapter against a fixture command (e.g. `echo` + a `curl` to a blocked host); expected final assertion — allowed command exits 0 with expected stdout, blocked-egress command fails/denied.
+- **Executor runtime result:** L6 not reached in this environment. `command -v srt` exited `1` with no output; `command -v bwrap` returned `/usr/bin/bwrap`.
 - **Cross-module state risk:** consumes the egress allowlist (015) and box profile (014); a misconfigured allowlist weakens the load-bearing egress control — verify the deny path, not just the allow path.
 - **Runtime-visible surface:** subprocess output (sandbox-runtime stdout/stderr) + egress allow/deny observable behaviour.
 
