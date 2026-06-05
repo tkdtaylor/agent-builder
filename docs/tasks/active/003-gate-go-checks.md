@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** active (native Go gate steps built + green; pending spec-verifier pass before ✅)
+**Status:** active (verified L5; pending merge)
 
 ## Goal
 Implement gate Steps that shell out to `go build ./...`, `go vet ./...`, `go test ./...`, and `gofmt -l .` against the target worktree, each blocking and failing (with captured output) on non-zero exit or non-empty `gofmt -l` output.
@@ -44,6 +44,7 @@ Implement gate Steps that shell out to `go build ./...`, `go vet ./...`, `go tes
 
 - **Level 5 — validation harness:** `go test ./internal/gate/... -run TestGoChecks` → `ok github.com/tkdtaylor/agent-builder/internal/gate`
 - **Repo checks:** `go test ./...` → `ok github.com/tkdtaylor/agent-builder/internal/gate`; `go build ./...` → success; `env PATH=/tmp/agent-builder-tools:$PATH make check` → `All checks passed.`
+- **Spec-verifier:** read-only worker verifier APPROVE — all TC/REQ assertions satisfied; docs/spec behavior, interface, and data-model updates aligned.
 
 ## Out of scope
 - golangci-lint step (004)
