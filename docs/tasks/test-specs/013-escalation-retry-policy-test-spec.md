@@ -2,7 +2,7 @@
 
 **Linked task:** [`docs/tasks/completed/013-escalation-retry-policy.md`](../completed/013-escalation-retry-policy.md)
 **Written:** 2026-06-04
-**Status:** written
+**Status:** complete — implementation must satisfy every TC marker below before the feature commit
 
 ## Requirements coverage
 | Req ID | Test cases | Covered? |
