@@ -1,6 +1,6 @@
 # Test Spec 018: Wall-clock timeout / runaway kill
 
-**Linked task:** [`docs/tasks/backlog/018-wall-clock-kill.md`](../backlog/018-wall-clock-kill.md)
+**Linked task:** [`docs/tasks/completed/018-wall-clock-kill.md`](../completed/018-wall-clock-kill.md)
 **Written:** 2026-06-04
 **Status:** complete — ready for implementation
 

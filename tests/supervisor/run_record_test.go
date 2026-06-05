@@ -164,6 +164,10 @@ func (b *recordBox) Create(supervisor.Task) (supervisor.BoxHandle, error) {
 	return b.handle, nil
 }
 
+func (b *recordBox) Kill(supervisor.BoxHandle) error {
+	return nil
+}
+
 func (b *recordBox) Teardown(supervisor.BoxHandle) error {
 	if b.onTeardown != nil {
 		if err := b.onTeardown(); err != nil {

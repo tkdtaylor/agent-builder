@@ -111,6 +111,7 @@ type Gate interface {
 ```go
 type ContainmentBox interface {
 	Create(Task) (BoxHandle, error)
+	Kill(BoxHandle) error
 	Teardown(BoxHandle) error
 }
 
@@ -123,6 +124,7 @@ func WithContainmentBox(box ContainmentBox) Option
 func WithInBoxLoop(loop InBoxLoop) Option
 func WithLogger(logger *slog.Logger) Option
 func WithRunRecordPath(path string) Option
+func WithRunTimeout(timeout time.Duration) Option
 func (s *Supervisor) Run() error
 
 type RunStreams struct {
@@ -134,8 +136,8 @@ type RunStreams struct {
 
 - **Implementors:** fake boxes and fake in-box loops in tests; concrete containment and loop wiring when runtime backends land.
 - **Consumers:** `internal/supervisor.Supervisor`.
-- **Stability:** governed by `docs/tasks/test-specs/017-supervisor-dispatch-test-spec.md` and `docs/tasks/test-specs/019-run-log-collection-test-spec.md`.
-- **Required behavior:** `Run` dispatches exactly one configured task per call. It creates a box before starting the in-box loop, passes the created `BoxHandle`, task, and host-side stream writers to the loop, and tears the box down exactly once after the loop returns or panics. Missing task, box, or loop dependencies fail before creation. Loop errors and recovered panics are returned after teardown. When `WithRunRecordPath` is configured, stdout/stderr/command writes are persisted as RunRecord NDJSON during the run, the terminal outcome is written, and the file is closed before teardown. Retry, escalation, and timeout behavior are intentionally absent from this seam.
+- **Stability:** governed by `docs/tasks/test-specs/017-supervisor-dispatch-test-spec.md`, `docs/tasks/test-specs/018-wall-clock-kill-test-spec.md`, and `docs/tasks/test-specs/019-run-log-collection-test-spec.md`.
+- **Required behavior:** `Run` dispatches exactly one configured task per call. It creates a box before starting the in-box loop, passes the created `BoxHandle`, task, and host-side stream writers to the loop, and tears the box down exactly once after the loop returns, panics, or exceeds a configured timeout. Missing task, box, or loop dependencies fail before creation. Loop errors and recovered panics are returned after teardown. When `WithRunTimeout` receives a positive duration and the in-box loop exceeds it, the supervisor calls `Kill` on the created box, records a timed-out run outcome, then tears down the box. `Kill` implementations must terminate the active contained run so `RunInside` returns; kill errors are joined into the returned error and do not skip teardown. Non-positive timeouts leave the timeout disabled. When `WithRunRecordPath` is configured, stdout/stderr/command writes are persisted as RunRecord NDJSON during the run, the terminal outcome is written, and the file is closed before teardown. Retry and escalation behavior remain outside this seam.
 
 ### Interface: exec-sandbox `run()` adapter seam
 

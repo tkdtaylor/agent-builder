@@ -2,11 +2,15 @@ package supervisor
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestVersionSet(t *testing.T) {
@@ -149,6 +153,190 @@ func TestRunTearsDownOnceOnLoopPanic(t *testing.T) {
 	}
 }
 
+func TestRunTimeoutUsesConfiguredDeadlineAndKillsBox(t *testing.T) {
+	var logs bytes.Buffer
+	release := make(chan struct{})
+	callLog := []string{}
+	box := &fakeBox{
+		handle:  BoxHandle{ID: "box-018", Worktree: "/work"},
+		callLog: &callLog,
+		onKill: func() {
+			close(release)
+		},
+	}
+	loop := &fakeInBoxLoop{callLog: &callLog, blockUntil: release}
+	start := time.Now()
+
+	err := New(
+		WithTask(Task{ID: "018"}),
+		WithContainmentBox(box),
+		WithInBoxLoop(loop),
+		WithLogger(slog.New(slog.NewTextHandler(&logs, nil))),
+		WithRunTimeout(25*time.Millisecond),
+	).Run()
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrRunTimedOut) {
+		t.Fatalf("TC-001-Configurable-Timeout: Run() error = %v, want ErrRunTimedOut", err)
+	}
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("TC-001-Configurable-Timeout: elapsed = %s, want configured timeout to fire promptly", elapsed)
+	}
+	if box.killCalls != 1 {
+		t.Fatalf("TC-001-Configurable-Timeout: kill calls = %d, want 1", box.killCalls)
+	}
+	if !reflect.DeepEqual(box.killedHandles, []BoxHandle{box.handle}) {
+		t.Fatalf("TC-001-Configurable-Timeout: killed handles = %+v, want [%+v]", box.killedHandles, box.handle)
+	}
+	wantLog := []string{"box.create", "loop.run", "box.kill", "box.teardown"}
+	if !reflect.DeepEqual(callLog, wantLog) {
+		t.Fatalf("TC-002-Timeout-Kills-Box-And-Tears-Down: lifecycle call log = %v, want %v", callLog, wantLog)
+	}
+	if box.teardownCalls != 1 {
+		t.Fatalf("TC-002-Timeout-Kills-Box-And-Tears-Down: teardown calls = %d, want 1", box.teardownCalls)
+	}
+	logOutput := logs.String()
+	if !strings.Contains(logOutput, "event=box.kill.timeout") {
+		t.Fatalf("TC-002-Timeout-Kills-Box-And-Tears-Down: timeout log missing box.kill.timeout in:\n%s", logOutput)
+	}
+	t.Logf("TC-002-Timeout-Kills-Box-And-Tears-Down timeout log:\n%s", logOutput)
+}
+
+func TestRunTimeoutRecordsTimedOutOutcome(t *testing.T) {
+	release := make(chan struct{})
+	recordPath := filepath.Join(t.TempDir(), "run-record.ndjson")
+	box := &fakeBox{
+		handle: BoxHandle{ID: "box-018", Worktree: "/work"},
+		onKill: func() {
+			close(release)
+		},
+		onTeardown: func() error {
+			content, err := os.ReadFile(recordPath)
+			if err != nil {
+				return err
+			}
+			if !strings.Contains(string(content), `"outcome":"timed-out"`) {
+				return errors.New("timed-out record was not flushed before teardown")
+			}
+			return nil
+		},
+	}
+	loop := &fakeInBoxLoop{
+		blockUntil: release,
+		duringRun: func(streams RunStreams) error {
+			if _, err := streams.Stdout.Write([]byte("before timeout\n")); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+
+	err := New(
+		WithTask(Task{ID: "018"}),
+		WithContainmentBox(box),
+		WithInBoxLoop(loop),
+		WithRunRecordPath(recordPath),
+		WithRunTimeout(25*time.Millisecond),
+	).Run()
+	if !errors.Is(err, ErrRunTimedOut) {
+		t.Fatalf("TC-003-RunRecord-Timed-Out: Run() error = %v, want ErrRunTimedOut", err)
+	}
+
+	events := readInternalRunRecord(t, recordPath)
+	last := events[len(events)-1]
+	if got := last["type"]; got != "run_finished" {
+		t.Fatalf("TC-003-RunRecord-Timed-Out: final event type = %v, want run_finished", got)
+	}
+	if got := last["outcome"]; got != string(RunOutcomeTimedOut) {
+		t.Fatalf("TC-003-RunRecord-Timed-Out: outcome = %v, want %s", got, RunOutcomeTimedOut)
+	}
+	if !strings.Contains(asInternalString(last["error"]), ErrRunTimedOut.Error()) {
+		t.Fatalf("TC-003-RunRecord-Timed-Out: error = %v, want timeout message", last["error"])
+	}
+	assertInternalRecordContains(t, "TC-003-RunRecord-Timed-Out", events, "stdout", "data", "before timeout\n")
+	t.Logf("TC-003-RunRecord-Timed-Out terminal event: %s", lastInternalLine(t, recordPath))
+}
+
+func TestRunOutcomesDistinguishSuccessFailureAndTimeout(t *testing.T) {
+	successRecord := runSupervisorRecord(t, "success", &fakeBox{handle: BoxHandle{ID: "box-success"}}, &fakeInBoxLoop{}, 0)
+	if got := finalOutcome(t, successRecord); got != string(RunOutcomeCompleted) {
+		t.Fatalf("TC-004-Outcome-Distinct: success outcome = %q, want completed", got)
+	}
+
+	loopErr := errors.New("gate failed")
+	failureRecord := runSupervisorRecord(t, "failure", &fakeBox{handle: BoxHandle{ID: "box-failure"}}, &fakeInBoxLoop{err: loopErr}, time.Second)
+	if got := finalOutcome(t, failureRecord); got != string(RunOutcomeFailed) {
+		t.Fatalf("TC-004-Outcome-Distinct: failure outcome = %q, want failed", got)
+	}
+
+	release := make(chan struct{})
+	timeoutBox := &fakeBox{
+		handle: BoxHandle{ID: "box-timeout"},
+		onKill: func() {
+			close(release)
+		},
+	}
+	timeoutRecord := runSupervisorRecord(t, "timeout", timeoutBox, &fakeInBoxLoop{blockUntil: release}, 25*time.Millisecond)
+	if got := finalOutcome(t, timeoutRecord); got != string(RunOutcomeTimedOut) {
+		t.Fatalf("TC-004-Outcome-Distinct: timeout outcome = %q, want timed-out", got)
+	}
+	if timeoutBox.killCalls != 1 {
+		t.Fatalf("TC-004-Outcome-Distinct: timeout kill calls = %d, want 1", timeoutBox.killCalls)
+	}
+}
+
+func TestRunWithoutTimeoutDoesNotKill(t *testing.T) {
+	callLog := []string{}
+	box := &fakeBox{handle: BoxHandle{ID: "box-018"}, callLog: &callLog}
+	loop := &fakeInBoxLoop{callLog: &callLog}
+
+	err := New(
+		WithTask(Task{ID: "018"}),
+		WithContainmentBox(box),
+		WithInBoxLoop(loop),
+	).Run()
+	if err != nil {
+		t.Fatalf("TC-005-Unset-Timeout-No-Kill: Run() error = %v, want nil", err)
+	}
+	if box.killCalls != 0 {
+		t.Fatalf("TC-005-Unset-Timeout-No-Kill: kill calls = %d, want 0", box.killCalls)
+	}
+	wantLog := []string{"box.create", "loop.run", "box.teardown"}
+	if !reflect.DeepEqual(callLog, wantLog) {
+		t.Fatalf("TC-005-Unset-Timeout-No-Kill: lifecycle call log = %v, want %v", callLog, wantLog)
+	}
+}
+
+func TestRunTimeoutSurfacesKillErrorAndStillTearsDown(t *testing.T) {
+	killErr := errors.New("kill failed")
+	callLog := []string{}
+	box := &fakeBox{
+		handle:  BoxHandle{ID: "box-018"},
+		killErr: killErr,
+		callLog: &callLog,
+	}
+	loop := &fakeInBoxLoop{blockUntil: make(chan struct{}), callLog: &callLog}
+
+	err := New(
+		WithTask(Task{ID: "018"}),
+		WithContainmentBox(box),
+		WithInBoxLoop(loop),
+		WithRunTimeout(25*time.Millisecond),
+	).Run()
+	if !errors.Is(err, ErrRunTimedOut) {
+		t.Fatalf("TC-006-Kill-Error-Still-Tears-Down: Run() error = %v, want ErrRunTimedOut", err)
+	}
+	if !errors.Is(err, killErr) {
+		t.Fatalf("TC-006-Kill-Error-Still-Tears-Down: Run() error = %v, want kill error %v", err, killErr)
+	}
+	if box.teardownCalls != 1 {
+		t.Fatalf("TC-006-Kill-Error-Still-Tears-Down: teardown calls = %d, want 1", box.teardownCalls)
+	}
+	wantLog := []string{"box.create", "loop.run", "box.kill", "box.teardown"}
+	if !reflect.DeepEqual(callLog, wantLog) {
+		t.Fatalf("TC-006-Kill-Error-Still-Tears-Down: lifecycle call log = %v, want %v", callLog, wantLog)
+	}
+}
+
 func TestRunRejectsMissingDispatchDependencies(t *testing.T) {
 	task := Task{ID: "017"}
 	box := &fakeBox{handle: BoxHandle{ID: "box-017"}}
@@ -184,11 +372,16 @@ func TestRunRejectsMissingDispatchDependencies(t *testing.T) {
 type fakeBox struct {
 	handle        BoxHandle
 	err           error
+	killErr       error
 	teardownErr   error
+	onKill        func()
+	onTeardown    func() error
 	createCalls   int
+	killCalls     int
 	teardownCalls int
 	tasks         []Task
 	handles       []BoxHandle
+	killedHandles []BoxHandle
 	callLog       *[]string
 }
 
@@ -199,10 +392,23 @@ func (b *fakeBox) Create(task Task) (BoxHandle, error) {
 	return b.handle, b.err
 }
 
+func (b *fakeBox) Kill(handle BoxHandle) error {
+	b.killCalls++
+	b.killedHandles = append(b.killedHandles, handle)
+	b.record("box.kill")
+	if b.onKill != nil {
+		b.onKill()
+	}
+	return b.killErr
+}
+
 func (b *fakeBox) Teardown(handle BoxHandle) error {
 	b.teardownCalls++
 	b.handles = append(b.handles, handle)
 	b.record("box.teardown")
+	if b.onTeardown != nil {
+		return errors.Join(b.onTeardown(), b.teardownErr)
+	}
 	return b.teardownErr
 }
 
@@ -215,21 +421,112 @@ func (b *fakeBox) record(event string) {
 type fakeInBoxLoop struct {
 	err        error
 	panicValue any
+	blockUntil <-chan struct{}
+	duringRun  func(RunStreams) error
 	calls      int
 	tasks      []Task
 	handles    []BoxHandle
 	callLog    *[]string
 }
 
-func (l *fakeInBoxLoop) RunInside(handle BoxHandle, task Task, _ RunStreams) error {
+func (l *fakeInBoxLoop) RunInside(handle BoxHandle, task Task, streams RunStreams) error {
 	l.calls++
 	l.handles = append(l.handles, handle)
 	l.tasks = append(l.tasks, task)
 	if l.callLog != nil {
 		*l.callLog = append(*l.callLog, "loop.run")
 	}
+	if l.duringRun != nil {
+		if err := l.duringRun(streams); err != nil {
+			return err
+		}
+	}
+	if l.blockUntil != nil {
+		<-l.blockUntil
+	}
 	if l.panicValue != nil {
 		panic(l.panicValue)
 	}
 	return l.err
+}
+
+func runSupervisorRecord(t *testing.T, name string, box *fakeBox, loop *fakeInBoxLoop, timeout time.Duration) string {
+	t.Helper()
+
+	recordPath := filepath.Join(t.TempDir(), name+".ndjson")
+	err := New(
+		WithTask(Task{ID: "018"}),
+		WithContainmentBox(box),
+		WithInBoxLoop(loop),
+		WithRunRecordPath(recordPath),
+		WithRunTimeout(timeout),
+	).Run()
+	switch name {
+	case "failure":
+		if !errors.Is(err, loop.err) {
+			t.Fatalf("TC-004-Outcome-Distinct: failure Run() error = %v, want %v", err, loop.err)
+		}
+	case "timeout":
+		if !errors.Is(err, ErrRunTimedOut) {
+			t.Fatalf("TC-004-Outcome-Distinct: timeout Run() error = %v, want ErrRunTimedOut", err)
+		}
+	default:
+		if err != nil {
+			t.Fatalf("TC-004-Outcome-Distinct: success Run() error = %v, want nil", err)
+		}
+	}
+	return recordPath
+}
+
+func finalOutcome(t *testing.T, recordPath string) string {
+	t.Helper()
+
+	events := readInternalRunRecord(t, recordPath)
+	return asInternalString(events[len(events)-1]["outcome"])
+}
+
+func readInternalRunRecord(t *testing.T, path string) []map[string]any {
+	t.Helper()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read run record %s: %v", path, err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+	events := make([]map[string]any, 0, len(lines))
+	for _, line := range lines {
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("parse run record line %q: %v", line, err)
+		}
+		events = append(events, event)
+	}
+	return events
+}
+
+func assertInternalRecordContains(t *testing.T, marker string, events []map[string]any, eventType, field, value string) {
+	t.Helper()
+
+	for _, event := range events {
+		if event["type"] == eventType && event[field] == value {
+			return
+		}
+	}
+	t.Fatalf("%s: missing event type=%q %s=%q in %#v", marker, eventType, field, value, events)
+}
+
+func asInternalString(value any) string {
+	text, _ := value.(string)
+	return text
+}
+
+func lastInternalLine(t *testing.T, path string) string {
+	t.Helper()
+
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read run record %s: %v", path, err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(content)), "\n")
+	return lines[len(lines)-1]
 }

@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/tkdtaylor/agent-builder/internal/gate"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox"
@@ -32,6 +33,9 @@ var (
 
 	// ErrMissingTask means Run was called without the one task it must dispatch.
 	ErrMissingTask = errors.New("supervisor: missing task")
+
+	// ErrRunTimedOut means the in-box loop exceeded the configured wall-clock deadline.
+	ErrRunTimedOut = errors.New("supervisor: run timed out")
 )
 
 // Task is one unit of work: build or modify exactly one target repo on its own
@@ -71,6 +75,7 @@ type BoxHandle struct {
 // ContainmentBox is the fakeable outside-the-box lifecycle seam.
 type ContainmentBox interface {
 	Create(Task) (BoxHandle, error)
+	Kill(BoxHandle) error
 	Teardown(BoxHandle) error
 }
 
@@ -91,6 +96,7 @@ type Supervisor struct {
 	task          Task
 	logger        *slog.Logger
 	runRecordPath string
+	runTimeout    time.Duration
 }
 
 // Option configures a Supervisor.
@@ -141,6 +147,14 @@ func WithRunRecordPath(path string) Option {
 	}
 }
 
+// WithRunTimeout configures the wall-clock deadline for one in-box loop run.
+// Non-positive durations leave the timeout disabled.
+func WithRunTimeout(timeout time.Duration) Option {
+	return func(s *Supervisor) {
+		s.runTimeout = timeout
+	}
+}
+
 // New returns a Supervisor with default (empty) configuration.
 func New(options ...Option) *Supervisor {
 	s := &Supervisor{
@@ -153,9 +167,10 @@ func New(options ...Option) *Supervisor {
 }
 
 // Run dispatches exactly one configured task through create -> run-inside ->
-// teardown. Retry, escalation, and timeout policy live in later tasks; this
-// method guarantees deterministic lifecycle ordering and, when configured,
-// streams run output to a durable host-side run-record before teardown.
+// teardown. Retry and escalation policy live in later tasks; this method
+// guarantees deterministic lifecycle ordering, enforces the optional
+// wall-clock kill, and, when configured, streams run output to a durable
+// host-side run-record before teardown.
 func (s *Supervisor) Run() (err error) {
 	if s.box == nil {
 		return ErrNilContainmentBox
@@ -174,14 +189,10 @@ func (s *Supervisor) Run() (err error) {
 	s.logLifecycle("box.created", handle)
 
 	var record *RunRecordWriter
+	outcome := RunOutcomeFailed
 
 	defer func() {
-		var panicErr error
-		if recovered := recover(); recovered != nil {
-			panicErr = fmt.Errorf("supervisor: run inside box panic: %v", recovered)
-		}
-
-		recordErr := s.closeRunRecord(record, err, panicErr)
+		recordErr := s.closeRunRecord(record, outcome, err)
 
 		teardownErr := s.box.Teardown(handle)
 		s.logLifecycle("box.torn_down", handle)
@@ -189,7 +200,7 @@ func (s *Supervisor) Run() (err error) {
 			teardownErr = fmt.Errorf("supervisor: teardown box: %w", teardownErr)
 		}
 
-		err = errors.Join(err, panicErr, recordErr, teardownErr)
+		err = errors.Join(err, recordErr, teardownErr)
 	}()
 
 	record, err = s.openRunRecord(handle)
@@ -211,10 +222,61 @@ func (s *Supervisor) Run() (err error) {
 			return fmt.Errorf("supervisor: write run command: %w", commandErr)
 		}
 	}
-	if loopErr := s.loop.RunInside(handle, s.task, streams); loopErr != nil {
-		err = fmt.Errorf("supervisor: run inside box: %w", loopErr)
+	loopResult := s.runLoop(handle, streams)
+	if s.runTimeout > 0 {
+		timer := time.NewTimer(s.runTimeout)
+		defer timer.Stop()
+
+		select {
+		case result := <-loopResult:
+			err = result.err
+		case <-timer.C:
+			outcome = RunOutcomeTimedOut
+			timeoutErr := fmt.Errorf("%w after %s", ErrRunTimedOut, s.runTimeout)
+			s.logTimeout(handle, timeoutErr)
+			killErr := s.box.Kill(handle)
+			if killErr != nil {
+				killErr = fmt.Errorf("supervisor: kill box: %w", killErr)
+				err = errors.Join(timeoutErr, killErr)
+				return err
+			}
+			err = timeoutErr
+			result := <-loopResult
+			if result.err != nil {
+				err = errors.Join(err, result.err)
+			}
+			return err
+		}
+	} else {
+		result := <-loopResult
+		err = result.err
+	}
+
+	if err == nil {
+		outcome = RunOutcomeCompleted
 	}
 	return err
+}
+
+type loopRunResult struct {
+	err error
+}
+
+func (s *Supervisor) runLoop(handle BoxHandle, streams RunStreams) <-chan loopRunResult {
+	done := make(chan loopRunResult, 1)
+	go func() {
+		var err error
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				err = fmt.Errorf("supervisor: run inside box panic: %v", recovered)
+			}
+			done <- loopRunResult{err: err}
+		}()
+		if loopErr := s.loop.RunInside(handle, s.task, streams); loopErr != nil {
+			err = fmt.Errorf("supervisor: run inside box: %w", loopErr)
+		}
+	}()
+	return done
 }
 
 func (s *Supervisor) logLifecycle(event string, handle BoxHandle) {
@@ -226,6 +288,19 @@ func (s *Supervisor) logLifecycle(event string, handle BoxHandle) {
 		"task_id", s.task.ID,
 		"box_id", handle.ID,
 		"worktree", handle.Worktree,
+	)
+}
+
+func (s *Supervisor) logTimeout(handle BoxHandle, err error) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.Error("supervisor timeout kill",
+		"event", "box.kill.timeout",
+		"task_id", s.task.ID,
+		"box_id", handle.ID,
+		"worktree", handle.Worktree,
+		"error", err,
 	)
 }
 
@@ -254,16 +329,12 @@ func (s *Supervisor) openRunRecord(handle BoxHandle) (*RunRecordWriter, error) {
 	return record, nil
 }
 
-func (s *Supervisor) closeRunRecord(record *RunRecordWriter, runErr, panicErr error) error {
+func (s *Supervisor) closeRunRecord(record *RunRecordWriter, outcome RunOutcome, runErr error) error {
 	if record == nil {
 		return nil
 	}
 
-	outcome := RunOutcomeCompleted
-	if runErr != nil || panicErr != nil {
-		outcome = RunOutcomeFailed
-	}
-	finishErr := record.Finish(outcome, errors.Join(runErr, panicErr))
+	finishErr := record.Finish(outcome, runErr)
 	if finishErr != nil {
 		finishErr = fmt.Errorf("supervisor: finish run record: %w", finishErr)
 	}

@@ -119,6 +119,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Missing dispatch dependencies fail before box creation. A box-create error is returned without teardown. A loop error is returned after teardown. A loop panic is recovered, converted into an error that includes the panic value, and returned after teardown. Teardown errors are joined with any loop or panic error.
 - **References:** `docs/tasks/test-specs/017-supervisor-dispatch-test-spec.md`.
 
+### B-013: Kill timed-out in-box runs
+
+- **Trigger:** A caller invokes `Supervisor.Run()` with a positive wall-clock timeout and the in-box loop has not returned before that timeout expires.
+- **Response:** The supervisor records a timeout error, emits a structured `box.kill.timeout` log event, calls `Kill` on the created containment box, writes a terminal run-record outcome of `timed-out` when run-record collection is configured, and tears the box down exactly once.
+- **Side effects:** The containment box receives at most one kill call for the created handle. The run-record file, when configured, contains a final `run_finished` event with `outcome` set to `timed-out` and an error string naming the timeout.
+- **Failure modes:** Kill errors are joined with the timeout error and returned, but teardown still runs. A fast in-box loop error before the timeout is recorded as `failed`, not `timed-out`. Non-positive timeout values leave the timeout disabled.
+- **References:** `docs/tasks/test-specs/018-wall-clock-kill-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -155,3 +163,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - The retrying loop has a mandatory stop condition: each picked task runs no more than the configured non-negative `MaxAttempts`, and exhausted failures are marked `needs-human`.
 - The execution-box profile exposes no host home mount, no container-engine socket mount, no privileged mode, and no capability add-back by default.
 - One `Supervisor.Run()` call dispatches at most one task and always tears down a successfully created box exactly once.
+- A configured supervisor timeout records `timed-out`, distinct from ordinary loop failure, and does not skip teardown.

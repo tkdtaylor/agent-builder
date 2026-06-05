@@ -83,6 +83,7 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | Parameter | Type | Default | Required | Effect |
 |-----------|------|---------|----------|--------|
 | `loop.RetryPolicy.MaxAttempts` | non-negative integer | none | yes | Bounds Executor attempts for one picked task. `0` means mark `needs-human` immediately without running Executor or Gate; positive values permit exactly that many attempts before exhausted failures escalate. |
+| `supervisor.WithRunTimeout` | `time.Duration` | disabled (`0`) | no | Bounds the wall-clock duration of one in-box `Supervisor.Run` loop. Positive values arm a deadline; expiry kills the containment box, tears it down, and records the terminal outcome as `timed-out`. Non-positive values preserve the existing no-timeout dispatch behavior. |
 
 ---
 

@@ -137,11 +137,11 @@ needs-human    status-only writer marker for work that requires human attention;
 
 ### State: Supervisor Dispatch
 
-- **Shape:** `*supervisor.Supervisor` stores one configured `supervisor.Task`, one `supervisor.ContainmentBox`, one `supervisor.InBoxLoop`, an optional structured logger, an optional durable run-record path, and the pre-existing exec-sandbox Runner seam.
+- **Shape:** `*supervisor.Supervisor` stores one configured `supervisor.Task`, one `supervisor.ContainmentBox`, one `supervisor.InBoxLoop`, an optional structured logger, an optional durable run-record path, an optional wall-clock run timeout, and the pre-existing exec-sandbox Runner seam.
 - **Owner:** host-side runtime wiring constructs the supervisor through `supervisor.New(options...)`.
-- **Lifetime:** process-local; each `Run()` call uses the currently configured task and seams for one dispatch lifecycle. When a run-record path is configured, the supervisor opens and closes one host-side record file during that lifecycle.
+- **Lifetime:** process-local; each `Run()` call uses the currently configured task and seams for one dispatch lifecycle. When a run-record path is configured, the supervisor opens and closes one host-side record file during that lifecycle. When a positive timeout is configured, the supervisor starts one deadline for the in-box loop.
 - **Concurrency rules:** no internal mutation occurs during `Run`; callers choose whether supplied box, loop, and logger implementations are safe to share across goroutines.
-- **Bounds:** one `Run()` call creates at most one box, starts the loop at most once, writes at most one run-record file, and tears down a successfully created box exactly once.
+- **Bounds:** one `Run()` call creates at most one box, starts the loop at most once, kills the box at most once on timeout, writes at most one run-record file, and tears down a successfully created box exactly once.
 
 #### Value: `supervisor.BoxHandle`
 
@@ -155,6 +155,12 @@ Worktree    string    worktree path visible to the in-box loop
 - **Identity:** scoped to one successful `ContainmentBox.Create(task)` call.
 - **Lifecycle:** produced by the containment-box seam, consumed by the in-box loop, then passed back to the box seam for teardown.
 - **Relationships:** belongs to the single task dispatched by the enclosing `Supervisor.Run()` call.
+
+#### Value: `supervisor.ErrRunTimedOut`
+
+- **Identity:** sentinel error returned when a configured wall-clock timeout expires before `InBoxLoop.RunInside` completes.
+- **Lifecycle:** produced by `Supervisor.Run()` after the timeout fires and before the run-record terminal event is written. It may be joined with a containment kill error or the killed loop's return error.
+- **Relationships:** timeout returns map to `RunOutcomeTimedOut`; ordinary loop errors and recovered panics map to `RunOutcomeFailed`.
 
 #### Value: `supervisor.RunStreams`
 
@@ -177,12 +183,12 @@ value         notes
 ────────────────────────────────────────────────────────────
 completed     in-box loop returned nil
 failed        in-box loop returned an error or panicked
-timed-out     reserved terminal state for task 018 timeout handling
+timed-out     configured wall-clock timeout expired and the supervisor attempted to kill the box
 ```
 
 - **Identity:** the string value is written to the terminal `RunRecord` line.
-- **Lifecycle:** `completed` and `failed` are produced by task 019 run-record collection. `timed-out` is part of the shared vocabulary so task 018 can add timeout production without changing the wire format.
-- **Relationships:** no wall-clock timer, cancellation, or box kill behavior is implied by the `timed-out` vocabulary entry.
+- **Lifecycle:** produced by `Supervisor.Run()` when the terminal run record is written and then consumed by humans, tests, and future audit tooling.
+- **Relationships:** `timed-out` is distinct from `failed`; a fast in-box loop error before the deadline is recorded as `failed`, not `timed-out`.
 
 ### State: Agent Loop
 
@@ -317,7 +323,7 @@ stderr          data
 run_finished    outcome; error when outcome is failed or timed-out
 ```
 
-- **Outcome values:** `completed`, `failed`, and `timed-out`. Task 019 writes `completed` and `failed`; `timed-out` is reserved for task 018's timeout producer and does not imply timeout behavior here.
+- **Outcome values:** `completed`, `failed`, and `timed-out`. `timed-out` means the configured supervisor wall-clock deadline expired and the supervisor attempted to kill the containment box before deterministic teardown.
 - **Durability rule:** the supervisor writes stream events while `RunInside` is active, writes `run_finished`, closes the file, and only then tears down the created box.
 - **Example:**
 
