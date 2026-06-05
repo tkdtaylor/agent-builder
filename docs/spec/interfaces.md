@@ -64,6 +64,7 @@ Global flags:
 | gofmt | `gofmt -l .` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `gofmt` fails the Step; non-zero exit fails the Step; non-empty output fails the Step as formatting drift |
 | golangci-lint | `golangci-lint run` in the target worktree | process `PATH`; version supplied by the runtime environment | Missing `golangci-lint` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
 | dep-scan Go scanner | `gods` in the target worktree | process `PATH`; version supplied by the runtime environment | Missing `gods` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
+| code-scanner | `code-scanner` in the target worktree | process `PATH`; version supplied by the runtime environment | Missing `code-scanner` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
 
 ---
 
@@ -82,7 +83,7 @@ type Step interface {
 }
 ```
 
-- **Implementors:** `gate.GoBuildStep`, `gate.GoVetStep`, `gate.GoTestStep`, `gate.GoFmtStep`, `gate.GolangciLintStep`, `gate.DepScanStep`, and future concrete checks such as code-scanner steps.
+- **Implementors:** `gate.GoBuildStep`, `gate.GoVetStep`, `gate.GoTestStep`, `gate.GoFmtStep`, `gate.GolangciLintStep`, `gate.DepScanStep`, `gate.CodeScannerStep`, and future concrete checks.
 - **Consumers:** `gate.Gate`.
 - **Stability:** governed by ADR 002 and updated with any task that changes gate behavior.
 - **Required behavior:** each Step is blocking. It receives the repo worktree path, returns captured output in its StepResult, and reports pass/fail through `OK`.

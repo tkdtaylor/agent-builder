@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** active (code complete; pending verification)
 
 ## Goal
 Add a blocking gate Step that invokes code-scanner (malware / backdoor / credential-harvest scan) over the produced diff/worktree, failing the gate on findings, with tool-absent treated as a hard failure rather than a silent skip.
@@ -23,15 +23,15 @@ Add a blocking gate Step that invokes code-scanner (malware / backdoor / credent
 | REQ-004 | A missing code-scanner is a HARD failure (fail loud), never a silent skip | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 002
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 002
 
 ## Acceptance criteria
-- [ ] [REQ-001] The Step runs code-scanner against the worktree/diff at repoPath
-- [ ] [REQ-002] A worktree containing a flagged pattern fails the step; a clean worktree passes
-- [ ] [REQ-003] Failing StepResult output contains the scanner findings
-- [ ] [REQ-004] Tool-absent produces a failed StepResult naming the missing tool; there is no skip route
+- [x] [REQ-001] The Step runs code-scanner against the worktree/diff at repoPath
+- [x] [REQ-002] A worktree containing a flagged pattern fails the step; a clean worktree passes
+- [x] [REQ-003] Failing StepResult output contains the scanner findings
+- [x] [REQ-004] Tool-absent produces a failed StepResult naming the missing tool; there is no skip route
 
 ## Verification plan
 - **Highest level achievable:** L5/L6 — run the Step against a fixture containing a benign-but-flagged pattern → step fails; a clean worktree → passes.
@@ -39,6 +39,10 @@ Add a blocking gate Step that invokes code-scanner (malware / backdoor / credent
 - **Operator path:** point the gate at a worktree with a deliberately flagged pattern and observe the failing Verdict + captured findings; remove the tool and observe a hard failure (not a skip).
 - **Cross-module state risk:** none (consumes 002 types).
 - **Runtime-visible surface:** captured scanner output in StepResult.
+
+## Verification evidence
+
+- **Pending:** full repo checks, read-only spec-verifier pass, and L5 harness evidence.
 
 ## Out of scope
 - dep-scan step (005)

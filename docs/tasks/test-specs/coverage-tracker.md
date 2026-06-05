@@ -17,7 +17,7 @@
 | 003 | Native Go gate steps (build/vet/test/gofmt) | 003-gate-go-checks-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test ./internal/gate/... -run TestGoChecks` -> `ok github.com/tkdtaylor/agent-builder/internal/gate` |
 | 004 | golangci-lint gate step | 004-gate-golangci-lint-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test ./internal/gate/... -run TestGolangciLint -count=1` -> `ok github.com/tkdtaylor/agent-builder/internal/gate` |
 | 005 | dep-scan blocking gate step | 005-gate-dep-scan-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test ./internal/gate/... -run TestDepScan -count=1` -> `ok github.com/tkdtaylor/agent-builder/internal/gate` |
-| 006 | code-scanner blocking gate step | 006-gate-code-scanner-test-spec.md | ✅ | ⏳ | — |
+| 006 | code-scanner blocking gate step | 006-gate-code-scanner-test-spec.md | ✅ | 🟡 | L5 pending verify commit: `go test ./internal/gate/... -run TestCodeScanner -count=1` -> `ok github.com/tkdtaylor/agent-builder/internal/gate` |
 | 007 | Fitness F-003: supervisor isolation | 007-fitness-supervisor-isolation-test-spec.md | stub | ❌ | — |
 | 008 | Fitness F-001: no-docker dev-env refs | 008-fitness-no-docker-test-spec.md | stub | ❌ | — |
 | 009 | Fitness F-002: gate is blocking (no skip) | 009-fitness-gate-blocking-test-spec.md | stub | ❌ | — |

@@ -23,10 +23,10 @@ C4Context
 
     Person(user, "User", "The person who interacts with the system")
     System(system, "agent-builder", "What this system does in one line")
-    System_Ext(extDep, "External Dependency", "What it provides")
+    System_Ext(codeScanner, "code-scanner", "Malware/backdoor scanner used as a blocking gate step")
 
     Rel(user, system, "Uses")
-    Rel(system, extDep, "Calls", "HTTPS / protocol")
+    Rel(system, codeScanner, "Runs", "process PATH")
 ```
 
 ---
@@ -58,6 +58,8 @@ C4Container
 C4Component
     title Component view of agent-builder CLI
 
+    System_Ext(codeScanner, "code-scanner", "Malware/backdoor scanner CLI")
+
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
         Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher and stable seams")
@@ -66,6 +68,7 @@ C4Component
 
     Rel(main, supervisor, "Starts")
     Rel(supervisor, gate, "Consumes Verdict model / Gate seam")
+    Rel(gate, codeScanner, "Runs in target worktree")
 ```
 
 **Key contracts**

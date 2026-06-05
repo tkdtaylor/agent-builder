@@ -33,6 +33,7 @@ When the structure changes, both files update in the same commit. The tables her
 | Name | Type | Description | Owner |
 |------|------|-------------|-------|
 | agent-builder | In-scope | | This team |
+| code-scanner | External CLI | Malware/backdoor/credential-harvest scanner invoked as a blocking gate step | Tooling environment |
 
 ---
 
@@ -57,7 +58,7 @@ When the structure changes, both files update in the same commit. The tables her
 | Container | Component | Source path | Responsibility | Depends on |
 |-----------|-----------|-------------|----------------|------------|
 | agent-builder CLI | Supervisor | `internal/supervisor` | Trusted outside-the-box dispatcher and stable seams | Verification Gate model |
-| agent-builder CLI | Verification Gate | `internal/gate` | Runs ordered blocking verification Steps and returns structured Verdicts | |
+| agent-builder CLI | Verification Gate | `internal/gate` | Runs ordered blocking verification Steps and returns structured Verdicts | code-scanner |
 
 ---
 

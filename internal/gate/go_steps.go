@@ -7,12 +7,13 @@ import (
 )
 
 const (
-	goBuildStepName = "go build ./..."
-	goVetStepName   = "go vet ./..."
-	goTestStepName  = "go test ./..."
-	goFmtStepName   = "gofmt -l ."
-	goLintStepName  = "golangci-lint run"
-	depScanStepName = "gods"
+	goBuildStepName  = "go build ./..."
+	goVetStepName    = "go vet ./..."
+	goTestStepName   = "go test ./..."
+	goFmtStepName    = "gofmt -l ."
+	goLintStepName   = "golangci-lint run"
+	depScanStepName  = "gods"
+	codeScanStepName = "code-scanner"
 )
 
 // GoBuildStep runs go build across every package in a target worktree.
@@ -84,6 +85,17 @@ func (DepScanStep) Name() string {
 
 func (DepScanStep) Run(repoPath string) StepResult {
 	return runCommandStep(repoPath, "gods")
+}
+
+// CodeScannerStep runs the malware/backdoor scanner in a target worktree.
+type CodeScannerStep struct{}
+
+func (CodeScannerStep) Name() string {
+	return codeScanStepName
+}
+
+func (CodeScannerStep) Run(repoPath string) StepResult {
+	return runCommandStep(repoPath, "code-scanner")
 }
 
 func runCommandStep(repoPath, tool string, args ...string) StepResult {

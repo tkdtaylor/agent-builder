@@ -63,6 +63,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Any non-zero scanner exit fails the Step and surfaces combined stdout/stderr, including CVE findings. A missing `gods` binary on `PATH` is a hard failure that identifies the missing tool.
 - **References:** `docs/tasks/test-specs/005-gate-dep-scan-test-spec.md`.
 
+### B-006: Run code-scanner against the target worktree
+
+- **Trigger:** A gate is configured with the code-scanner Step and invoked with a target repository worktree path.
+- **Response:** The Step shells out in the supplied worktree to `code-scanner`, the malware/backdoor/credential-harvest scanner, and returns a StepResult. The scanner's exit code represents the findings gate.
+- **Side effects:** The Step spawns a local `code-scanner` subprocess with the target worktree as the working directory. It writes no persistent state itself.
+- **Failure modes:** Any non-zero scanner exit fails the Step and surfaces combined stdout/stderr, including scanner findings. A missing `code-scanner` binary on `PATH` is a hard failure that identifies the missing tool.
+- **References:** `docs/tasks/test-specs/006-gate-code-scanner-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -92,3 +100,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - Native Go Steps always run in the caller-supplied worktree, never implicitly in the agent-builder repo.
 - The golangci-lint Step always runs in the caller-supplied worktree, never implicitly in the agent-builder repo.
 - The dep-scan Step always runs in the caller-supplied worktree, never implicitly in the agent-builder repo.
+- The code-scanner Step always runs in the caller-supplied worktree, never implicitly in the agent-builder repo.
