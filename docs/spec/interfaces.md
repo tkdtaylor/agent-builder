@@ -31,7 +31,7 @@ Subcommands:
 
 | Subcommand / flag | Type | Default | Effect |
 |-------------------|------|---------|--------|
-| `run` | subcommand | — | Dispatches one supervisor run path. Returns `0` when the supervisor returns nil and `1` when the run fails. |
+| `run` | subcommand | — | Builds the configured Phase 0 runtime pipeline from environment configuration, selects at most one ready task, dispatches it through the supervisor, and returns `0` when the run completes or idles. Returns `1` when configuration, containment, Executor, Gate, or loop execution fails. |
 | `version` | subcommand | — | Prints `agent-builder <version>` to stdout and exits `0`. |
 | `verify <repo>` | subcommand + path argument | — | Constructs the production verification Gate and runs it against the target repo path. Prints each Gate step result and exits `0` only when every blocking step passes. Exits `1` when any Gate step fails. |
 | `-h`, `--help`, `help` | help command | — | Prints top-level usage, subcommands, and exit codes to stdout and exits `0`. |
@@ -43,6 +43,8 @@ Subcommands:
 - `2` — usage error
 
 There is no `verify` flag that skips, bypasses, or weakens the Gate. The Gate is the definition of done and remains blocking.
+
+`agent-builder run` has no flags. Its required and optional environment configuration is documented in [configuration.md](configuration.md#environment-variables).
 
 ### HTTP / RPC API
 
@@ -186,6 +188,29 @@ type RunStreams struct {
 - **Consumers:** `internal/supervisor.Supervisor`.
 - **Stability:** governed by `docs/tasks/test-specs/017-supervisor-dispatch-test-spec.md`, `docs/tasks/test-specs/018-wall-clock-kill-test-spec.md`, and `docs/tasks/test-specs/019-run-log-collection-test-spec.md`.
 - **Required behavior:** `Run` dispatches exactly one configured task per call. It creates a box before starting the in-box loop, passes the created `BoxHandle`, task, and host-side stream writers to the loop, and tears the box down exactly once after the loop returns, panics, or exceeds a configured timeout. Missing task, box, or loop dependencies fail before creation. Loop errors and recovered panics are returned after teardown. When `WithRunTimeout` receives a positive duration and the in-box loop exceeds it, the supervisor calls `Kill` on the created box, records a timed-out run outcome, then tears down the box. `Kill` implementations must terminate the active contained run so `RunInside` returns; kill errors are joined into the returned error and do not skip teardown. Non-positive timeouts leave the timeout disabled. When `WithRunRecordPath` is configured, stdout/stderr/command writes are persisted as RunRecord NDJSON during the run, the terminal outcome is written, and the file is closed before teardown. Retry and escalation behavior remain outside this seam.
+
+### Concrete wiring: default CLI run runtime
+
+```go
+type Config struct {
+	TaskRoot       string
+	Worktree       string
+	ClaudeCLI      string
+	ClaudeToken    string
+	SandboxRuntime string
+	RunRecordPath  string
+	RunTimeout     time.Duration
+	MaxAttempts    int
+}
+
+func ConfigFromEnv(getenv func(string) string) (Config, error)
+func Run(config Config, stdout io.Writer) error
+func RunFromEnv(stdout io.Writer) error
+```
+
+- **Consumers:** `internal/cli` uses `RunFromEnv` as the default implementation of `agent-builder run`.
+- **Collaborators:** `tasksource.Source`, `executor.ClaudeCLI`, production `gate.Gate`, `sandboxruntime.Runner`, supervisor dispatch seams, and `loop.RetryingLoop`.
+- **Required behavior:** required configuration is validated before task selection mutates status or the Executor can start. The runtime selects at most one task, gives that task to the supervisor, and records pick/attempt/verify/finish evidence through the supervisor RunRecord streams when configured.
 
 ### Interface: exec-sandbox `run()` adapter seam
 

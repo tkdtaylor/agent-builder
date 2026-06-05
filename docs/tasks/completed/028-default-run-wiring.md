@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-05
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 Make `agent-builder run` construct the real Phase 0 pipeline instead of an empty supervisor, so one configured task can be picked, attempted, verified, logged, and torn down through the repo-owned seams.
@@ -28,10 +28,10 @@ Make `agent-builder run` construct the real Phase 0 pipeline instead of an empty
 - [x] Blocking tasks are complete or explicitly stubbed through fakeable seams in the test harness
 
 ## Acceptance criteria
-- [ ] [REQ-001] `agent-builder run` no longer reaches `supervisor.ErrNilContainmentBox`, `supervisor.ErrNilInBoxLoop`, or `supervisor.ErrMissingTask` on a fully configured fixture.
-- [ ] [REQ-002] A runtime-visible harness run proves one task is selected, attempted by the executor, verified by the Gate, and written to a durable run record.
-- [ ] [REQ-003] `make fitness-supervisor-isolation` remains green.
-- [ ] [REQ-004] Missing task source, worktree, executor token, sandbox runtime, or run configuration exits non-zero before task mutation and names the missing setting.
+- [x] [REQ-001] `agent-builder run` no longer reaches `supervisor.ErrNilContainmentBox`, `supervisor.ErrNilInBoxLoop`, or `supervisor.ErrMissingTask` on a fully configured fixture.
+- [x] [REQ-002] A runtime-visible harness run proves one task is selected, attempted by the executor, verified by the Gate, and written to a durable run record.
+- [x] [REQ-003] `make fitness-supervisor-isolation` remains green.
+- [x] [REQ-004] Missing task source, worktree, executor token, sandbox runtime, or run configuration exits non-zero before task mutation and names the missing setting.
 
 ## Verification plan
 - **Highest level achievable:** L5 - runtime binary harness with fake external CLIs and a fixture task/worktree exercises the real `run` command path end to end without touching production credentials.

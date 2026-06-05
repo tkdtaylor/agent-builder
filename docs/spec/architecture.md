@@ -63,6 +63,7 @@ When the structure changes, both files update in the same commit. The tables her
 | Container | Component | Source path | Responsibility | Depends on |
 |-----------|-----------|-------------|----------------|------------|
 | agent-builder CLI | Supervisor | `internal/supervisor` | Trusted outside-the-box dispatcher that creates one containment box, starts one in-box loop, streams run output to a durable run-record when configured, logs lifecycle events, and tears down deterministically | Verification Gate model; exec-sandbox Run Adapter |
+| agent-builder CLI | Default Run Wiring | `internal/runtime` | Host-side CLI bootstrap that parses explicit run configuration, selects one ready task, composes concrete Phase 0 adapters, and hands one configured task to the Supervisor | Supervisor; Task Source; Task Status Writer; Agent Loop; Claude CLI Executor; Verification Gate; sandbox-runtime Adapter |
 | agent-builder CLI | Agent Loop | `internal/loop` | Drives one inside-the-box pick -> attempt -> verify cycle and applies the bounded retry/escalation policy around that policy-free outcome | Supervisor; Task Source; Task Status Writer; Verification Gate |
 | agent-builder CLI | Ingestion Boundary | `internal/ingestion` | Defines typed web-content and tool-call candidates plus the guard/broker seam that releases only allowed candidates to the executor path | |
 | agent-builder CLI | Armor Guard Adapter | `internal/armor` | Adapts an external armor-compatible process/service to the ingestion guard decision model without vendoring armor source | Ingestion Boundary; armor |
@@ -92,6 +93,7 @@ When the structure changes, both files update in the same commit. The tables her
 - Task 025: armor guard adapter — external process/service invocation seam maps armor allow/findings/failure output into ingestion allow/block/quarantine decisions without editing armor source.
 - Task 017: Supervisor dispatch lifecycle — one task per `Run()`, create -> run-inside -> teardown ordering, teardown-on-error, and recovered-panic teardown.
 - Task 019: RunRecord collection — host-side NDJSON run record captures command/stdout/stderr stream events during `RunInside`, writes terminal outcomes, and closes before teardown.
+- Task 028: Default run wiring — `agent-builder run` composes the concrete Phase 0 task source, Executor, Gate, sandbox-runtime adapter, retrying loop, timeout, and optional RunRecord path from explicit environment configuration while preserving supervisor isolation.
 
 ---
 

@@ -239,6 +239,33 @@ timed-out     configured wall-clock timeout expired and the supervisor attempted
 - **Lifecycle:** produced by `Supervisor.Run()` when the terminal run record is written and then consumed by humans, tests, and future audit tooling.
 - **Relationships:** `timed-out` is distinct from `failed`; a fast in-box loop error before the deadline is recorded as `failed`, not `timed-out`.
 
+### State: Default Run Wiring
+
+- **Shape:** `runtime.Config` stores the task root, target worktree, Claude CLI executable, Claude token, sandbox-runtime executable, optional RunRecord path, supervisor timeout, and max-attempt bound for one `agent-builder run` invocation.
+- **Owner:** `internal/cli` calls `runtime.RunFromEnv` for the default `run` subcommand path. Tests may construct `runtime.Config` directly or invoke the binary with fake process shims.
+- **Lifetime:** process-local; parsed once per CLI invocation and discarded after the run returns.
+- **Concurrency rules:** one invocation owns one selected task and one configured worktree. Concurrent runs require external branch/worktree isolation.
+- **Bounds:** one invocation selects at most one ready task. If no task is ready, it returns idle before creating a box or running an Executor.
+
+#### Value: `runtime.Config`
+
+```
+field           type             notes
+────────────────────────────────────────────────────────────
+TaskRoot        string           root containing roadmap and task files
+Worktree        string           target repo worktree for Executor, Gate, and sandbox probe
+ClaudeCLI       string           executable path/name; blank environment defaults to claude
+ClaudeToken     string           token injected as ANTHROPIC_API_KEY
+SandboxRuntime  string           srt executable path/name for sandbox-runtime adapter
+RunRecordPath   string           optional NDJSON output path
+RunTimeout      time.Duration    explicit wall-clock bound for one supervisor run
+MaxAttempts     int              non-negative retry attempt bound
+```
+
+- **Lifecycle:** produced by `runtime.ConfigFromEnv` or tests, consumed by `runtime.Run`.
+- **Relationships:** composes `tasksource.Source`, `executor.ClaudeCLI`, production `gate.Gate`, `sandboxruntime.Runner`, supervisor dispatch seams, `loop.RetryingLoop`, and `tasksource.StatusWriter`.
+- **Failure behavior:** missing required fields fail as configuration errors before Executor attempt. Gate failures after an Executor attempt are surfaced through RunRecord stderr evidence and a failed terminal outcome.
+
 ### State: Agent Loop
 
 - **Shape:** `*loop.Loop` stores a `loop.TaskSource`, a `supervisor.Executor`, a `supervisor.Gate`, and the target worktree path supplied at construction.
@@ -547,7 +574,7 @@ run_finished    outcome; error when outcome is failed or timed-out
 ```
 
 - **Outcome values:** `completed`, `failed`, and `timed-out`. `timed-out` means the configured supervisor wall-clock deadline expired and the supervisor attempted to kill the containment box before deterministic teardown.
-- **Durability rule:** the supervisor writes stream events while `RunInside` is active, writes `run_finished`, closes the file, and only then tears down the created box.
+- **Durability rule:** the supervisor writes stream events while `RunInside` is active, writes `run_finished`, closes the file, and only then tears down the created box. The default run wiring writes command/stdout/stderr stream events for selected task, Executor attempt, Gate verification, passing Gate summary, produced branch, Gate failure detail, and terminal finish evidence.
 - **Example:**
 
 ```ndjson
@@ -593,3 +620,4 @@ run_finished    outcome; error when outcome is failed or timed-out
 - Retry policy `MaxAttempts` is non-negative; negative values fail validation.
 - Retry escalation writes only `needs-human` through the constrained task status-writer seam after exhausted failures.
 - A configured RunRecord is host-side and durable: stream events are written during `RunInside`, the terminal outcome is written, and the file is closed before containment teardown.
+- A default runtime configuration selects at most one task and fails missing required configuration before Executor attempt.
