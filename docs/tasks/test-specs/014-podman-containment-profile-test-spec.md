@@ -1,6 +1,6 @@
 # Test Spec 014: Podman containment profile (execution box)
 
-**Linked task:** [`docs/tasks/backlog/014-podman-containment-profile.md`](../backlog/014-podman-containment-profile.md)
+**Linked task:** [`docs/tasks/completed/014-podman-containment-profile.md`](../completed/014-podman-containment-profile.md)
 **Written:** 2026-06-04
 **Status:** complete
 

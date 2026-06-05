@@ -16,7 +16,7 @@ Define the execution-box profile under `containment/execution-box/` and launch i
 
 The profile:
 
-- runs only for a non-root host user and uses `--userns=keep-id` with `--user 1000:1000` in the container;
+- runs only for a non-root host user and uses `--userns=keep-id` with the current host uid/gid in the container;
 - sets `--read-only` on the root filesystem;
 - mounts exactly one writable repo worktree at `/work`;
 - mounts scratch as tmpfs at `/scratch` with an explicit size and no device or setuid bits;

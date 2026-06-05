@@ -1,0 +1,16 @@
+FROM docker.io/library/golang:1.26-alpine
+
+RUN addgroup -g 1000 agent && adduser -D -u 1000 -G agent agent
+
+COPY probe.sh /usr/local/bin/execution-box-probe
+RUN chmod 0555 /usr/local/bin/execution-box-probe && \
+    mkdir -p /scratch /work && \
+    chown 1000:1000 /scratch /work
+
+USER 1000:1000
+WORKDIR /work
+ENV HOME=/scratch/home
+ENV TMPDIR=/scratch
+ENV XDG_CACHE_HOME=/scratch/cache
+
+ENTRYPOINT ["/bin/sh"]

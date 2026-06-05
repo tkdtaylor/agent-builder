@@ -44,6 +44,7 @@ When the structure changes, both files update in the same commit. The tables her
 | Name | Technology | Responsibility | Source path | Depends on |
 |------|------------|----------------|-------------|------------|
 | agent-builder CLI | Go | Entrypoint process for the autonomous builder scaffold | `cmd/agent-builder` | |
+| execution-box profile | Rootless Podman / OCI image | Product containment artifact for running one target repo worktree with read-only rootfs, scratch tmpfs, non-root execution, dropped capabilities, and resource quotas | `containment/execution-box` | |
 
 **Invariants for this table**
 - Every container listed has a corresponding directory or deployable artifact under `src/` (or equivalent). The drift-audit mode of the `architect` agent checks this against the actual repo layout.
@@ -68,6 +69,7 @@ When the structure changes, both files update in the same commit. The tables her
 > Architectural choices that span multiple containers or components and don't naturally fit in any single row above — auth approach, observability strategy, error-handling convention, retry policy, transaction boundaries. Each entry should link to an ADR.
 
 - ADR 002: Gate orchestrator shape — ordered Step interface, structured Verdict model, first-failure short-circuit, no skip path.
+- ADR 014: Rootless Podman execution-box profile — product containment artifact under `containment/execution-box` with read-only rootfs, writable worktree and scratch only, non-root/drop-all-caps execution, no host home or container-engine socket mount, and explicit resource quotas.
 
 ---
 

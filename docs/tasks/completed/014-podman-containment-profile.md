@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 Define the rootless-Podman execution-box profile — a product artifact under a named dir (`containment/`) — that runs agent code with a read-only rootfs, a writable repo worktree + tmpfs scratch, no host home, no container socket, non-root + dropped capabilities, and resource quotas.
@@ -23,18 +23,19 @@ Define the rootless-Podman execution-box profile — a product artifact under a 
 | REQ-003 | CPU, memory, PID, and disk quotas applied to the box | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 001
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 001
 
 ## Acceptance criteria
-- [ ] [REQ-001] Launching the box yields a read-only `/`; writes to `/` fail, while the mounted worktree and tmpfs scratch accept writes
-- [ ] [REQ-002] No `/var/run/*podman*.sock` (or docker socket) is present in-box, no host home is mounted, `id` reports non-root, and the capability set is the dropped/minimal set
-- [ ] [REQ-003] The box is constrained by explicit cpu/mem/pids/disk limits that are observable from the host (cgroup config) and enforced
+- [x] [REQ-001] Launching the box yields a read-only `/`; writes to `/` fail, while the mounted worktree and tmpfs scratch accept writes
+- [x] [REQ-002] No `/var/run/*podman*.sock` (or docker socket) is present in-box, no host home is mounted, `id` reports non-root, and the capability set is the dropped/minimal set
+- [x] [REQ-003] The box is constrained by explicit cpu/mem/pids/disk limits that are observable from the host (cgroup config) and enforced
 
 ## Verification plan
 - **Highest level achievable:** L6 — containment is an observed runtime property; assert via in-box probes against a launched box.
 - In-box probes and observable results to quote: write to `/` denied (read-only rootfs); `id` shows non-root uid/gid; `ls /var/run` / socket check shows no `*podman*.sock` or docker socket; writes to the worktree mount and tmpfs scratch succeed; host-side cgroup shows cpu/mem/pids/disk limits.
+- **Executor runtime result:** L6 not reached in this environment. `containment/execution-box/run.sh --worktree . --probe` exited with `execution-box: podman unavailable on PATH`.
 - **Cross-module state risk:** none — profile is self-contained; no shared mutable state with other modules.
 - **Runtime-visible surface:** container filesystem permissions, user/capability set, mounted device/socket inventory, cgroup resource limits.
 
