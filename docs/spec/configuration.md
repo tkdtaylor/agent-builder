@@ -100,6 +100,9 @@ The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.m
 | `armor.Config.Command` | argv slice | none | yes when no `armor.Config.Runner` is supplied | External armor-compatible command invoked with JSON stdin/stdout by `armor.ProcessRunner`. Missing or blank command fails closed as a block decision. |
 | `armor.Config.Runner` | `armor.Runner` | process runner from `Command` | no | Fakeable invocation seam for tests or service-backed integrations. When nil, the adapter constructs a process runner from `Command`. |
 | `armor.Config.Timeout` | `time.Duration` | disabled (`0`) | no | Optional per-candidate armor invocation timeout. Positive values cause timed-out invocations to return a fail-closed block decision. |
+| `executorharness.ArmorConfig.Armor` | `armor.Config` | zero value | no | Armor runner/command settings used by `NewArmorGuarded`. Zero value is accepted but fails closed at review time because armor is unavailable. |
+| `executorharness.ArmorConfig.BrokerTimeout` | `time.Duration` | disabled (`0`) | no | Optional timeout around the ingestion broker review in the armor-guarded executor harness. Positive values produce fail-closed block decisions on timeout. |
+| `executorharness.ArmorConfig.Trace` | `executorharness.TraceRecorder` | nil | no | Optional in-process trace sink for producer-consumer evidence; nil disables trace recording without changing allow/block behavior. |
 
 ---
 

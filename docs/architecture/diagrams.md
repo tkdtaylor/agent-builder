@@ -98,6 +98,7 @@ C4Component
     Rel(agentloop, statuswriter, "Marks needs-human after exhausted retries")
     Rel(agentloop, executorHarness, "Uses when executor web/tool events are exposed")
     Rel(executorHarness, ingestion, "Builds candidates and reviews through Broker")
+    Rel(executorHarness, armorAdapter, "Constructs armor-backed Guard wiring")
     Rel(ingestion, armorAdapter, "Calls Guard implementation")
     Rel(armorAdapter, armorTool, "Invokes over JSON")
     Rel(agentloop, gate, "Verifies target worktree")
@@ -114,6 +115,7 @@ C4Component
 - ADR 024 fixes the ingestion boundary shape: typed web-content and tool-call candidates, guard decisions of allow/block/quarantine, and fail-closed broker release.
 - Task 025 fixes the armor guard adapter shape: external JSON process/service invocation maps allow/findings/failure output to ingestion decisions without vendoring armor source.
 - Task 027 fixes the executor ingestion harness shape: executor-facing web-content and tool-call events become ingestion candidates before continuation or execution, and direct release values cannot be valid without broker review.
+- Task 026 fixes the armor-backed executor harness wiring: `internal/executorharness.NewArmorGuarded` composes the executor-facing harness, ingestion broker, and external armor guard adapter so only armor-allowed candidates reach continuation or execution.
 - Task 022 fixes the Claude CLI executor adapter: `claude -p` runs in the task worktree, receives `ANTHROPIC_API_KEY` through env, and reports the produced branch through an executor-owned temp file.
 - Task 017 fixes the supervisor dispatch lifecycle: create one box, run one in-box loop, and tear the box down exactly once.
 - Task 019 fixes the run-record seam: command/stdout/stderr events stream to host-side NDJSON and close before box teardown.

@@ -310,6 +310,7 @@ type ContentContinuation func(context.Context, ContentRelease) error
 type ToolExecutor func(context.Context, ToolCallRelease) error
 
 func New(executorharness.Config) executorharness.Harness
+func NewArmorGuarded(executorharness.ArmorConfig) executorharness.Harness
 
 func (h Harness) HandleWebContent(context.Context, WebContentEvent, ContentContinuation) ContentResult
 func (h Harness) HandleToolCall(context.Context, ToolCallEvent, ToolExecutor) ToolCallResult
@@ -322,8 +323,8 @@ func (r ToolCallRelease) Arguments() (json.RawMessage, error)
 
 - **Implementors:** `internal/executorharness.Harness`; tests provide fake guards, trace recorders, continuations, and tool executors.
 - **Consumers:** inside-the-box executor-facing wiring that receives web content or tool-call requests before executor context/tool execution.
-- **Stability:** governed by ADR 024 and `docs/tasks/test-specs/027-executor-ingestion-tool-harness-test-spec.md`.
-- **Required behavior:** each web-content event is converted to an `ingestion.ContentCandidate` before continuation, and each tool-call event is converted to an `ingestion.ToolCallCandidate` before execution. The harness calls the broker before any continuation/executor callback. Only matching `allow` decisions produce valid opaque release values. Invalid event inputs, fail-closed broker outcomes, nil callbacks, and externally constructed release values do not reach executor use.
+- **Stability:** governed by ADR 024, `docs/tasks/test-specs/027-executor-ingestion-tool-harness-test-spec.md`, and `docs/tasks/test-specs/026-armor-ingestion-wiring-test-spec.md`.
+- **Required behavior:** each web-content event is converted to an `ingestion.ContentCandidate` before continuation, and each tool-call event is converted to an `ingestion.ToolCallCandidate` before execution. The harness calls the broker before any continuation/executor callback. Only matching `allow` decisions produce valid opaque release values. Invalid event inputs, fail-closed broker outcomes, nil callbacks, and externally constructed release values do not reach executor use. `NewArmorGuarded` wires the harness to `armor.NewGuard` and `ingestion.NewBroker` so armor `block`, `quarantine`, allow-with-findings, unavailable, or timeout results do not reach executor use.
 
 ### Interface: armor guard adapter
 

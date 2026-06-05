@@ -151,6 +151,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Invalid event fields fail before guard invocation. Broker `block`, `quarantine`, guard error, guard timeout, unavailable guard, malformed decision, nil continuation, or nil executor prevents continuation/execution. Directly constructed release values are invalid and return `executorharness.ErrUnreviewedRelease`.
 - **References:** ADR 024; `docs/tasks/test-specs/027-executor-ingestion-tool-harness-test-spec.md`.
 
+### B-017: Review executor-facing events with armor-backed wiring
+
+- **Trigger:** Executor-facing web content or a tool-call request is handled by an armor-guarded executor harness.
+- **Response:** The harness constructs an ingestion candidate, the broker invokes the armor guard adapter, the adapter invokes the configured armor runner or command, and only armor `allow` decisions without findings release to continuation or tool execution.
+- **Side effects:** Armor is invoked through the adapter seam as an external runner or JSON stdin/stdout command. The harness itself still performs no web fetch or tool execution; caller callbacks run only after release.
+- **Failure modes:** Armor `block` or `quarantine` decisions, allow-with-findings responses, missing armor command, runner errors, timeouts, malformed armor decisions, invalid event fields, and unavailable armor all prevent continuation or tool execution.
+- **References:** ADR 024; `docs/tasks/test-specs/026-armor-ingestion-wiring-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -191,3 +199,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - Ingestion candidate review fails closed: only a valid matching `allow` releases content or tool-call data.
 - The armor adapter invokes armor as an external seam and does not vendor or edit armor source.
 - Executor-facing web/tool events use broker-reviewed release values before continuation or execution.
+- Armor-guarded executor harness wiring fails closed and releases only armor-allowed candidates.

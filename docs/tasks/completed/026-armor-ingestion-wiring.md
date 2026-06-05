@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** blocked
+**Status:** completed
 
 ## Goal
 Wire the armor guard adapter onto the repo-owned web-ingestion and tool-call path so executor research content and tool-call requests are blocked or quarantined before they reach executor context or execution.
@@ -23,15 +23,15 @@ Wire the armor guard adapter onto the repo-owned web-ingestion and tool-call pat
 | REQ-004 | armor remains an invoked external tool/service; no armor source is modified by this task. | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 024, 025, and 027
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 024, 025, and 027
 
 ## Acceptance criteria
-- [ ] [REQ-001] Web-ingested content passes through the armor-backed boundary as a blocking step before reaching executor context.
-- [ ] [REQ-002] Content flagged as injection is blocked or quarantined; it does not reach the loop silently.
-- [ ] [REQ-003] Tool-call requests pass through the armor-backed boundary as a blocking step before execution.
-- [ ] [REQ-004] armor is invoked as an external tool/service seam; no armor source is modified by this task.
+- [x] [REQ-001] Web-ingested content passes through the armor-backed boundary as a blocking step before reaching executor context.
+- [x] [REQ-002] Content flagged as injection is blocked or quarantined; it does not reach the loop silently.
+- [x] [REQ-003] Tool-call requests pass through the armor-backed boundary as a blocking step before execution.
+- [x] [REQ-004] armor is invoked as an external tool/service seam; no armor source is modified by this task.
 
 ## Verification plan
 - **Highest level achievable:** L6 — drive the live executor research/tool-call path with known benign and injection fixtures; observe that armor allows benign traffic and blocks/quarantines flagged content/tool calls before executor use. Quote the result.

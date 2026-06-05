@@ -380,6 +380,20 @@ Provenance     ingestion.Provenance  task/executor origin metadata
 - **Lifecycle:** produced only by `Harness.HandleWebContent` or `Harness.HandleToolCall` after broker release; consumed by caller-supplied continuation or executor callbacks.
 - **Relationships:** zero-value or externally constructed releases are invalid and return `ErrUnreviewedRelease`.
 
+#### Value: `executorharness.ArmorConfig`
+
+```
+field          type                  notes
+────────────────────────────────────────────────────────────
+Armor          armor.Config          external armor runner/command/timeout configuration
+BrokerTimeout  time.Duration         optional timeout around the broker review call
+Trace          TraceRecorder         optional producer-consumer trace sink
+```
+
+- **Lifecycle:** produced by inside-the-box runtime wiring and consumed by `executorharness.NewArmorGuarded`.
+- **Relationships:** composes `armor.NewGuard`, `ingestion.NewBroker`, and `executorharness.New` into one armor-backed harness.
+- **Failure behavior:** missing or failing armor configuration is preserved as a fail-closed broker decision, not a constructor error.
+
 ### State: Armor Guard Adapter
 
 - **Shape:** `internal/armor.Guard` owns one external invocation runner and an optional timeout. `ProcessRunner` invokes an armor-compatible command with JSON stdin and parses JSON stdout. Tests can supply an in-process `Runner`.
