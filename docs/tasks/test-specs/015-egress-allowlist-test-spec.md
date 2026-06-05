@@ -1,6 +1,6 @@
 # Test Spec 015: Default-deny egress allowlist
 
-**Linked task:** [`docs/tasks/backlog/015-egress-allowlist.md`](../backlog/015-egress-allowlist.md)
+**Linked task:** [`docs/tasks/completed/015-egress-allowlist.md`](../completed/015-egress-allowlist.md)
 **Written:** 2026-06-04
 **Status:** complete
 

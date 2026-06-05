@@ -64,7 +64,7 @@ There is no `verify` flag that skips, bypasses, or weakens the Gate. The Gate is
 
 | Dependency | What we call | Library / version | Failure mode |
 |------------|-------------|-------------------|--------------|
-| Podman | `podman build`, `podman create`, `podman inspect`, `podman start`, `podman run`, and `podman rm` from `containment/execution-box/run.sh` | process `PATH`; rootless Podman for the current non-root user | Missing binary, failed `podman info`, failed image build, absent quota fields, or failed in-box probe exits non-zero and names the failing check |
+| Podman | `podman build`, `podman pod create`, `podman create`, `podman inspect`, `podman start`, `podman run`, `podman logs`, `podman pod rm`, and `podman rm` from `containment/execution-box/run.sh` | process `PATH`; rootless Podman for the current non-root user | Missing binary, failed `podman info`, failed image build, absent quota fields, egress sidecar startup failure, or failed in-box probe exits non-zero and names the failing check |
 | Go toolchain | `go build ./...`, `go vet ./...`, `go test ./...` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `go` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
 | gofmt | `gofmt -l .` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `gofmt` fails the Step; non-zero exit fails the Step; non-empty output fails the Step as formatting drift |
 | golangci-lint | `golangci-lint run` in the target worktree | process `PATH`; version supplied by the runtime environment | Missing `golangci-lint` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
@@ -270,11 +270,15 @@ func (l *RetryingLoop) RunOnce() (RetryOutcome, error)
 ### Executable artifact: execution-box launcher
 
 ```bash
-containment/execution-box/run.sh [--worktree PATH] [--probe] [--name NAME] [--image IMAGE] [-- COMMAND...]
+containment/execution-box/run.sh [--worktree PATH] [--probe] [--egress-probe] [--egress-allowlist PATH] [--print-egress-plan] [--name NAME] [--image IMAGE] [-- COMMAND...]
 ```
 
 - `--worktree PATH` mounts the supplied repo worktree at `/work`; default is the current directory.
 - `--probe` runs the containment probe and prints `TC-001` through `TC-005` PASS/FAIL output plus host-side quota inspection for `TC-003`.
+- `--egress-probe` runs the egress allowlist probe and prints allowlisted success (`TC-003`) and non-allowlisted/direct-IP denial (`TC-004`) lines.
+- `--egress-allowlist PATH` overrides the plain-text allowlist file; `EXEC_BOX_EGRESS_ALLOWLIST` provides the default override.
+- `--egress-allow-host HOST:PORT`, `--egress-deny-host HOST:PORT`, and `--egress-deny-ip HOST:PORT` override runtime egress probe targets.
+- `--print-egress-plan` validates and prints the parsed allowlist without requiring Podman.
 - `--name NAME` sets the temporary container-name prefix.
 - `--image IMAGE` overrides the local image tag; `EXEC_BOX_IMAGE` provides the default override.
 - `COMMAND...` runs inside `/work`; when omitted, the launcher starts `/bin/sh`.

@@ -44,7 +44,8 @@ When the structure changes, both files update in the same commit. The tables her
 | Name | Technology | Responsibility | Source path | Depends on |
 |------|------------|----------------|-------------|------------|
 | agent-builder CLI | Go | Entrypoint process for the autonomous builder scaffold | `cmd/agent-builder` | |
-| execution-box profile | Rootless Podman / OCI image | Product containment artifact for running one target repo worktree with read-only rootfs, scratch tmpfs, non-root execution, dropped capabilities, and resource quotas | `containment/execution-box` | |
+| execution-box profile | Rootless Podman / OCI image | Product containment artifact for running one target repo worktree with read-only rootfs, scratch tmpfs, non-root execution, dropped workload capabilities, resource quotas, and default-deny egress | `containment/execution-box` | |
+| execution-box egress sidecar | Rootless Podman / nftables sidecar | Trusted per-run network filter that installs default-deny egress rules for the execution-box pod namespace before the workload starts | `containment/execution-box` | execution-box profile |
 
 **Invariants for this table**
 - Every container listed has a corresponding directory or deployable artifact under `src/` (or equivalent). The drift-audit mode of the `architect` agent checks this against the actual repo layout.
@@ -75,6 +76,7 @@ When the structure changes, both files update in the same commit. The tables her
 - ADR 012: Agent loop state machine shape — explicit pick/attempt/verify/advance states, done/idle/fail outcomes, and policy-free failure reporting.
 - ADR 013: Retry escalation policy — non-negative attempt bound, mandatory stop condition, needs-human status write, and substitutable escalation hook.
 - ADR 014: Rootless Podman execution-box profile — product containment artifact under `containment/execution-box` with read-only rootfs, writable worktree and scratch only, non-root/drop-all-caps execution, no host home or container-engine socket mount, and explicit resource quotas.
+- ADR 015: Default-deny execution-box egress allowlist — plain-text exact host:port allowlist, launcher-validated fail-closed parsing, sidecar-owned network administration, and nftables default-drop filtering before workload start.
 - ADR 020: exec-sandbox run adapter seam — typed command/worktree/limits request, result plus exit code plus error response, fake backend for tests.
 - Task 017: Supervisor dispatch lifecycle — one task per `Run()`, create -> run-inside -> teardown ordering, teardown-on-error, and recovered-panic teardown.
 - Task 019: RunRecord collection — host-side NDJSON run record captures command/stdout/stderr stream events during `RunInside`, writes terminal outcomes, and closes before teardown.
