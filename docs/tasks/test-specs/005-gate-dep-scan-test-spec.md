@@ -2,34 +2,37 @@
 
 **Linked task:** [`docs/tasks/backlog/005-gate-dep-scan.md`](../backlog/005-gate-dep-scan.md)
 **Written:** 2026-06-04
-**Status:** stub — fleshed out fully when the task is picked up (before implementation)
+**Status:** ready for implementation
 
 ## Requirements coverage
 | Req ID | Test cases | Covered? |
 |--------|-----------|----------|
-| REQ-001 | TC-001 | ❌ |
-| REQ-002 | TC-001, TC-002 | ❌ |
-| REQ-003 | TC-002 | ❌ |
-| REQ-004 | TC-003 | ❌ |
+| REQ-001 | TC-001 | ✅ |
+| REQ-002 | TC-001, TC-002 | ✅ |
+| REQ-003 | TC-002 | ✅ |
+| REQ-004 | TC-003 | ✅ |
 
 ## Test cases
 ### TC-001: Clean module passes the scan step
 - **Requirement:** REQ-001, REQ-002
-- **Input:** Go module with no high+ severity findings (clean fixture or stubbed clean scanner output)
-- **Expected output:** Step ok
-- **Edge cases:** low/medium-only findings do not fail (define threshold in impl)
+- **Input:** temporary Go module plus a fake `gods` executable on PATH that exits 0 and records its working directory.
+- **Exercise:** run `DepScanStep.Run(cleanFixturePath)`.
+- **Expected output:** StepResult `OK == true`; `Name()` is `gods`; the fake scanner observes the supplied repoPath as its working directory.
+- **Edge cases:** low/medium-only findings are treated as a scanner concern; the Step passes when `gods` exits 0.
 
 ### TC-002: High+ severity finding fails the step
 - **Requirement:** REQ-002, REQ-003
-- **Input:** module with a known-vulnerable dependency (or stubbed scanner output reporting a high+ CVE)
-- **Expected output:** Step fails; StepResult output contains the finding
-- **Edge cases:** mixed findings — any single high+ fails
+- **Input:** temporary Go module plus a fake `gods` executable that prints a high-severity CVE finding and exits non-zero.
+- **Exercise:** run `DepScanStep.Run(vulnerableFixturePath)`.
+- **Expected output:** StepResult `OK == false`; `Output` contains combined stdout/stderr from the scanner, including the CVE identifier and high severity text.
+- **Edge cases:** mixed findings are represented by scanner output; any non-zero scanner exit fails the Step and preserves all emitted findings.
 
 ### TC-003: Missing dep-scan is a hard failure
 - **Requirement:** REQ-004
-- **Input:** PATH without dep-scan/`gods` (or stubbed lookpath miss)
-- **Expected output:** Step fails and names the missing tool; no skip route exercised
-- **Edge cases:** confirm there is no env/flag that converts absence into a pass
+- **Input:** PATH stripped to an empty temp directory before running the dep-scan Step.
+- **Exercise:** run `DepScanStep.Run(cleanFixturePath)` with no `gods` binary discoverable.
+- **Expected output:** StepResult `OK == false`; `Output` names `gods` and includes the lookup failure. There is no skip route that converts absence into a pass.
+- **Edge cases:** no environment variable or Step option disables the missing-tool failure.
 
 ## Notes
-Framework: Go `testing` (table-driven). Mocking: prefer a seam that lets tests inject a fake scanner runner returning canned output/exit code, so CVE assertions are deterministic without a live external tool; TC-003 asserts the hard-failure path explicitly.
+Framework: Go `testing`. Tests use fake `gods` executables in temporary PATH directories rather than a live vulnerability database, making CVE assertions deterministic and offline. The production Step still shells out to `gods` in the supplied repoPath. Harness command: `go test ./internal/gate/... -run TestDepScan`.

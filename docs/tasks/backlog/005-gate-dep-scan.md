@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** in progress
 
 ## Goal
 Add a blocking gate Step that invokes dep-scan (`gods` for Go modules) as a supply-chain CVE gate, failing on any high-or-above severity finding, with tool-absent treated as a hard failure rather than a silent skip.
@@ -23,9 +23,9 @@ Add a blocking gate Step that invokes dep-scan (`gods` for Go modules) as a supp
 | REQ-004 | A missing dep-scan/`gods` binary is a HARD failure (fail loud), never a silent skip — honoring the gate-is-blocking invariant | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 002
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 002
 
 ## Acceptance criteria
 - [ ] [REQ-001] The Step runs the `gods` Go scan against repoPath
