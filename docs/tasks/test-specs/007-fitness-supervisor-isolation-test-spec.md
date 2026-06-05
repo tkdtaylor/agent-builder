@@ -1,6 +1,6 @@
 # Test Spec 007: Fitness F-003 — supervisor has no LLM/untrusted-content dependency
 
-**Linked task:** [`docs/tasks/active/007-fitness-supervisor-isolation.md`](../active/007-fitness-supervisor-isolation.md)
+**Linked task:** [`docs/tasks/completed/007-fitness-supervisor-isolation.md`](../completed/007-fitness-supervisor-isolation.md)
 **Written:** 2026-06-04
 **Status:** ready for implementation
 

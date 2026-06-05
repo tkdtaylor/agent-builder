@@ -31,10 +31,13 @@ agent-builder is a Go orchestrator that runs an autonomous coding agent unattend
 6. **Executor seam is `(harness, model) → branch`.** Pluggable; mixing uneven-quality executors is made safe by the gate (fail → escalate to a stronger executor).
 7. **Secrets:** executor auth tokens may live in the box (accepted risk — flat-rate/no-overage + tight allowlist + revocability + scanners). vault is for *task* secrets, not executor auth.
 
-## Candidate fitness functions (to wire up)
+## Fitness functions
+
+- **F-003 — supervisor has no LLM/untrusted-content dependency:** implemented by `make fitness-supervisor-isolation`; the supervisor package import graph contains no executor/LLM/web-fetch packages.
+
+Candidate rules that are still declarative:
 
 - **F-001 — no Docker:** no `docker`/`docker-compose`/`Dockerfile` dev-env references in repo (substrate is rootless Podman; product container defs live under a named dir, not a dev container).
 - **F-002 — gate is blocking:** the verification path has no `--no-verify`/skip route around `dep-scan`/`code-scanner`.
-- **F-003 — supervisor has no LLM/untrusted-content dependency:** the supervisor package imports no executor/LLM/web-fetch code (it must stay dumb).
 
-These are declarative until implemented in `make fitness` per [fitness-functions.md](fitness-functions.md).
+See [fitness-functions.md](fitness-functions.md) for executable rule definitions and commands.

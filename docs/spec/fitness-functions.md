@@ -1,7 +1,7 @@
 # Fitness functions
 
 **Project:** agent-builder
-**Last updated:** 2026-06-04
+**Last updated:** 2026-06-05
 
 ## What this file is
 
@@ -39,15 +39,11 @@ For tool selection per language, see `references/fitness-functions.md` in the cr
 
 ## Rules
 
-> Replace these example rows with the rules that actually hold for agent-builder. Keep entries concrete: the rule must be checkable by a tool, and the threshold must be a number or a yes/no, not a vibe. Delete rules that are no longer load-bearing. Each row should be earnable — write a one-line *why* in the row's description so a future reader (or future-you) can tell whether the rule is still load-bearing.
+Keep entries concrete: the rule must be checkable by a tool, and the threshold must be a number or a yes/no, not a vibe. Delete rules that are no longer load-bearing. Each row should be earnable — write a one-line *why* in the row's description so a future reader (or future-you) can tell whether the rule is still load-bearing.
 
 | ID | Rule | Category | Asserts | Threshold | Check command | Severity | Why this rule earns its row |
 |----|------|----------|---------|-----------|---------------|----------|----------------------------|
-| F-001 | *(example) No cycles between top-level packages* | structural | Module import graph is acyclic at the package level | 0 cycles | `make fitness-no-cycles` | block | Cycles compound across changes; once they appear, they require a refactor to remove. Catch at first introduction. |
-| F-002 | *(example) Domain layer does not import infra* | layering | `src/domain/**` imports nothing from `src/infra/**` | 0 violations | `make fitness-layering` | block | The composability ADR commits to a one-way dependency. Drift here silently couples business rules to a specific store. |
-| F-003 | *(example) No production `print`/`println!`/`console.log` outside an approved logger* | hygiene | Production source contains no direct stdout calls | 0 hits | `make fitness-no-print` | block | Stray prints leak into prod output, bypass log routing/redaction, and mask which call sites are real instrumentation. |
-| F-004 | *(example) Cyclomatic complexity ceiling* | complexity | No function exceeds the complexity ceiling | ≤ 15 | `make fitness-complexity` | warn | Complexity above 15 correlates with bugs in this codebase's history; warn-only because exceptions sometimes have a reason. |
-| F-005 | *(example) Zero high-severity vulnerabilities* | security | Dependency scan reports no high or critical CVEs | 0 high+ | `make fitness-deps` | block | Shipping with a known-exploitable dependency is a security regression that must be visible at commit time. |
+| F-003 | Supervisor import graph has no executor/LLM/web-fetch dependency | structural | `go list -deps ./internal/supervisor/...` reports no package path segment named `executor`, `executors`, `llm`, `llms`, `web`, `webfetch`, or `web-fetch` | 0 violations | `make fitness-supervisor-isolation` | block | The supervisor is trusted host-side control code. Keeping executor, LLM, and untrusted-content fetch code out of its transitive imports preserves the "dumb supervisor" boundary. |
 
 Categories: `structural` (cycles, layering, dependency direction), `hygiene` (logging, leftovers, debug code), `performance` (latency, throughput, memory), `complexity` (cyclomatic, file size, fan-out), `security` (deps, surface, secrets), `coverage` (test coverage thresholds).
 
@@ -59,18 +55,13 @@ Severity:
 
 > Negative space matters as much as positive space. When a fitness rule is *proposed* and rejected, record it here so the same rule isn't re-proposed every six months. Keep this section short — if it grows long, the project is rejecting too many rules and the bar may be too high.
 
-| Proposed rule | Why rejected |
-|---------------|--------------|
-| *(example) Per-file LOC ceiling at 500* | Some files are intentionally large (state machines, generated code). A blanket ceiling produced more carve-outs than coverage. Replaced by the per-file-with-ADR-exemption pattern in F-002 instead. |
-| *(example) Test coverage ≥ 90%* | Coverage % is a lagging indicator that drives cosmetic test additions; the spec-coverage hook plus the spec-verifier agent give better signal at lower cost. |
+None recorded.
 
 ## Source-of-truth links
 
 > List which other spec files or ADRs each rule traces back to, so a reader can find the *why*.
 
-- F-002 (layering) ← `architecture.md` §Components, ADR-002 (composability decision)
-- F-003 (perf) ← `behaviors.md` B-001 (health-check contract)
-- F-005 (security deps) ← top-level invariants in [SPEC.md](SPEC.md)
+- F-003 (supervisor isolation) ← [SPEC.md](SPEC.md) §Fitness functions, [`architecture.md`](architecture.md) §4 Components, [`../architecture/overview.md`](../architecture/overview.md) §Components.
 
 ## Notes
 

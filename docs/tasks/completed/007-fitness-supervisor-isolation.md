@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** active (test spec written; implementation pending)
+**Status:** completed (code merged + green; pending formal spec-verifier pass before ✅)
 
 ## Goal
 Add a fitness check (`make fitness-supervisor-isolation`) that fails if `internal/supervisor`'s transitive import set contains any executor/LLM/web-fetch package, keeping the supervisor dumb by design so a hijacked in-box agent can never reach back through it.
@@ -27,10 +27,10 @@ Add a fitness check (`make fitness-supervisor-isolation`) that fails if `interna
 - [x] Blocking tasks complete: 001
 
 ## Acceptance criteria
-- [ ] [REQ-001] `make fitness-supervisor-isolation` exits 0 on the current clean tree and prints a pass message
-- [ ] [REQ-001] When a forbidden import is added under `internal/supervisor`, the target exits non-zero and names the offending package
-- [ ] [REQ-002] `make fitness` invokes `fitness-supervisor-isolation` as part of the umbrella run
-- [ ] [REQ-003] The F-003 row exists in `docs/spec/fitness-functions.md` and points to the `make fitness-supervisor-isolation` check command
+- [x] [REQ-001] `make fitness-supervisor-isolation` exits 0 on the current clean tree and prints a pass message
+- [x] [REQ-001] When a forbidden import is added under `internal/supervisor`, the target exits non-zero and names the offending package
+- [x] [REQ-002] `make fitness` invokes `fitness-supervisor-isolation` as part of the umbrella run
+- [x] [REQ-003] The F-003 row exists in `docs/spec/fitness-functions.md` and points to the `make fitness-supervisor-isolation` check command
 
 ## Verification plan
 - **Highest level achievable:** L3 — fitness rule run via Makefile target; not a unit-tested seam.
@@ -42,6 +42,13 @@ Add a fitness check (`make fitness-supervisor-isolation`) that fails if `interna
 ## Out of scope
 - Refactoring the supervisor itself (it is already isolated; this only guards it)
 - Defining the executor/LLM/web packages (they arrive in their own tasks) — the rule matches by package path pattern, not by a hard import
+
+## Verification evidence
+
+- **Positive fitness check:** `make fitness-supervisor-isolation` → `PASS fitness-supervisor-isolation: supervisor import graph contains no executor/LLM/web-fetch packages.`
+- **Negative fitness check:** temporary `internal/supervisor -> internal/supervisor/probe -> internal/webfetch` import chain made `make fitness-supervisor-isolation` fail and name `github.com/tkdtaylor/agent-builder/internal/webfetch`; temporary files removed before commit.
+- **Umbrella fitness:** `make fitness` → `Fitness checks passed.`
+- **Repo checks:** `go test ./...` → `ok github.com/tkdtaylor/agent-builder/internal/supervisor`; `go build ./...` → success; `env PATH=/tmp/agent-builder-tools:$PATH make check` → `All checks passed.`
 
 ## Notes
 - The forbidden set should be matched by package-path pattern (e.g. anything under an `executor`, `llm`, or `webfetch`/`web` package), so the rule keeps working as those packages are introduced without coupling this task to them.

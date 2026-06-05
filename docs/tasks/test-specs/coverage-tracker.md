@@ -18,7 +18,7 @@
 | 004 | golangci-lint gate step | 004-gate-golangci-lint-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test ./internal/gate/... -run TestGolangciLint -count=1` -> `ok github.com/tkdtaylor/agent-builder/internal/gate` |
 | 005 | dep-scan blocking gate step | 005-gate-dep-scan-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test ./internal/gate/... -run TestDepScan -count=1` -> `ok github.com/tkdtaylor/agent-builder/internal/gate` |
 | 006 | code-scanner blocking gate step | 006-gate-code-scanner-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test ./internal/gate/... -run TestCodeScanner -count=1` -> `ok github.com/tkdtaylor/agent-builder/internal/gate` |
-| 007 | Fitness F-003: supervisor isolation | 007-fitness-supervisor-isolation-test-spec.md | ✅ | ⏳ | — |
+| 007 | Fitness F-003: supervisor isolation | 007-fitness-supervisor-isolation-test-spec.md | ✅ | 🟡 | `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.` L3: `make fitness-supervisor-isolation` pass + negative import-chain failure named `github.com/tkdtaylor/agent-builder/internal/webfetch`; pending spec-verifier |
 | 008 | Fitness F-001: no-docker dev-env refs | 008-fitness-no-docker-test-spec.md | stub | ❌ | — |
 | 009 | Fitness F-002: gate is blocking (no skip) | 009-fitness-gate-blocking-test-spec.md | stub | ❌ | — |
 | 010 | Roadmap task-source reader (read-only) | 010-roadmap-task-source-test-spec.md | stub | ❌ | — |
