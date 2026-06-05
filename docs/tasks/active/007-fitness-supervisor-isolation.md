@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** active (test spec written; implementation pending)
 
 ## Goal
 Add a fitness check (`make fitness-supervisor-isolation`) that fails if `internal/supervisor`'s transitive import set contains any executor/LLM/web-fetch package, keeping the supervisor dumb by design so a hijacked in-box agent can never reach back through it.
@@ -22,9 +22,9 @@ Add a fitness check (`make fitness-supervisor-isolation`) that fails if `interna
 | REQ-003 | A row for F-003 is added to the Rules table in `docs/spec/fitness-functions.md` (structural; asserts supervisor import graph is free of executor/LLM/web packages; threshold 0 violations; severity block) | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 001
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 001
 
 ## Acceptance criteria
 - [ ] [REQ-001] `make fitness-supervisor-isolation` exits 0 on the current clean tree and prints a pass message
