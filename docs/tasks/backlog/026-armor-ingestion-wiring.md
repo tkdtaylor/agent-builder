@@ -12,7 +12,7 @@ Wire the armor guard adapter onto the repo-owned web-ingestion and tool-call pat
 - Authoritative design: `autonomous-builder.md` (§2 armor necessary from the start; §3 armor lowers injection likelihood on the ingestion path — it does NOT cover the disk-read exfil path, which is scanners + allowlist)
 - Roadmap: `docs/plans/roadmap.md` (Phase 0.6)
 - Related ADRs: ADR 024: armor ingestion and tool-call boundary
-- Dependencies: 024 (ingestion/tool-call boundary), 025 (armor guard adapter)
+- Dependencies: 024, 025, 027
 
 ## Requirements
 | Req ID | Description | Priority |
@@ -25,7 +25,7 @@ Wire the armor guard adapter onto the repo-owned web-ingestion and tool-call pat
 ## Readiness gate
 - [ ] Test spec exists in `docs/tasks/test-specs/`
 - [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 024 and 025
+- [ ] Blocking tasks complete: 024, 025, and 027
 
 ## Acceptance criteria
 - [ ] [REQ-001] Web-ingested content passes through the armor-backed boundary as a blocking step before reaching executor context.
@@ -61,3 +61,5 @@ Unblock this task by adding an executor-facing harness or CLI configuration
 that exposes interceptable web-ingestion and tool-call events to the task 024
 broker before the executor can use them. Prompt instructions alone are not a
 blocking control and do not satisfy ADR 024.
+
+Tracked as task 027.
