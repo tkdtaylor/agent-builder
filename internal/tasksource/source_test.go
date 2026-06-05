@@ -1,6 +1,7 @@
 package tasksource
 
 import (
+	"errors"
 	"io/fs"
 	"reflect"
 	"strings"
@@ -10,10 +11,11 @@ import (
 
 func TestCandidatesParseTaskFiles(t *testing.T) {
 	source := New(fixtureFS(map[string]string{
-		"docs/tasks/completed/001-one.md": taskFile("001", "agent-builder", "completed (verified L5)", "none"),
-		"docs/tasks/backlog/010-ready.md": taskFile("010", "exec-sandbox", "backlog", "001, 002"),
-		"docs/tasks/completed/002-two.md": taskFile("002", "agent-builder", "completed", "No blocking tasks"),
-		"docs/tasks/active/011-active.md": taskFile("011", "vault", "active", "010"),
+		"docs/tasks/completed/001-one.md":   taskFile("001", "agent-builder", "completed (verified L5)", "none"),
+		"docs/tasks/backlog/010-ready.md":   taskFile("010", "exec-sandbox", "backlog", "001, 002"),
+		"docs/tasks/completed/002-two.md":   taskFile("002", "agent-builder", "completed", "No blocking tasks"),
+		"docs/tasks/active/011-active.md":   taskFile("011", "vault", "active", "010"),
+		"docs/tasks/backlog/012-blocked.md": taskFile("012", "policy-engine", "⚠️ blocked", "010"),
 	}), DefaultRoadmapPath, DefaultTaskDirs...)
 
 	candidates, err := source.Candidates()
@@ -22,9 +24,15 @@ func TestCandidatesParseTaskFiles(t *testing.T) {
 	}
 
 	gotIDs := candidateIDs(candidates)
-	wantIDs := []string{"001", "002", "010", "011"}
+	wantIDs := []string{"001", "002", "010", "011", "012"}
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
 		t.Fatalf("candidate IDs = %v, want %v", gotIDs, wantIDs)
+	}
+	if len(candidates[0].Dependencies) != 0 {
+		t.Fatalf("Dependencies for none = %v, want empty", candidates[0].Dependencies)
+	}
+	if len(candidates[1].Dependencies) != 0 {
+		t.Fatalf("Dependencies for No blocking tasks = %v, want empty", candidates[1].Dependencies)
 	}
 
 	got := candidates[2]
@@ -42,6 +50,10 @@ func TestCandidatesParseTaskFiles(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got.Dependencies, []string{"001", "002"}) {
 		t.Fatalf("Dependencies = %v, want [001 002]", got.Dependencies)
+	}
+	blocked := candidates[4]
+	if blocked.Status != StatusBlocked {
+		t.Fatalf("blocked Status = %q, want %q", blocked.Status, StatusBlocked)
 	}
 }
 
@@ -154,6 +166,9 @@ func TestCandidatesRejectMalformedTaskMetadata(t *testing.T) {
 			if err == nil {
 				t.Fatal("Candidates() error = nil")
 			}
+			if !strings.Contains(err.Error(), "docs/tasks/backlog/010-bad.md") {
+				t.Fatalf("Candidates() error = %v, want bad file path", err)
+			}
 			if !strings.Contains(strings.ToLower(err.Error()), tc.want) {
 				t.Fatalf("Candidates() error = %v, want substring %q", err, tc.want)
 			}
@@ -189,6 +204,9 @@ func TestSourceUsesReadOnlyFilesystem(t *testing.T) {
 	if fsys.opens == 0 {
 		t.Fatal("expected read-side Open calls")
 	}
+	if fsys.writes != 0 {
+		t.Fatalf("write attempts = %d, want 0", fsys.writes)
+	}
 }
 
 func fixtureFS(tasks map[string]string) fstest.MapFS {
@@ -221,10 +239,21 @@ func candidateIDs(candidates []Candidate) []string {
 
 type readObservingFS struct {
 	fs.FS
-	opens int
+	opens  int
+	writes int
 }
 
 func (f *readObservingFS) Open(name string) (fs.File, error) {
 	f.opens++
 	return f.FS.Open(name)
+}
+
+func (f *readObservingFS) Create(name string) (fs.File, error) {
+	f.writes++
+	return nil, errors.New("write attempted: create " + name)
+}
+
+func (f *readObservingFS) OpenFile(name string, flag int, perm fs.FileMode) (fs.File, error) {
+	f.writes++
+	return nil, errors.New("write attempted: openfile " + name)
 }
