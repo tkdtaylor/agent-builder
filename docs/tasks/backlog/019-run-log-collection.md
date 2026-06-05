@@ -22,9 +22,9 @@ The supervisor streams the box's stdout/stderr plus a command log out to a durab
 | REQ-003 | The record persists and is readable after box teardown | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 017
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 017
 
 ## Acceptance criteria
 - [ ] [REQ-001] A `RunRecord` is defined as a plain-text / NDJSON wire format; `docs/spec/data-model.md` documents it in the same commit
