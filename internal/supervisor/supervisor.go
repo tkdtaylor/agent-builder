@@ -42,11 +42,11 @@ type Gate interface {
 }
 
 // Supervisor is the outside-the-box dispatcher.
-type Supervisor struct {
-	// allowlist is the default-deny egress allowlist — the load-bearing control
-	// for the accepted token-in-box risk (see docs/spec/configuration.md).
-	allowlist []string
-}
+//
+// The default-deny egress allowlist — the load-bearing control for the accepted
+// token-in-box risk (see docs/spec/configuration.md) — will be added here in the
+// containment task (Phase 0.3), when something actually enforces it.
+type Supervisor struct{}
 
 // New returns a Supervisor with default (empty) configuration.
 func New() *Supervisor {
