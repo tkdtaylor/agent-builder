@@ -14,7 +14,7 @@
 |---------|---------|-----------|---------------|--------|-------------|
 | 001 | Walking skeleton & project setup | 001-walking-skeleton-test-spec.md | ✅ | 🟡 | — (pending spec-verifier) |
 | 002 | Gate orchestrator core + Verdict model | 002-gate-orchestrator-core-test-spec.md | ✅ | 🟡 | `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.` Unit-test-only; no runtime surface |
-| 003 | Native Go gate steps (build/vet/test/gofmt) | 003-gate-go-checks-test-spec.md | stub | ❌ | — |
+| 003 | Native Go gate steps (build/vet/test/gofmt) | 003-gate-go-checks-test-spec.md | ✅ | ⏳ | — |
 | 004 | golangci-lint gate step | 004-gate-golangci-lint-test-spec.md | stub | ❌ | — |
 | 005 | dep-scan blocking gate step | 005-gate-dep-scan-test-spec.md | stub | ❌ | — |
 | 006 | code-scanner blocking gate step | 006-gate-code-scanner-test-spec.md | stub | ❌ | — |

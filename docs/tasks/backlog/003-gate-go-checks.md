@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** in progress
 
 ## Goal
 Implement gate Steps that shell out to `go build ./...`, `go vet ./...`, `go test ./...`, and `gofmt -l .` against the target worktree, each blocking and failing (with captured output) on non-zero exit or non-empty `gofmt -l` output.
@@ -23,9 +23,9 @@ Implement gate Steps that shell out to `go build ./...`, `go vet ./...`, `go tes
 | REQ-004 | A missing tool on PATH is a hard step failure (fail loud), never a silent pass | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 002
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 002
 
 ## Acceptance criteria
 - [ ] [REQ-001] Four distinct Steps exist, each invoking its tool in the supplied repoPath
