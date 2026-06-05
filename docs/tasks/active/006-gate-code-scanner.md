@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** active (code complete; pending verification)
+**Status:** active (verified L5; pending merge)
 
 ## Goal
 Add a blocking gate Step that invokes code-scanner (malware / backdoor / credential-harvest scan) over the produced diff/worktree, failing the gate on findings, with tool-absent treated as a hard failure rather than a silent skip.
@@ -42,7 +42,9 @@ Add a blocking gate Step that invokes code-scanner (malware / backdoor / credent
 
 ## Verification evidence
 
-- **Pending:** full repo checks, read-only spec-verifier pass, and L5 harness evidence.
+- **Level 5 — validation harness:** `go test ./internal/gate/... -run TestCodeScanner -count=1` → `ok github.com/tkdtaylor/agent-builder/internal/gate`
+- **Repo checks:** `go test ./...` → `ok github.com/tkdtaylor/agent-builder/internal/gate`; `go build ./...` → success; `env PATH=/tmp/agent-builder-tools:$PATH make check` → `All checks passed.`
+- **Spec-verifier:** read-only worker verifier APPROVE — all TC/REQ assertions satisfied; docs/spec behavior, interface, data-model, architecture, and diagram updates aligned.
 
 ## Out of scope
 - dep-scan step (005)
