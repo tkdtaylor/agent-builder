@@ -2,34 +2,37 @@
 
 **Linked task:** [`docs/tasks/backlog/006-gate-code-scanner.md`](../backlog/006-gate-code-scanner.md)
 **Written:** 2026-06-04
-**Status:** stub — fleshed out fully when the task is picked up (before implementation)
+**Status:** ready for implementation
 
 ## Requirements coverage
 | Req ID | Test cases | Covered? |
 |--------|-----------|----------|
-| REQ-001 | TC-001 | ❌ |
-| REQ-002 | TC-001, TC-002 | ❌ |
-| REQ-003 | TC-002 | ❌ |
-| REQ-004 | TC-003 | ❌ |
+| REQ-001 | TC-001 | ✅ |
+| REQ-002 | TC-001, TC-002 | ✅ |
+| REQ-003 | TC-002 | ✅ |
+| REQ-004 | TC-003 | ✅ |
 
 ## Test cases
 ### TC-001: Clean worktree passes the scan step
 - **Requirement:** REQ-001, REQ-002
-- **Input:** clean worktree fixture (or stubbed clean scanner output)
-- **Expected output:** Step ok
-- **Edge cases:** empty diff (define behaviour — scan worktree vs diff)
+- **Input:** temporary repository worktree plus a fake `code-scanner` executable on PATH that exits 0 and records its working directory.
+- **Exercise:** run `CodeScannerStep.Run(cleanFixturePath)`.
+- **Expected output:** StepResult `OK == true`; `Name()` is `code-scanner`; the fake scanner observes the supplied repoPath as its working directory.
+- **Edge cases:** empty diff is not special-cased by the Step; the Step scans the supplied worktree and trusts `code-scanner`'s clean exit.
 
 ### TC-002: Flagged pattern fails the step with captured output
 - **Requirement:** REQ-002, REQ-003
-- **Input:** worktree containing a benign-but-flagged pattern (e.g. a credential-harvest-shaped snippet) or stubbed scanner output reporting a finding
-- **Expected output:** Step fails; StepResult output contains the finding
-- **Edge cases:** multiple findings all surfaced
+- **Input:** temporary repository worktree plus a fake `code-scanner` executable that prints malware/backdoor/credential-harvest findings to stdout and stderr and exits non-zero.
+- **Exercise:** run `CodeScannerStep.Run(flaggedFixturePath)`.
+- **Expected output:** StepResult `OK == false`; `Output` contains combined stdout/stderr from the scanner, including each emitted finding.
+- **Edge cases:** mixed stdout/stderr findings are preserved; any non-zero scanner exit fails the Step.
 
 ### TC-003: Missing code-scanner is a hard failure
 - **Requirement:** REQ-004
-- **Input:** PATH without code-scanner (or stubbed lookpath miss)
-- **Expected output:** Step fails and names the missing tool; no skip route exercised
-- **Edge cases:** confirm there is no env/flag that converts absence into a pass
+- **Input:** PATH stripped to an empty temp directory before running the code-scanner Step.
+- **Exercise:** run `CodeScannerStep.Run(cleanFixturePath)` with no `code-scanner` binary discoverable.
+- **Expected output:** StepResult `OK == false`; `Output` names `code-scanner` and includes the lookup failure. There is no skip route that converts absence into a pass.
+- **Edge cases:** no environment variable or Step option disables the missing-tool failure.
 
 ## Notes
-Framework: Go `testing` (table-driven). Mocking: inject a fake scanner runner returning canned findings/exit code so assertions are deterministic without a live external tool; TC-003 asserts the hard-failure path explicitly.
+Framework: Go `testing`. Tests use fake `code-scanner` executables in temporary PATH directories rather than a live malware signature database, making scanner assertions deterministic and offline. The production Step still shells out to `code-scanner` in the supplied repoPath. Harness command: `go test ./internal/gate/... -run TestCodeScanner`.
