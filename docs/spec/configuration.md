@@ -87,6 +87,11 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `AGENT_BUILDER_RUN_RECORD` | path | disabled | no | Host-side RunRecord NDJSON path for `agent-builder run`; blank disables record writing without disabling dispatch |
 | `AGENT_BUILDER_RUN_TIMEOUT` | duration string | none | yes for `agent-builder run` | Explicit supervisor wall-clock timeout and sandbox request timeout for one default run |
 | `AGENT_BUILDER_MAX_ATTEMPTS` | non-negative integer | none | yes for `agent-builder run` | Explicit bounded retry attempt count for the selected task |
+| `AGENT_BUILDER_PUBLISH_REMOTE` | string | none | yes for `agent-builder run` | Git remote name or URL used by the branch publisher after Gate success |
+| `AGENT_BUILDER_GIT_CLI` | path/name | `git` | no | Git executable used by branch publication |
+| `AGENT_BUILDER_GH_CLI` | path/name | `gh` | no | GitHub CLI executable used to find or create the PR artifact |
+| `AGENT_BUILDER_GIT_TOKEN` | secret string | none | no | Optional token exposed to the publication subprocess as `GIT_TOKEN` and redacted from publisher errors/run records |
+| `AGENT_BUILDER_GITHUB_TOKEN` | secret string | none | no | Optional token exposed to the publication subprocess as `GH_TOKEN` and `GITHUB_TOKEN` and redacted from publisher errors/run records |
 
 **Hook profile env vars** (consumed by `.claude/scripts/`, not the application itself):
 - `CLAUDE_HOOK_PROFILE` — `minimal` / `standard` / `strict` (default `standard`)
@@ -126,6 +131,12 @@ The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.m
 | `executorharness.ArmorConfig.Armor` | `armor.Config` | zero value | no | Armor runner/command settings used by `NewArmorGuarded`. Zero value is accepted but fails closed at review time because armor is unavailable. |
 | `executorharness.ArmorConfig.BrokerTimeout` | `time.Duration` | disabled (`0`) | no | Optional timeout around the ingestion broker review in the armor-guarded executor harness. Positive values produce fail-closed block decisions on timeout. |
 | `executorharness.ArmorConfig.Trace` | `executorharness.TraceRecorder` | nil | no | Optional in-process trace sink for producer-consumer evidence; nil disables trace recording without changing allow/block behavior. |
+| `publisher.GitHubCLIConfig.GitPath` | string | `git` | no | Git executable used to push a verified branch to the configured remote. |
+| `publisher.GitHubCLIConfig.GHPath` | string | `gh` | no | GitHub CLI executable used to find or create the PR artifact. |
+| `publisher.GitHubCLIConfig.Worktree` | path string | none | yes | Target repo worktree used as the command directory for git and GitHub CLI publication. |
+| `publisher.GitHubCLIConfig.Remote` | string | none | yes | Git remote name or URL used for `git push`. Blank values fail publication before subprocess start. |
+| `publisher.GitHubCLIConfig.GitToken` | secret string | none | no | Optional publication token passed to subprocesses as `GIT_TOKEN` and redacted from surfaced command output. |
+| `publisher.GitHubCLIConfig.GitHubToken` | secret string | none | no | Optional publication token passed to subprocesses as `GH_TOKEN` and `GITHUB_TOKEN` and redacted from surfaced command output. |
 | `runtime.Config` | struct | none | yes for default `run` | Host-side assembly input for one Phase 0 run. Environment variables are parsed into this struct by `runtime.ConfigFromEnv`; tests may construct it directly. |
 
 ---
@@ -137,8 +148,8 @@ The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.m
 | Secret | Source | Used for |
 |--------|--------|----------|
 | `ANTHROPIC_API_KEY` | Host environment or sandbox secret store | Claude Code CLI executor auth. The value must be independently revocable and is injected only as a subprocess environment variable. The executor does not read arbitrary host-home credential files by default; it runs the CLI with temporary `HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME` directories and does not log token values. |
-| `GIT_TOKEN` | Host environment or sandbox secret store | Pushing commits from the executor environment |
-| | | |
+| `AGENT_BUILDER_GIT_TOKEN` | Host environment or sandbox secret store | Optional git publication token copied to publisher subprocesses as `GIT_TOKEN` and redacted from publisher errors/run records. |
+| `AGENT_BUILDER_GITHUB_TOKEN` | Host environment or sandbox secret store | Optional GitHub publication token copied to publisher subprocesses as `GH_TOKEN` and `GITHUB_TOKEN` and redacted from publisher errors/run records. |
 
 **Rule:** secrets are never pasted into the chat, never logged, and never written into the repo. The `protect-secrets` hook blocks writes to common credential filenames.
 

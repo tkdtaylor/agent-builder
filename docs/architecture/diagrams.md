@@ -26,11 +26,15 @@ C4Context
     System_Ext(claudeCLI, "Claude Code CLI", "Cloud executor harness/model subprocess")
     System_Ext(sandboxRuntime, "@anthropic-ai/sandbox-runtime", "Rented bootstrap isolation CLI")
     System_Ext(codeScanner, "code-scanner", "Malware/backdoor scanner used as a blocking gate step")
+    System_Ext(gitCLI, "git", "Version-control CLI used to push verified branches")
+    System_Ext(ghCLI, "GitHub CLI", "CLI used to look up or create PR artifacts")
 
     Rel(user, system, "Uses")
     Rel(system, claudeCLI, "Runs", "process PATH")
     Rel(system, sandboxRuntime, "Runs", "srt --settings")
     Rel(system, codeScanner, "Runs", "process PATH")
+    Rel(system, gitCLI, "Runs", "git push")
+    Rel(system, ghCLI, "Runs", "gh pr")
 ```
 
 ---
@@ -70,6 +74,8 @@ C4Component
     System_Ext(claudeCLI, "Claude Code CLI", "Cloud executor harness/model subprocess")
     System_Ext(sandboxRuntime, "@anthropic-ai/sandbox-runtime", "Rented bootstrap isolation CLI")
     System_Ext(armorTool, "armor", "External LLM guard process/service")
+    System_Ext(gitCLI, "git", "Version-control CLI")
+    System_Ext(ghCLI, "GitHub CLI", "PR artifact CLI")
 
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
@@ -85,6 +91,7 @@ C4Component
         Component(tasksource, "Task Source", "internal/tasksource", "Read-only roadmap/task parser and next-task selector")
         Component(statuswriter, "Task Status Writer", "internal/tasksource", "Constrained task status mutation")
         Component(gate, "Verification Gate", "internal/gate", "Ordered blocking checks with structured Verdicts")
+        Component(publisher, "Branch Publisher", "internal/publisher", "Pushes verified branches and records PR artifacts")
     }
 
     Rel(main, runtime, "Runs default pipeline")
@@ -94,6 +101,7 @@ C4Component
     Rel(runtime, sandboxRuntimeAdapter, "Constructs")
     Rel(runtime, agentloop, "Constructs retrying in-box loop")
     Rel(runtime, statuswriter, "Constructs for escalation")
+    Rel(runtime, publisher, "Constructs for post-Gate publication")
     Rel(runtime, supervisor, "Starts configured Run")
     Rel(supervisor, sandbox, "Stores Runner / box seam")
     Rel(sandboxRuntimeAdapter, sandbox, "Implements Runner seam")
@@ -113,6 +121,8 @@ C4Component
     Rel(agentloop, gate, "Verifies target worktree")
     Rel(tasksource, supervisor, "Uses Task model")
     Rel(gate, codeScanner, "Runs in target worktree")
+    Rel(publisher, gitCLI, "Pushes branch")
+    Rel(publisher, ghCLI, "Finds or creates PR")
 ```
 
 **Key contracts**
@@ -130,6 +140,7 @@ C4Component
 - Task 017 fixes the supervisor dispatch lifecycle: create one box, run one in-box loop, and tear the box down exactly once.
 - Task 019 fixes the run-record seam: command/stdout/stderr events stream to host-side NDJSON and close before box teardown.
 - Task 028 fixes the default CLI run wiring: `internal/runtime` parses explicit environment configuration, selects one ready task, composes the Phase 0 adapters, and calls the supervisor without adding executor/web/LLM imports to `internal/supervisor`.
+- Task 034 fixes branch and PR publication: `internal/publisher` pushes only Gate-verified non-empty branches and records PR artifact evidence with publication-token redaction.
 - The supervisor remains trusted and dumb; the gate contains verification orchestration only, not executor/LLM/web logic.
 - The task source is read-only and only selects tasks; the task status writer is the separate constrained mutation component.
 - ADR 014 defines the execution-box profile artifact; supervisor wiring to launch it is deferred to the dispatch task.
@@ -154,6 +165,7 @@ sequenceDiagram
     participant Executor
     participant EscalationHook as Escalation Hook
     participant Gate as Verification Gate
+    participant Publisher as Branch Publisher
     participant RunRecord as RunRecord NDJSON
     participant StatusWriter as Task Status Writer
     participant Roadmap as docs/plans/roadmap.md
@@ -188,7 +200,9 @@ sequenceDiagram
             AgentLoop->>EscalationHook: select next Executor
             EscalationHook-->>AgentLoop: Executor
         else Gate passed
-            AgentLoop-->>Supervisor: RetryOutcome{done branch}
+            AgentLoop->>Publisher: Publish(Task, branch, remote)
+            Publisher-->>AgentLoop: PR URL or ID
+            AgentLoop-->>Supervisor: completed with branch + PR evidence
         end
     end
     alt failures exhausted

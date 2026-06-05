@@ -241,11 +241,11 @@ timed-out     configured wall-clock timeout expired and the supervisor attempted
 
 ### State: Default Run Wiring
 
-- **Shape:** `runtime.Config` stores the task root, target worktree, Claude CLI executable, Claude token, sandbox-runtime executable, optional RunRecord path, supervisor timeout, and max-attempt bound for one `agent-builder run` invocation.
+- **Shape:** `runtime.Config` stores the task root, target worktree, Claude CLI executable, Claude token, sandbox-runtime executable, optional RunRecord path, supervisor timeout, max-attempt bound, publish remote, git/GitHub CLI paths, and optional publication tokens for one `agent-builder run` invocation.
 - **Owner:** `internal/cli` calls `runtime.RunFromEnv` for the default `run` subcommand path. Tests may construct `runtime.Config` directly or invoke the binary with fake process shims.
 - **Lifetime:** process-local; parsed once per CLI invocation and discarded after the run returns.
 - **Concurrency rules:** one invocation owns one selected task and one configured worktree. Concurrent runs require external branch/worktree isolation.
-- **Bounds:** one invocation selects at most one ready task. If no task is ready, it returns idle before creating a box or running an Executor.
+- **Bounds:** one invocation selects at most one ready task. If no task is ready, it returns idle before creating a box, running an Executor, or publishing a branch.
 
 #### Value: `runtime.Config`
 
@@ -260,11 +260,52 @@ SandboxRuntime  string           srt executable path/name for sandbox-runtime ad
 RunRecordPath   string           optional NDJSON output path
 RunTimeout      time.Duration    explicit wall-clock bound for one supervisor run
 MaxAttempts     int              non-negative retry attempt bound
+PublishRemote   string           git remote name or URL used for branch push
+GitCLI          string           git executable path/name; blank environment defaults to git
+GitHubCLI       string           gh executable path/name; blank environment defaults to gh
+GitToken        string           optional git publication token
+GitHubToken     string           optional GitHub CLI publication token
 ```
 
 - **Lifecycle:** produced by `runtime.ConfigFromEnv` or tests, consumed by `runtime.Run`.
-- **Relationships:** composes `tasksource.Source`, `executor.ClaudeCLI`, production `gate.Gate`, `sandboxruntime.Runner`, supervisor dispatch seams, `loop.RetryingLoop`, and `tasksource.StatusWriter`.
-- **Failure behavior:** missing required fields fail as configuration errors before Executor attempt. Gate failures after an Executor attempt are surfaced through RunRecord stderr evidence and a failed terminal outcome.
+- **Relationships:** composes `tasksource.Source`, `executor.ClaudeCLI`, production `gate.Gate`, `sandboxruntime.Runner`, supervisor dispatch seams, `loop.RetryingLoop`, `tasksource.StatusWriter`, and `publisher.GitHubCLI`.
+- **Failure behavior:** missing required fields fail as configuration errors before Executor attempt. Gate failures after an Executor attempt are surfaced through RunRecord stderr evidence and a failed terminal outcome. Publication failures after Gate success are surfaced through RunRecord stderr evidence and a failed terminal outcome without writing `done`.
+
+### State: Branch Publisher
+
+- **Shape:** `*publisher.GitHubCLI` stores git and GitHub CLI executable paths, the target worktree, the publish remote, and optional in-memory git/GitHub token values.
+- **Owner:** default run wiring constructs the publisher through `publisher.NewGitHubCLI` and passes it to the in-box retry wiring.
+- **Lifetime:** process-local; no publisher state is persisted. Each `Publish` call starts at most one `git push`, one `gh pr view`, and, when no existing PR is found, one `gh pr create`.
+- **Concurrency rules:** no internal synchronization is provided. Callers should give each concurrent task run its own publisher instance or otherwise ensure the configured worktree is not shared unsafely.
+- **Bounds:** one `Publish` call operates on exactly one branch and one remote.
+
+#### Value: `publisher.Request`
+
+```
+field       type              notes
+────────────────────────────────────────────────────────────
+Task        supervisor.Task   task whose branch is being published
+Worktree    string            target repo worktree used as command directory
+Branch      string            non-blank verified executor branch
+Remote      string            non-blank git remote name or URL
+```
+
+- **Identity:** scoped to one publication attempt for one task branch.
+- **Lifecycle:** produced by runtime wiring only after Executor success and Gate pass; consumed by `publisher.Publisher`.
+- **Relationships:** `Branch` is copied from `loop.RetryOutcome.Branch`. Blank branch and blank remote fail before a git or GitHub CLI command is invoked.
+
+#### Value: `publisher.Result`
+
+```
+field       type      notes
+────────────────────────────────────────────────────────────
+Branch      string    published branch
+PRURL       string    PR URL when the publisher can parse one
+PRID        string    PR identifier or PR number when available
+```
+
+- **Lifecycle:** produced by the publisher after push plus existing-PR lookup or PR creation; consumed by runtime wiring for stdout and RunRecord evidence.
+- **Relationships:** `PRURL` or `PRID` is the PR artifact recorded for Phase 0 branch publication.
 
 ### State: Agent Loop
 

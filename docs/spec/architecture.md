@@ -37,6 +37,8 @@ When the structure changes, both files update in the same commit. The tables her
 | @anthropic-ai/sandbox-runtime | External CLI | Rented bootstrap isolation runtime invoked through `srt --settings` behind the exec-sandbox run adapter seam | Anthropic experimental |
 | armor | External CLI/service | LLM guard invoked behind the ingestion boundary to classify content and tool-call candidates | External tool |
 | code-scanner | External CLI | Malware/backdoor/credential-harvest scanner invoked as a blocking gate step | Tooling environment |
+| git | External CLI | Version-control CLI used to push verified executor branches to the configured remote | Tooling environment |
+| GitHub CLI | External CLI | `gh pr` CLI used to look up or create PR artifacts for verified branches | GitHub |
 
 ---
 
@@ -63,7 +65,7 @@ When the structure changes, both files update in the same commit. The tables her
 | Container | Component | Source path | Responsibility | Depends on |
 |-----------|-----------|-------------|----------------|------------|
 | agent-builder CLI | Supervisor | `internal/supervisor` | Trusted outside-the-box dispatcher that creates one containment box, starts one in-box loop, streams run output to a durable run-record when configured, logs lifecycle events, and tears down deterministically | Verification Gate model; exec-sandbox Run Adapter |
-| agent-builder CLI | Default Run Wiring | `internal/runtime` | Host-side CLI bootstrap that parses explicit run configuration, selects one ready task, composes concrete Phase 0 adapters, and hands one configured task to the Supervisor | Supervisor; Task Source; Task Status Writer; Agent Loop; Claude CLI Executor; Verification Gate; sandbox-runtime Adapter |
+| agent-builder CLI | Default Run Wiring | `internal/runtime` | Host-side CLI bootstrap that parses explicit run configuration, selects one ready task, composes concrete Phase 0 adapters, and hands one configured task to the Supervisor | Supervisor; Task Source; Task Status Writer; Agent Loop; Claude CLI Executor; Verification Gate; sandbox-runtime Adapter; Branch Publisher |
 | agent-builder CLI | Agent Loop | `internal/loop` | Drives one inside-the-box pick -> attempt -> verify cycle and applies the bounded retry/escalation policy around that policy-free outcome | Supervisor; Task Source; Task Status Writer; Verification Gate |
 | agent-builder CLI | Ingestion Boundary | `internal/ingestion` | Defines typed web-content and tool-call candidates plus the guard/broker seam that releases only allowed candidates to the executor path | |
 | agent-builder CLI | Armor Guard Adapter | `internal/armor` | Adapts an external armor-compatible process/service to the ingestion guard decision model without vendoring armor source | Ingestion Boundary; armor |
@@ -74,6 +76,7 @@ When the structure changes, both files update in the same commit. The tables her
 | agent-builder CLI | Verification Gate | `internal/gate` | Runs ordered blocking verification Steps and returns structured Verdicts | code-scanner |
 | agent-builder CLI | Task Source | `internal/tasksource` | Reads roadmap/task metadata and selects the next ready task without writing task state | Supervisor Task model |
 | agent-builder CLI | Task Status Writer | `internal/tasksource` | Writes constrained task status markers such as `needs-human` without changing task prose | |
+| agent-builder CLI | Branch Publisher | `internal/publisher` | Pushes Gate-verified non-empty executor branches and records an existing or newly-created PR artifact with token redaction | Supervisor Task model; git; GitHub CLI |
 
 ---
 
@@ -94,6 +97,7 @@ When the structure changes, both files update in the same commit. The tables her
 - Task 017: Supervisor dispatch lifecycle — one task per `Run()`, create -> run-inside -> teardown ordering, teardown-on-error, and recovered-panic teardown.
 - Task 019: RunRecord collection — host-side NDJSON run record captures command/stdout/stderr stream events during `RunInside`, writes terminal outcomes, and closes before teardown.
 - Task 028: Default run wiring — `agent-builder run` composes the concrete Phase 0 task source, Executor, Gate, sandbox-runtime adapter, retrying loop, timeout, and optional RunRecord path from explicit environment configuration while preserving supervisor isolation.
+- Task 034: Branch and PR publication — default run wiring publishes only Gate-verified non-empty branches through the fakeable publisher seam and records PR artifact evidence without logging configured publication tokens.
 
 ---
 

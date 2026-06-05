@@ -8,7 +8,7 @@
 
 ## System summary
 
-agent-builder is a Go orchestrator that runs an autonomous coding agent unattended to build the secure-agent ecosystem blocks. In the current Phase 0 implementation it can read ready task metadata, route one task through the Claude CLI executor seam, run the attempt through sandbox-runtime-backed containment wiring, verify the result with the machine-checkable Gate, record run evidence, and escalate exhausted attempts through the constrained task-status writer. Branch and PR publication is not implemented yet.
+agent-builder is a Go orchestrator that runs an autonomous coding agent unattended to build the secure-agent ecosystem blocks. In the current Phase 0 implementation it can read ready task metadata, route one task through the Claude CLI executor seam, run the attempt through sandbox-runtime-backed containment wiring, verify the result with the machine-checkable Gate, publish the verified non-empty branch as a PR artifact through the git/GitHub CLI publisher seam, record run evidence, and escalate exhausted attempts through the constrained task-status writer.
 
 ## Spec index
 

@@ -2,6 +2,7 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/executor"
 	"github.com/tkdtaylor/agent-builder/internal/gate"
 	agentloop "github.com/tkdtaylor/agent-builder/internal/loop"
+	branchpub "github.com/tkdtaylor/agent-builder/internal/publisher"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox/sandboxruntime"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
@@ -27,6 +29,11 @@ const (
 	EnvRunRecord      = "AGENT_BUILDER_RUN_RECORD"
 	EnvRunTimeout     = "AGENT_BUILDER_RUN_TIMEOUT"
 	EnvMaxAttempts    = "AGENT_BUILDER_MAX_ATTEMPTS"
+	EnvPublishRemote  = "AGENT_BUILDER_PUBLISH_REMOTE"
+	EnvGitCLI         = "AGENT_BUILDER_GIT_CLI"
+	EnvGitHubCLI      = "AGENT_BUILDER_GH_CLI"
+	EnvGitToken       = "AGENT_BUILDER_GIT_TOKEN"
+	EnvGitHubToken    = "AGENT_BUILDER_GITHUB_TOKEN"
 )
 
 // Config is the explicit runtime configuration used by agent-builder run.
@@ -39,6 +46,11 @@ type Config struct {
 	RunRecordPath  string
 	RunTimeout     time.Duration
 	MaxAttempts    int
+	PublishRemote  string
+	GitCLI         string
+	GitHubCLI      string
+	GitToken       string
+	GitHubToken    string
 }
 
 // RunFromEnv builds and runs one configured Phase 0 pipeline from environment
@@ -60,9 +72,20 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		ClaudeToken:    getenv(executor.ClaudeCLIAuthEnv),
 		SandboxRuntime: cleanPath(getenv(EnvSandboxRuntime)),
 		RunRecordPath:  cleanPath(getenv(EnvRunRecord)),
+		PublishRemote:  strings.TrimSpace(getenv(EnvPublishRemote)),
+		GitCLI:         strings.TrimSpace(getenv(EnvGitCLI)),
+		GitHubCLI:      strings.TrimSpace(getenv(EnvGitHubCLI)),
+		GitToken:       getenv(EnvGitToken),
+		GitHubToken:    getenv(EnvGitHubToken),
 	}
 	if config.ClaudeCLI == "" {
 		config.ClaudeCLI = "claude"
+	}
+	if config.GitCLI == "" {
+		config.GitCLI = "git"
+	}
+	if config.GitHubCLI == "" {
+		config.GitHubCLI = "gh"
 	}
 
 	if config.TaskRoot == "" {
@@ -76,6 +99,9 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	}
 	if config.SandboxRuntime == "" {
 		return Config{}, missingConfig(EnvSandboxRuntime)
+	}
+	if config.PublishRemote == "" {
+		return Config{}, missingConfig(EnvPublishRemote)
 	}
 
 	timeoutRaw := strings.TrimSpace(getenv(EnvRunTimeout))
@@ -148,6 +174,19 @@ func Run(config Config, stdout io.Writer) error {
 		worktree:     config.Worktree,
 		statusWriter: tasksource.NewStatusWriter(config.TaskRoot, tasksource.DefaultTaskDirs...),
 		policy:       policy,
+		publisher: branchpub.NewGitHubCLI(branchpub.GitHubCLIConfig{
+			GitPath:     config.GitCLI,
+			GHPath:      config.GitHubCLI,
+			Worktree:    config.Worktree,
+			Remote:      config.PublishRemote,
+			GitToken:    config.GitToken,
+			GitHubToken: config.GitHubToken,
+		}),
+		publishRemote: config.PublishRemote,
+		publishSecrets: []string{
+			config.GitToken,
+			config.GitHubToken,
+		},
 	}
 
 	options := []supervisor.Option{
@@ -236,11 +275,14 @@ func (b sandboxBox) Teardown(supervisor.BoxHandle) error {
 }
 
 type retryingInBoxLoop struct {
-	executor     supervisor.Executor
-	gate         supervisor.Gate
-	worktree     string
-	statusWriter agentloop.StatusWriter
-	policy       agentloop.RetryPolicy
+	executor       supervisor.Executor
+	gate           supervisor.Gate
+	worktree       string
+	statusWriter   agentloop.StatusWriter
+	policy         agentloop.RetryPolicy
+	publisher      branchpub.Publisher
+	publishRemote  string
+	publishSecrets []string
 }
 
 func (l retryingInBoxLoop) RunInside(_ supervisor.BoxHandle, task supervisor.Task, streams supervisor.RunStreams) error {
@@ -268,7 +310,27 @@ func (l retryingInBoxLoop) RunInside(_ supervisor.BoxHandle, task supervisor.Tas
 	case agentloop.RetryOutcomeDone:
 		writeStdout(streams, "executor attempt completed: branch=%s\n", outcome.Branch)
 		writeStdout(streams, "gate passed: %s\n", summarizeVerdict(outcome.LastOutcome.Verdict))
-		writeCommand(streams, "finish task %s outcome=completed branch=%s", task.ID, outcome.Branch)
+		writeCommand(streams, "publish branch %s remote=%s", outcome.Branch, l.redact(l.publishRemote))
+		if l.publisher == nil {
+			return fmt.Errorf("run: publish task %s: missing publisher", task.ID)
+		}
+		result, err := l.publisher.Publish(context.Background(), branchpub.Request{
+			Task:     task,
+			Worktree: l.worktree,
+			Branch:   outcome.Branch,
+			Remote:   l.publishRemote,
+		})
+		if err != nil {
+			message := l.redact(err.Error())
+			writeStderr(streams, "publication failed: %s\n", message)
+			return fmt.Errorf("run: publish task %s: %s", task.ID, message)
+		}
+		prArtifact := result.PRURL
+		if prArtifact == "" {
+			prArtifact = result.PRID
+		}
+		writeStdout(streams, "publication recorded: branch=%s pr=%s\n", outcome.Branch, l.redact(prArtifact))
+		writeCommand(streams, "finish task %s outcome=completed branch=%s pr=%s", task.ID, outcome.Branch, l.redact(prArtifact))
 		return nil
 	case agentloop.RetryOutcomeEscalated:
 		writeFailureEvidence(streams, outcome.LastOutcome)
@@ -280,6 +342,10 @@ func (l retryingInBoxLoop) RunInside(_ supervisor.BoxHandle, task supervisor.Tas
 	default:
 		return fmt.Errorf("run: unexpected retry outcome %q", outcome.Kind)
 	}
+}
+
+func (l retryingInBoxLoop) redact(text string) string {
+	return branchpub.Redact(text, l.publishSecrets)
 }
 
 type singleTaskSource struct {

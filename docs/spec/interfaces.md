@@ -75,6 +75,8 @@ There is no `verify` flag that skips, bypasses, or weakens the Gate. The Gate is
 | golangci-lint | `golangci-lint run` in the target worktree | process `PATH`; version supplied by the runtime environment | Missing `golangci-lint` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
 | dep-scan Go scanner | `gods` in the target worktree | process `PATH`; version supplied by the runtime environment | Missing `gods` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
 | code-scanner | `code-scanner` in the target worktree | process `PATH`; version supplied by the runtime environment | Missing `code-scanner` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
+| git | `git push <remote> <branch>` in the target worktree | process `PATH` or `AGENT_BUILDER_GIT_CLI`; optional token supplied as `GIT_TOKEN` from `AGENT_BUILDER_GIT_TOKEN` | Missing binary, push rejection, auth failure, or non-zero exit fails publication and redacts configured token values from surfaced output |
+| GitHub CLI | `gh pr view --head <branch> --json url,number --jq .url`; `gh pr create --head <branch> --fill` in the target worktree | process `PATH` or `AGENT_BUILDER_GH_CLI`; optional token supplied as `GH_TOKEN` and `GITHUB_TOKEN` from `AGENT_BUILDER_GITHUB_TOKEN` | Missing binary, auth failure, malformed repository state, or PR creation failure fails publication and redacts configured token values from surfaced output |
 
 ---
 
@@ -201,6 +203,11 @@ type Config struct {
 	RunRecordPath  string
 	RunTimeout     time.Duration
 	MaxAttempts    int
+	PublishRemote  string
+	GitCLI         string
+	GitHubCLI      string
+	GitToken       string
+	GitHubToken    string
 }
 
 func ConfigFromEnv(getenv func(string) string) (Config, error)
@@ -209,8 +216,53 @@ func RunFromEnv(stdout io.Writer) error
 ```
 
 - **Consumers:** `internal/cli` uses `RunFromEnv` as the default implementation of `agent-builder run`.
-- **Collaborators:** `tasksource.Source`, `executor.ClaudeCLI`, production `gate.Gate`, `sandboxruntime.Runner`, supervisor dispatch seams, and `loop.RetryingLoop`.
-- **Required behavior:** required configuration is validated before task selection mutates status or the Executor can start. The runtime selects at most one task, gives that task to the supervisor, and records pick/attempt/verify/finish evidence through the supervisor RunRecord streams when configured.
+- **Collaborators:** `tasksource.Source`, `executor.ClaudeCLI`, production `gate.Gate`, `sandboxruntime.Runner`, supervisor dispatch seams, `loop.RetryingLoop`, and `publisher.GitHubCLI`.
+- **Required behavior:** required configuration is validated before task selection mutates status or the Executor can start. The runtime selects at most one task, gives that task to the supervisor, publishes only after Executor success plus Gate pass plus non-empty branch capture, and records pick/attempt/verify/publish/finish evidence through the supervisor RunRecord streams when configured.
+
+### Interface: branch publisher
+
+```go
+type Publisher interface {
+	Publish(context.Context, Request) (Result, error)
+}
+
+type Request struct {
+	Task     supervisor.Task
+	Worktree string
+	Branch   string
+	Remote   string
+}
+
+type Result struct {
+	Branch string
+	PRURL  string
+	PRID   string
+}
+```
+
+- **Implementors:** `*publisher.GitHubCLI`; tests provide fake git/gh commands or fake publisher seams.
+- **Consumers:** default run wiring after a retry outcome succeeds.
+- **Stability:** governed by `docs/tasks/test-specs/034-branch-pr-publication-test-spec.md`.
+- **Required behavior:** publication is attempted only for a non-blank branch and non-blank remote after the Gate has passed. Publisher failures return errors that make the run non-successful. Configured git/GitHub token values are redacted from externally-visible errors.
+
+### Concrete publisher: `publisher.GitHubCLI`
+
+```go
+type GitHubCLIConfig struct {
+	GitPath     string
+	GHPath      string
+	Worktree    string
+	Remote      string
+	GitToken    string
+	GitHubToken string
+}
+
+func NewGitHubCLI(config GitHubCLIConfig) *GitHubCLI
+func (p *GitHubCLI) Publish(context.Context, publisher.Request) (publisher.Result, error)
+```
+
+- **Outbound calls:** `git push <remote> <branch>` runs first. `gh pr view --head <branch> --json url,number --jq .url` reuses an existing PR when available. `gh pr create --head <branch> --fill` creates the PR artifact when no existing PR is found.
+- **Auth contract:** `GitToken`, when supplied, is passed as `GIT_TOKEN`. `GitHubToken`, when supplied, is passed as `GH_TOKEN` and `GITHUB_TOKEN`. The publisher does not read arbitrary host-home credential files itself, and it redacts configured token values from command output embedded in errors.
 
 ### Interface: exec-sandbox `run()` adapter seam
 

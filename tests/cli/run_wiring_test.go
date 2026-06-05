@@ -50,6 +50,10 @@ func TestRuntimeRunWiresPhase0Pipeline(t *testing.T) {
 	if srtLog := readRuntimeText(t, fixture.srtLog); !strings.Contains(srtLog, "argv=/bin/true") {
 		t.Fatalf("TC-001 fake sandbox log = %q, want containment probe", srtLog)
 	}
+	if publishLog := readRuntimeText(t, fixture.publishLog); !strings.Contains(publishLog, "git push origin task/028-default-run-wiring") ||
+		!strings.Contains(publishLog, "gh pr create --head task/028-default-run-wiring --fill") {
+		t.Fatalf("TC-001 publish log = %q, want git push and gh pr create", publishLog)
+	}
 
 	events := readRunRecordEvents(t, fixture.recordPath)
 	assertRunRecordContains(t, events, "run_started", "task_id", "001")
@@ -58,6 +62,7 @@ func TestRuntimeRunWiresPhase0Pipeline(t *testing.T) {
 	assertRunRecordContains(t, events, "command", "command", "verify worktree")
 	assertRunRecordContains(t, events, "stdout", "data", "executor attempt completed: branch=task/028-default-run-wiring")
 	assertRunRecordContains(t, events, "stdout", "data", "gate passed: PASS go build ./...")
+	assertRunRecordContains(t, events, "stdout", "data", "publication recorded: branch=task/028-default-run-wiring pr=https://github.com/acme/runfixture/pull/28")
 	assertRunRecordContains(t, events, "run_finished", "outcome", "completed")
 	t.Logf("TC-005 runtime run completed one configured task and persisted run_finished: %s", lastRunRecordLine(t, fixture.recordPath))
 
@@ -103,6 +108,7 @@ func TestRunConfigFailures(t *testing.T) {
 		{name: "sandbox runtime", unset: runtimewiring.EnvSandboxRuntime, wantError: runtimewiring.EnvSandboxRuntime},
 		{name: "timeout run config", unset: runtimewiring.EnvRunTimeout, wantError: runtimewiring.EnvRunTimeout},
 		{name: "attempt run config", unset: runtimewiring.EnvMaxAttempts, wantError: runtimewiring.EnvMaxAttempts},
+		{name: "publish remote", unset: runtimewiring.EnvPublishRemote, wantError: runtimewiring.EnvPublishRemote},
 	}
 
 	for _, tc := range tests {
@@ -152,8 +158,11 @@ type runFixture struct {
 	shimDir    string
 	claudePath string
 	srtPath    string
+	gitPath    string
+	ghPath     string
 	claudeLog  string
 	srtLog     string
+	publishLog string
 	recordPath string
 }
 
@@ -166,6 +175,7 @@ func newRunFixture(t *testing.T, status string) runFixture {
 	shimDir := filepath.Join(root, "bin")
 	claudeLog := filepath.Join(root, "claude.log")
 	srtLog := filepath.Join(root, "srt.log")
+	publishLog := filepath.Join(root, "publish.log")
 
 	writeFile(t, filepath.Join(taskRoot, "docs/plans/roadmap.md"), "# Roadmap\n")
 	writeTaskFixture(t, filepath.Join(taskRoot, "docs/tasks/backlog/001-first.md"), "001", status)
@@ -188,6 +198,8 @@ func TestValue(t *testing.T) {
 	}
 	claudePath := writeFakeClaude(t, shimDir, claudeLog)
 	srtPath := writeFakeSRTForRun(t, shimDir, srtLog)
+	gitPath := writeFakeGitForRun(t, shimDir, publishLog)
+	ghPath := writeFakeGHForRun(t, shimDir, publishLog)
 	writePassingGateTools(t, shimDir)
 
 	return runFixture{
@@ -196,8 +208,11 @@ func TestValue(t *testing.T) {
 		shimDir:    shimDir,
 		claudePath: claudePath,
 		srtPath:    srtPath,
+		gitPath:    gitPath,
+		ghPath:     ghPath,
 		claudeLog:  claudeLog,
 		srtLog:     srtLog,
+		publishLog: publishLog,
 		recordPath: filepath.Join(root, "run-record.ndjson"),
 	}
 }
@@ -212,6 +227,11 @@ func (f runFixture) env() map[string]string {
 		runtimewiring.EnvRunRecord:        f.recordPath,
 		runtimewiring.EnvRunTimeout:       "5s",
 		runtimewiring.EnvMaxAttempts:      "1",
+		runtimewiring.EnvPublishRemote:    "origin",
+		runtimewiring.EnvGitCLI:           f.gitPath,
+		runtimewiring.EnvGitHubCLI:        f.ghPath,
+		runtimewiring.EnvGitToken:         "fake-git-token",
+		runtimewiring.EnvGitHubToken:      "fake-gh-token",
 		"ANTHROPIC_API_KEY":               "fake-token",
 		"CLAUDE_CODE_SKIP_PROMPT_HISTORY": "",
 	}
@@ -258,6 +278,39 @@ printf 'task/028-default-run-wiring\n' > "$branch_file"
 	writeFile(t, path, script)
 	if err := os.Chmod(path, 0o755); err != nil {
 		t.Fatalf("chmod fake claude: %v", err)
+	}
+	return path
+}
+
+func writeFakeGitForRun(t *testing.T, dir, logPath string) string {
+	t.Helper()
+	path := filepath.Join(dir, "git")
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+printf 'git %%s\n' "$*" >> %s
+exit 0
+`, shellQuoteForRun(logPath))
+	writeFile(t, path, script)
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatalf("chmod fake git: %v", err)
+	}
+	return path
+}
+
+func writeFakeGHForRun(t *testing.T, dir, logPath string) string {
+	t.Helper()
+	path := filepath.Join(dir, "gh")
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+printf 'gh %%s\n' "$*" >> %s
+if [ "$1" = "pr" ] && [ "$2" = "view" ]; then
+    exit 1
+fi
+printf 'https://github.com/acme/runfixture/pull/28\n'
+`, shellQuoteForRun(logPath))
+	writeFile(t, path, script)
+	if err := os.Chmod(path, 0o755); err != nil {
+		t.Fatalf("chmod fake gh: %v", err)
 	}
 	return path
 }
@@ -356,6 +409,11 @@ func filteredBaseEnv() []string {
 		runtimewiring.EnvRunRecord:      {},
 		runtimewiring.EnvRunTimeout:     {},
 		runtimewiring.EnvMaxAttempts:    {},
+		runtimewiring.EnvPublishRemote:  {},
+		runtimewiring.EnvGitCLI:         {},
+		runtimewiring.EnvGitHubCLI:      {},
+		runtimewiring.EnvGitToken:       {},
+		runtimewiring.EnvGitHubToken:    {},
 		"ANTHROPIC_API_KEY":             {},
 	}
 	filtered := []string{}

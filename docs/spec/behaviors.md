@@ -170,10 +170,18 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 ### B-019: Run one configured Phase 0 task through default CLI wiring
 
 - **Trigger:** An operator invokes `agent-builder run` with the required runtime environment configured.
-- **Response:** The CLI reads the configured task root, selects the lowest-ID ready task whose dependencies are complete, constructs the Claude CLI Executor, production Gate, sandbox-runtime-backed containment box, bounded retrying in-box loop, task status writer, supervisor timeout, and optional RunRecord path, then dispatches that one task through `Supervisor.Run()`. A successful run prints `run completed: task <id>` to stdout.
-- **Side effects:** The sandbox-runtime adapter is invoked once during box creation, the Executor attempts the selected task at most `AGENT_BUILDER_MAX_ATTEMPTS` times, the Gate verifies the configured worktree after a successful Executor attempt, and the RunRecord file, when configured, contains command/stdout/stderr evidence for pick, attempt, verify, Gate summary, branch, and terminal outcome. With no ready task, the command prints `run idle: no ready task` and does not invoke containment, Executor, Gate, or status mutation.
-- **Failure modes:** Missing task root, worktree, executor token, sandbox runtime, run timeout, or max-attempts configuration fails before task selection can mutate status or the Executor can run. A missing scanner tool fails in the Gate after a successful Executor attempt and records a failed terminal outcome naming the missing tool. Exhausted failed attempts are marked `needs-human` through the constrained status writer and return a failed supervisor run.
-- **References:** ADR 012; ADR 013; ADR 020; `docs/tasks/test-specs/028-default-run-wiring-test-spec.md`.
+- **Response:** The CLI reads the configured task root, selects the lowest-ID ready task whose dependencies are complete, constructs the Claude CLI Executor, production Gate, sandbox-runtime-backed containment box, bounded retrying in-box loop, task status writer, branch publisher, supervisor timeout, and optional RunRecord path, then dispatches that one task through `Supervisor.Run()`. A successful run prints `run completed: task <id>` to stdout.
+- **Side effects:** The sandbox-runtime adapter is invoked once during box creation, the Executor attempts the selected task at most `AGENT_BUILDER_MAX_ATTEMPTS` times, the Gate verifies the configured worktree after a successful Executor attempt, the branch publisher runs only after a successful retry outcome with a non-empty branch, and the RunRecord file, when configured, contains command/stdout/stderr evidence for pick, attempt, verify, Gate summary, branch, publication artifact, and terminal outcome. With no ready task, the command prints `run idle: no ready task` and does not invoke containment, Executor, Gate, publisher, or status mutation.
+- **Failure modes:** Missing task root, worktree, executor token, sandbox runtime, run timeout, max-attempts, or publish-remote configuration fails before task selection can mutate status or the Executor can run. A missing scanner tool fails in the Gate after a successful Executor attempt and records a failed terminal outcome naming the missing tool. Blank branch output prevents Gate and publication. Publication failure records a failed terminal outcome and does not mark the task done. Exhausted failed attempts are marked `needs-human` through the constrained status writer and return a failed supervisor run.
+- **References:** ADR 012; ADR 013; ADR 020; `docs/tasks/test-specs/028-default-run-wiring-test-spec.md`; `docs/tasks/test-specs/034-branch-pr-publication-test-spec.md`.
+
+### B-020: Publish verified branches as PR artifacts
+
+- **Trigger:** The default run wiring receives a bounded retry outcome whose final attempt passed the Gate and carries a non-empty executor branch.
+- **Response:** The branch publisher pushes the branch to the configured remote, checks for an existing PR for the branch, and otherwise asks GitHub CLI to create a PR. The returned PR URL or identifier is written to run output evidence.
+- **Side effects:** The publisher invokes `git push <remote> <branch>` and GitHub CLI `gh pr` commands in the configured worktree. Publication command evidence is written through the RunRecord command/stdout/stderr stream when a RunRecord is configured.
+- **Failure modes:** Blank branch, blank remote, git push failure, GitHub CLI failure, auth failure, or PR creation failure returns a non-success run outcome. Configured git/GitHub token values are redacted from publisher errors, CLI stderr, and RunRecord events.
+- **References:** `docs/tasks/test-specs/034-branch-pr-publication-test-spec.md`.
 
 ---
 
@@ -218,3 +226,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - Armor-guarded executor harness wiring fails closed and releases only armor-allowed candidates.
 - Claude executor web/tool routes are explicitly `disabled` or `reviewed`; prompt text or subprocess flags alone are not treated as the blocking control.
 - The default `agent-builder run` wiring dispatches at most one ready task per invocation; an idle run does not create a box or run an Executor.
+- The branch publisher is called only after Executor success, Gate pass, and non-empty branch capture.

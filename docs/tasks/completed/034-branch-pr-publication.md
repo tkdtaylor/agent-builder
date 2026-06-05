@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-05
-**Status:** backlog
+**Status:** completed (code merged; L6 real PR pending because no git remote is configured)
 
 ## Goal
 Publish a verified executor-produced branch as a pull request artifact so Phase 0 satisfies the roadmap's branch+PR outcome.

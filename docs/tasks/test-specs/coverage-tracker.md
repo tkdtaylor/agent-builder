@@ -45,7 +45,7 @@
 | 031 | Verification ledger cleanup | 031-verification-ledger-cleanup-test-spec.md | ✅ | 🟡 | L5 docs ledger consistency: `scripts/check-task-state.sh` -> `OK: every task is tracked in exactly one state directory.`; focused ledger check -> `OK: ledger consistency check passed for 34 tracker rows.`; final gate `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.` |
 | 032 | Phase 0 end-to-end acceptance | 032-phase0-end-to-end-acceptance-test-spec.md | ✅ | ❌ | Not started |
 | 033 | Execution-box Gate toolchain | 033-execution-box-gate-toolchain-test-spec.md | ✅ | 🟡 | L5: `go test -count=1 -v ./tests/containment ./tests/cli -run 'TestExecutionBoxGateToolchain\|TestVerifyMissingGateTool'` -> `ok github.com/tkdtaylor/agent-builder/tests/cli`; runtime-visible dry-run `containment/execution-box/run.sh --gate-tools <fixture> --print-toolchain-plan` printed mounted Gate tool path/version lines; L6 pending because local Podman is unavailable |
-| 034 | Branch and PR publication | 034-branch-pr-publication-test-spec.md | ✅ | ❌ | Not started |
+| 034 | Branch and PR publication | 034-branch-pr-publication-test-spec.md | ✅ | 🟡 | L5 fake git/gh publication harness: `go test -count=1 -v ./tests/publisher ./tests/e2e -run 'TestBranchPRPublication\|TestPublisherFailureDoesNotMarkDone'` -> `TC-001 verified branch published as PR artifact`; publisher failure/redaction evidence -> `TC-003 publisher failure preserved task as not done`; L6 real PR pending because no git remote is configured |
 
 ## Status key
 
