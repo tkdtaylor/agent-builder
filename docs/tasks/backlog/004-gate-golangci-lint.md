@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** in progress
 
 ## Goal
 Add a blocking gate Step that runs `golangci-lint run` in the target worktree and fails on any finding, capturing the linter output into its StepResult.
@@ -23,9 +23,9 @@ Add a blocking gate Step that runs `golangci-lint run` in the target worktree an
 | REQ-004 | A missing `golangci-lint` binary on PATH is a hard step failure (fail loud), never a silent pass | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 002
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 002
 
 ## Acceptance criteria
 - [ ] [REQ-001] The Step invokes `golangci-lint run` against repoPath
