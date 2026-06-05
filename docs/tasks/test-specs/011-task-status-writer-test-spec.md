@@ -1,6 +1,6 @@
 # Test Spec 011: Task status writer (status-only governance)
 
-**Linked task:** [`docs/tasks/backlog/011-task-status-writer.md`](../backlog/011-task-status-writer.md)
+**Linked task:** [`docs/tasks/completed/011-task-status-writer.md`](../completed/011-task-status-writer.md)
 **Written:** 2026-06-04
 **Status:** complete — implementation must satisfy every TC marker below before the feature commit
 

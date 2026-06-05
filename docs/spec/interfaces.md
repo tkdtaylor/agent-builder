@@ -115,6 +115,19 @@ func (s *Source) Next() (supervisor.Task, bool, error)
 - **Stability:** governed by `docs/tasks/test-specs/010-roadmap-task-source-test-spec.md`.
 - **Required behavior:** the source reads through `fs.FS`, parses task files into deterministic candidate order, returns the first ready task whose dependencies are completed, and exposes no write-side operation.
 
+### Interface: `tasksource.StatusWriter`
+
+```go
+func NewStatusWriter(root string, taskDirs ...string) *StatusWriter
+
+func (w *StatusWriter) WriteStatus(taskID string, status WritableStatus) (StatusWriteResult, error)
+```
+
+- **Implementors:** `*tasksource.StatusWriter`.
+- **Consumers:** future supervisor/agent-loop status governance code.
+- **Stability:** governed by `docs/tasks/test-specs/011-task-status-writer-test-spec.md`.
+- **Required behavior:** the writer exposes only a task ID plus constrained status marker mutation method. It accepts `WritableStatusDone`, `WritableStatusBlocked`, and `WritableStatusNeedsHuman`; it rejects every other status value before writing. It rewrites exactly one `**Status:**` line in the matched task file and has no API for arbitrary content replacement.
+
 ---
 
 ## Extension points

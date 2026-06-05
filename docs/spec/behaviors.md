@@ -79,6 +79,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Missing roadmap reads, unreadable task directories, malformed task metadata, duplicate task IDs, and dependencies that reference no parsed task return errors. When all parsed tasks are blocked, active, completed, or cyclically dependent on incomplete tasks, `Next()` returns no task and no error.
 - **References:** `docs/tasks/test-specs/010-roadmap-task-source-test-spec.md`.
 
+### B-008: Write task status without changing task content
+
+- **Trigger:** A caller asks the task status writer to update one task ID to one of the allowed status markers: `done`, `blocked`, or `needs-human`.
+- **Response:** The writer scans the configured task directories, finds the single task file whose heading matches the task ID, validates that the file has exactly one `**Status:**` metadata line, and rewrites only that line to `**Status:** <target>`. If the task is already at the target status, the call succeeds without changing file bytes.
+- **Side effects:** The matched task source file is rewritten on disk only when the status line changes. Non-status bytes, line ordering, prose, requirement tables, trailing whitespace on other lines, and final newline shape are preserved byte-for-byte.
+- **Failure modes:** Empty task ID, invalid target status, missing task ID, duplicate task ID, missing status line, duplicate status lines, unreadable task directories/files, stat failures, and write failures return errors. Invalid target status is rejected before any task file is opened for writing.
+- **References:** `docs/tasks/test-specs/011-task-status-writer-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -110,3 +118,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - The dep-scan Step always runs in the caller-supplied worktree, never implicitly in the agent-builder repo.
 - The code-scanner Step always runs in the caller-supplied worktree, never implicitly in the agent-builder repo.
 - Task selection is read-only; writing task status is handled by a separate status-writer component.
+- The task status writer has no content-patch or prose-editing API; its only mutation path is task ID plus constrained status marker.

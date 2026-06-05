@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** completed (code merged + green; pending formal spec-verifier pass before ✅)
 
 ## Goal
 Flip a task's STATUS (done / blocked / needs-human) in its source file, editing only the status field/marker and never the plan prose, priorities, or ordering — enforcing the the internal design hub read-mostly invariant.
@@ -22,14 +22,14 @@ Flip a task's STATUS (done / blocked / needs-human) in its source file, editing 
 | REQ-003 | Reject/refuse any attempt to edit non-status content — the writer has no path that mutates anything but the status marker | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 010
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 010
 
 ## Acceptance criteria
-- [ ] [REQ-001] Calling the writer with a task ID + target status updates that task's status marker in its source file
-- [ ] [REQ-002] A text/`git diff` of the file before vs after shows only the status line(s) changed; all other bytes are byte-for-byte identical
-- [ ] [REQ-003] The API exposes no way to write non-status content; any such request is refused (error), not silently applied
+- [x] [REQ-001] Calling the writer with a task ID + target status updates that task's status marker in its source file
+- [x] [REQ-002] A text/`git diff` of the file before vs after shows only the status line(s) changed; all other bytes are byte-for-byte identical
+- [x] [REQ-003] The API exposes no way to write non-status content; any such request is refused (error), not silently applied
 
 ## Verification plan
 - **Highest level achievable:** L5 — writes to a fixture task file and asserts a minimal diff (status-only) against the original.

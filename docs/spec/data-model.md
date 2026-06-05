@@ -113,13 +113,27 @@ Spec        string    path to the task file the executor must satisfy
 field           type                notes
 ────────────────────────────────────────────────────────────
 Task            supervisor.Task     executor-facing task shape
-Status          tasksource.Status   normalized ready/active/blocked/completed state
+Status          tasksource.Status   normalized ready/active/blocked/needs-human/completed state
 Dependencies    []string            task IDs that must be completed before this task is ready
 ```
 
 - **Identity:** inherits `Task.ID`.
 - **Lifecycle:** produced by `Source.Candidates`; consumed by `Source.Next`.
 - **Relationships:** dependencies must reference parsed candidate IDs. `Next()` treats only `StatusReady` candidates with all dependencies in `StatusCompleted` as actionable.
+
+#### Value: `tasksource.WritableStatus`
+
+```
+value          notes
+────────────────────────────────────────────────────────────
+done           status-only writer marker for completed work; parsed as `StatusCompleted`
+blocked        status-only writer marker for blocked work; parsed as `StatusBlocked`
+needs-human    status-only writer marker for work that requires human attention; parsed as `StatusNeedsHuman`
+```
+
+- **Identity:** the string value is the marker written into a task file's `**Status:**` metadata line.
+- **Lifecycle:** provided by callers to `StatusWriter.WriteStatus`; persisted only as the task file status marker.
+- **Relationships:** the reader accepts writer-produced markers. `done` is normalized to completed for dependency checks; `needs-human` is non-ready and is skipped by `Next()`.
 
 ---
 
@@ -165,3 +179,5 @@ Dependencies    []string            task IDs that must be completed before this 
 - A Verdict with `OK == false` ends at the first failing StepResult; later configured steps do not run and do not appear in Results.
 - A parsed task dependency references another parsed task ID; missing dependency references fail parsing.
 - Task-source selection is deterministic: candidates are ordered by task ID, with task path as the duplicate-ID tiebreaker used only for diagnostics.
+- Task status writes are constrained to `done`, `blocked`, or `needs-human`; invalid status values fail before file mutation.
+- A task status write changes at most one `**Status:**` line. Missing or duplicate status lines fail instead of guessing which bytes are safe to mutate.

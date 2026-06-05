@@ -16,6 +16,8 @@ func TestCandidatesParseTaskFiles(t *testing.T) {
 		"docs/tasks/completed/002-two.md":   taskFile("002", "agent-builder", "completed", "No blocking tasks"),
 		"docs/tasks/active/011-active.md":   taskFile("011", "vault", "active", "010"),
 		"docs/tasks/backlog/012-blocked.md": taskFile("012", "policy-engine", "⚠️ blocked", "010"),
+		"docs/tasks/completed/013-done.md":  taskFile("013", "agent-builder", "done", "010"),
+		"docs/tasks/backlog/014-human.md":   taskFile("014", "agent-builder", "needs-human", "010"),
 	}), DefaultRoadmapPath, DefaultTaskDirs...)
 
 	candidates, err := source.Candidates()
@@ -24,7 +26,7 @@ func TestCandidatesParseTaskFiles(t *testing.T) {
 	}
 
 	gotIDs := candidateIDs(candidates)
-	wantIDs := []string{"001", "002", "010", "011", "012"}
+	wantIDs := []string{"001", "002", "010", "011", "012", "013", "014"}
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
 		t.Fatalf("candidate IDs = %v, want %v", gotIDs, wantIDs)
 	}
@@ -54,6 +56,14 @@ func TestCandidatesParseTaskFiles(t *testing.T) {
 	blocked := candidates[4]
 	if blocked.Status != StatusBlocked {
 		t.Fatalf("blocked Status = %q, want %q", blocked.Status, StatusBlocked)
+	}
+	done := candidates[5]
+	if done.Status != StatusCompleted {
+		t.Fatalf("done Status = %q, want %q", done.Status, StatusCompleted)
+	}
+	human := candidates[6]
+	if human.Status != StatusNeedsHuman {
+		t.Fatalf("needs-human Status = %q, want %q", human.Status, StatusNeedsHuman)
 	}
 }
 

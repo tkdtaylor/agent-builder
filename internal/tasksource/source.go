@@ -37,10 +37,11 @@ var (
 type Status string
 
 const (
-	StatusReady     Status = "ready"
-	StatusActive    Status = "active"
-	StatusBlocked   Status = "blocked"
-	StatusCompleted Status = "completed"
+	StatusReady      Status = "ready"
+	StatusActive     Status = "active"
+	StatusBlocked    Status = "blocked"
+	StatusNeedsHuman Status = "needs-human"
+	StatusCompleted  Status = "completed"
 )
 
 // Candidate is a parsed task file plus the metadata required for readiness.
@@ -185,10 +186,12 @@ func parseFields(body string) map[string]string {
 func normalizeStatus(raw string) (Status, error) {
 	status := strings.ToLower(strings.TrimSpace(raw))
 	switch {
-	case strings.Contains(status, "completed"):
+	case status == "done", strings.Contains(status, "completed"):
 		return StatusCompleted, nil
 	case strings.Contains(status, "active"), strings.Contains(status, "in progress"), strings.Contains(status, "⏳"):
 		return StatusActive, nil
+	case strings.Contains(status, "needs-human"):
+		return StatusNeedsHuman, nil
 	case strings.Contains(status, "blocked"), strings.Contains(status, "⚠️"):
 		return StatusBlocked, nil
 	case strings.Contains(status, "backlog"), strings.Contains(status, "ready"), strings.Contains(status, "❌"):
