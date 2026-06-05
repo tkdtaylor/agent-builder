@@ -194,6 +194,9 @@ func TestRunTimeoutUsesConfiguredDeadlineAndKillsBox(t *testing.T) {
 	if box.teardownCalls != 1 {
 		t.Fatalf("TC-002-Timeout-Kills-Box-And-Tears-Down: teardown calls = %d, want 1", box.teardownCalls)
 	}
+	if !reflect.DeepEqual(box.handles, []BoxHandle{box.handle}) {
+		t.Fatalf("TC-002-Timeout-Kills-Box-And-Tears-Down: teardown handles = %+v, want [%+v]", box.handles, box.handle)
+	}
 	logOutput := logs.String()
 	if !strings.Contains(logOutput, "event=box.kill.timeout") {
 		t.Fatalf("TC-002-Timeout-Kills-Box-And-Tears-Down: timeout log missing box.kill.timeout in:\n%s", logOutput)
@@ -257,13 +260,26 @@ func TestRunTimeoutRecordsTimedOutOutcome(t *testing.T) {
 }
 
 func TestRunOutcomesDistinguishSuccessFailureAndTimeout(t *testing.T) {
-	successRecord := runSupervisorRecord(t, "success", &fakeBox{handle: BoxHandle{ID: "box-success"}}, &fakeInBoxLoop{}, 0)
+	successRecord, successErr := runSupervisorRecord(t, "success", &fakeBox{handle: BoxHandle{ID: "box-success"}}, &fakeInBoxLoop{}, 0)
+	if successErr != nil {
+		t.Fatalf("TC-004-Outcome-Distinct: success Run() error = %v, want nil", successErr)
+	}
 	if got := finalOutcome(t, successRecord); got != string(RunOutcomeCompleted) {
 		t.Fatalf("TC-004-Outcome-Distinct: success outcome = %q, want completed", got)
 	}
 
 	loopErr := errors.New("gate failed")
-	failureRecord := runSupervisorRecord(t, "failure", &fakeBox{handle: BoxHandle{ID: "box-failure"}}, &fakeInBoxLoop{err: loopErr}, time.Second)
+	failureBox := &fakeBox{handle: BoxHandle{ID: "box-failure"}}
+	failureRecord, failureErr := runSupervisorRecord(t, "failure", failureBox, &fakeInBoxLoop{err: loopErr}, time.Second)
+	if !errors.Is(failureErr, loopErr) {
+		t.Fatalf("TC-004-Outcome-Distinct: failure Run() error = %v, want %v", failureErr, loopErr)
+	}
+	if errors.Is(failureErr, ErrRunTimedOut) {
+		t.Fatalf("TC-004-Outcome-Distinct: fast loop error = %v, must not be ErrRunTimedOut", failureErr)
+	}
+	if failureBox.killCalls != 0 {
+		t.Fatalf("TC-004-Outcome-Distinct: fast loop error kill calls = %d, want 0", failureBox.killCalls)
+	}
 	if got := finalOutcome(t, failureRecord); got != string(RunOutcomeFailed) {
 		t.Fatalf("TC-004-Outcome-Distinct: failure outcome = %q, want failed", got)
 	}
@@ -275,7 +291,10 @@ func TestRunOutcomesDistinguishSuccessFailureAndTimeout(t *testing.T) {
 			close(release)
 		},
 	}
-	timeoutRecord := runSupervisorRecord(t, "timeout", timeoutBox, &fakeInBoxLoop{blockUntil: release}, 25*time.Millisecond)
+	timeoutRecord, timeoutErr := runSupervisorRecord(t, "timeout", timeoutBox, &fakeInBoxLoop{blockUntil: release}, 25*time.Millisecond)
+	if !errors.Is(timeoutErr, ErrRunTimedOut) {
+		t.Fatalf("TC-004-Outcome-Distinct: timeout Run() error = %v, want ErrRunTimedOut", timeoutErr)
+	}
 	if got := finalOutcome(t, timeoutRecord); got != string(RunOutcomeTimedOut) {
 		t.Fatalf("TC-004-Outcome-Distinct: timeout outcome = %q, want timed-out", got)
 	}
@@ -309,6 +328,7 @@ func TestRunWithoutTimeoutDoesNotKill(t *testing.T) {
 func TestRunTimeoutSurfacesKillErrorAndStillTearsDown(t *testing.T) {
 	killErr := errors.New("kill failed")
 	callLog := []string{}
+	recordPath := filepath.Join(t.TempDir(), "kill-error.ndjson")
 	box := &fakeBox{
 		handle:  BoxHandle{ID: "box-018"},
 		killErr: killErr,
@@ -320,6 +340,7 @@ func TestRunTimeoutSurfacesKillErrorAndStillTearsDown(t *testing.T) {
 		WithTask(Task{ID: "018"}),
 		WithContainmentBox(box),
 		WithInBoxLoop(loop),
+		WithRunRecordPath(recordPath),
 		WithRunTimeout(25*time.Millisecond),
 	).Run()
 	if !errors.Is(err, ErrRunTimedOut) {
@@ -334,6 +355,9 @@ func TestRunTimeoutSurfacesKillErrorAndStillTearsDown(t *testing.T) {
 	wantLog := []string{"box.create", "loop.run", "box.kill", "box.teardown"}
 	if !reflect.DeepEqual(callLog, wantLog) {
 		t.Fatalf("TC-006-Kill-Error-Still-Tears-Down: lifecycle call log = %v, want %v", callLog, wantLog)
+	}
+	if got := finalOutcome(t, recordPath); got != string(RunOutcomeTimedOut) {
+		t.Fatalf("TC-006-Kill-Error-Still-Tears-Down: run-record outcome = %q, want timed-out", got)
 	}
 }
 
@@ -450,7 +474,7 @@ func (l *fakeInBoxLoop) RunInside(handle BoxHandle, task Task, streams RunStream
 	return l.err
 }
 
-func runSupervisorRecord(t *testing.T, name string, box *fakeBox, loop *fakeInBoxLoop, timeout time.Duration) string {
+func runSupervisorRecord(t *testing.T, name string, box *fakeBox, loop *fakeInBoxLoop, timeout time.Duration) (string, error) {
 	t.Helper()
 
 	recordPath := filepath.Join(t.TempDir(), name+".ndjson")
@@ -461,21 +485,7 @@ func runSupervisorRecord(t *testing.T, name string, box *fakeBox, loop *fakeInBo
 		WithRunRecordPath(recordPath),
 		WithRunTimeout(timeout),
 	).Run()
-	switch name {
-	case "failure":
-		if !errors.Is(err, loop.err) {
-			t.Fatalf("TC-004-Outcome-Distinct: failure Run() error = %v, want %v", err, loop.err)
-		}
-	case "timeout":
-		if !errors.Is(err, ErrRunTimedOut) {
-			t.Fatalf("TC-004-Outcome-Distinct: timeout Run() error = %v, want ErrRunTimedOut", err)
-		}
-	default:
-		if err != nil {
-			t.Fatalf("TC-004-Outcome-Distinct: success Run() error = %v, want nil", err)
-		}
-	}
-	return recordPath
+	return recordPath, err
 }
 
 func finalOutcome(t *testing.T, recordPath string) string {
