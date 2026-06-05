@@ -37,7 +37,7 @@ Establish a default-deny network posture for the execution box plus a plain-text
 - In-box probes and observable results to quote: connect to an allowlisted host → succeeds; connect to a non-allowlisted host → refused/timed-out/DNS-blocked. Quote both.
 - **Cross-module state risk:** touches `docs/spec/configuration.md` (the allowlist config contract) — must be updated in the same change as the launcher behaviour.
 - **Runtime-visible surface:** network reachability per destination host; the allowlist config file format.
-- **Runtime blocker in this worktree:** Podman is unavailable on `PATH`, so L6 runtime evidence remains pending operator verification. Static contract checks and `--print-egress-plan` parser output are available without Podman.
+- **Runtime blocker in this worktree:** Podman is unavailable on `PATH`, so L6 runtime evidence remains pending operator verification. Task 030 re-ran the egress probe against the latest Task 033 execution-box toolchain fixture: `containment/execution-box/run.sh --gate-tools /tmp/agent-builder-t033-tools.qIdv9b --worktree . --egress-probe` exited with `execution-box: podman unavailable on PATH`. Static contract checks and `--print-egress-plan` parser output are available without Podman.
 
 ## Out of scope
 - armor on the web-ingestion / tool-call path (task 024)

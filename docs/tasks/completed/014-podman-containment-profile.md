@@ -35,7 +35,7 @@ Define the rootless-Podman execution-box profile — a product artifact under a 
 ## Verification plan
 - **Highest level achievable:** L6 — containment is an observed runtime property; assert via in-box probes against a launched box.
 - In-box probes and observable results to quote: write to `/` denied (read-only rootfs); `id` shows non-root uid/gid; `ls /var/run` / socket check shows no `*podman*.sock` or docker socket; writes to the worktree mount and tmpfs scratch succeed; host-side cgroup shows cpu/mem/pids/disk limits.
-- **Executor runtime result:** L6 not reached in this environment. `containment/execution-box/run.sh --worktree . --probe` exited with `execution-box: podman unavailable on PATH`.
+- **Executor runtime result:** L6 not reached in this environment. Task 030 re-ran the containment probe against the latest Task 033 execution-box toolchain fixture: `containment/execution-box/run.sh --gate-tools /tmp/agent-builder-t033-tools.qIdv9b --worktree . --probe` exited with `execution-box: podman unavailable on PATH`.
 - **Cross-module state risk:** none — profile is self-contained; no shared mutable state with other modules.
 - **Runtime-visible surface:** container filesystem permissions, user/capability set, mounted device/socket inventory, cgroup resource limits.
 

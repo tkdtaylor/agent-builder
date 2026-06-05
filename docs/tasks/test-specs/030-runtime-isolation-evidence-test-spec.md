@@ -1,6 +1,6 @@
 # Test Spec 030: runtime isolation evidence
 
-**Linked task:** [`docs/tasks/backlog/030-runtime-isolation-evidence.md`](../backlog/030-runtime-isolation-evidence.md)
+**Linked task:** [`docs/tasks/completed/030-runtime-isolation-evidence.md`](../completed/030-runtime-isolation-evidence.md)
 **Written:** 2026-06-05
 **Status:** ready
 

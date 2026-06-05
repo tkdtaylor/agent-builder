@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-05
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 Collect the missing runtime evidence for containment, egress, tiered runtime selection, and sandbox-runtime so tasks 014, 015, 016, and 021 can be honestly verified or explicitly left blocked.
@@ -26,14 +26,14 @@ Collect the missing runtime evidence for containment, egress, tiered runtime sel
 ## Readiness gate
 - [x] Test spec `030-runtime-isolation-evidence-test-spec.md` exists in `docs/tasks/test-specs/`
 - [x] All acceptance criteria below have a linked REQ ID
-- [ ] Runtime host has rootless Podman, required OCI runtime(s), and `srt` available, or the task records a blocker without promoting verification
+- [x] Runtime host has rootless Podman, required OCI runtime(s), and `srt` available, or the task records a blocker without promoting verification
 
 ## Acceptance criteria
-- [ ] [REQ-001] Task 014 has quoted L6 evidence or remains 🟡 with a concrete blocker.
-- [ ] [REQ-002] Task 015 has quoted allow and deny egress evidence or remains 🟡 with a concrete blocker.
-- [ ] [REQ-003] Task 016 has quoted runtime selection evidence or remains 🟡 with a concrete blocker.
-- [ ] [REQ-004] Task 021 has quoted sandbox-runtime command and denied-egress evidence or remains 🟡 with a concrete blocker.
-- [ ] [REQ-005] `coverage-tracker.md` status and `Verified by` cells match the evidence exactly.
+- [x] [REQ-001] Task 014 has quoted L6 evidence or remains 🟡 with a concrete blocker.
+- [x] [REQ-002] Task 015 has quoted allow and deny egress evidence or remains 🟡 with a concrete blocker.
+- [x] [REQ-003] Task 016 has quoted runtime selection evidence or remains 🟡 with a concrete blocker.
+- [x] [REQ-004] Task 021 has quoted sandbox-runtime command and denied-egress evidence or remains 🟡 with a concrete blocker.
+- [x] [REQ-005] `coverage-tracker.md` status and `Verified by` cells match the evidence exactly.
 
 ## Verification plan
 - **Highest level achievable:** L6 - operator-observed runtime security behavior from launched containment and sandbox-runtime commands.
@@ -45,6 +45,7 @@ Collect the missing runtime evidence for containment, egress, tiered runtime sel
   - Targeted behaviour to observe: read-only rootfs, no host socket/home, non-root user, quota fields, allowlisted egress succeeds, non-allowlisted egress fails, selected runtime is recorded, sandbox-runtime deny path blocks egress.
 - **Cross-module state risk:** docs and tracker only; evidence must name the task row being promoted.
 - **Runtime-visible surface:** command stdout/stderr and task/tracker evidence entries.
+- **Executor runtime result:** L6 not reached in this environment. Execution-box probes reached the launcher runtime check with the Task 033 Gate toolchain fixture and all failed with `execution-box: podman unavailable on PATH`; `command -v podman`, `command -v runsc`, and `command -v srt` exited `1` with no output, while `command -v bwrap` returned `/usr/bin/bwrap`. The opt-in live sandbox-runtime harness was also blocked before `srt` execution because bare `go` resolved to `/snap/bin/go` and exited with `snap-confine has elevated permissions and is not confined but should be. Refusing to continue to avoid permission escalation attacks`.
 
 ## Out of scope
 - Changing containment implementation unless a probe exposes a defect.

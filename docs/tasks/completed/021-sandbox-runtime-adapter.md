@@ -34,7 +34,7 @@ Implement the run() adapter (the seam from task 020) backed by `@anthropic-ai/sa
 ## Verification plan
 - **Highest level achievable:** L6 — run a trivial command through the adapter inside `@anthropic-ai/sandbox-runtime`; observe it executes isolated, and observe that an attempt to reach a non-allowlisted host is blocked. Quote both outputs.
 - L5 harness: invoke the adapter against a fixture command (e.g. `echo` + a `curl` to a blocked host); expected final assertion — allowed command exits 0 with expected stdout, blocked-egress command fails/denied.
-- **Executor runtime result:** L6 not reached in this environment. `command -v srt` exited `1` with no output; `command -v bwrap` returned `/usr/bin/bwrap`.
+- **Executor runtime result:** L6 not reached in this environment. Task 030 confirmed `command -v srt` exited `1` with no output while `command -v bwrap` returned `/usr/bin/bwrap`; the opt-in live harness `env AGENT_BUILDER_LIVE_SRT=1 go test -count=1 -v ./tests/sandbox -run TestSandboxRuntimeLiveHarness_TC002_TC003` was also blocked before `srt` execution because bare `go` resolved to `/snap/bin/go` and exited with `snap-confine has elevated permissions and is not confined but should be. Refusing to continue to avoid permission escalation attacks`.
 - **Cross-module state risk:** consumes the egress allowlist (015) and box profile (014); a misconfigured allowlist weakens the load-bearing egress control — verify the deny path, not just the allow path.
 - **Runtime-visible surface:** subprocess output (sandbox-runtime stdout/stderr) + egress allow/deny observable behaviour.
 

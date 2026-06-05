@@ -35,7 +35,7 @@ Add a `--runtime` selection seam under the same rootless Podman that maps a conf
 ## Verification plan
 - **Highest level achievable:** L6 — active runtime and build success/failure are observed on a launched box.
 - In-box / host probes and observable results to quote: launch under `runc` and (if available) `runsc`; observe the active runtime; run `go build` of a trivial module — succeeds, or record the syscall gap and the fallback chosen. Quote results for each runtime exercised.
-- **Executor runtime result:** L6 not reached in this environment. `containment/execution-box/run.sh --worktree . --runtime runsc --probe` exited with `execution-box: podman unavailable on PATH`.
+- **Executor runtime result:** L6 not reached in this environment. Task 030 confirmed the default runtime plan with `containment/execution-box/run.sh --gate-tools /tmp/agent-builder-t033-tools.qIdv9b --worktree . --print-runtime-plan` -> `TC-016 PLAN: workload=agent runtime=runsc source=default`, then re-ran the explicit runtime probe against the latest Task 033 execution-box toolchain fixture: `containment/execution-box/run.sh --gate-tools /tmp/agent-builder-t033-tools.qIdv9b --worktree . --runtime runsc --probe` exited with `execution-box: podman unavailable on PATH`.
 - **Cross-module state risk:** none — selection seam is config-driven and additive over the task 014 profile.
 - **Runtime-visible surface:** which OCI runtime is active for a box; whether the Go toolchain builds under that runtime.
 
