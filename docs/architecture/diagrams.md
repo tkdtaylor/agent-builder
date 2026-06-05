@@ -66,12 +66,14 @@ C4Component
 
     System_Ext(codeScanner, "code-scanner", "Malware/backdoor scanner CLI")
     System_Ext(claudeCLI, "Claude Code CLI", "Cloud executor harness/model subprocess")
+    System_Ext(armorTool, "armor", "External LLM guard process/service")
 
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
         Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher, lifecycle logger, run-record writer, and stable seams")
         Component(agentloop, "Agent Loop", "internal/loop", "Inside-the-box pick-attempt-verify cycle plus bounded retry policy")
         Component(ingestion, "Ingestion Boundary", "internal/ingestion", "Typed content/tool-call candidates plus guard/broker release seam")
+        Component(armorAdapter, "Armor Guard Adapter", "internal/armor", "External armor invocation adapter for ingestion decisions")
         Component(executor, "Claude CLI Executor", "internal/executor", "Concrete supervisor.Executor adapter")
         Component(sandbox, "exec-sandbox Run Adapter", "internal/sandbox", "Typed contained-command seam and test fake")
         Component(tasksource, "Task Source", "internal/tasksource", "Read-only roadmap/task parser and next-task selector")
@@ -88,6 +90,8 @@ C4Component
     Rel(agentloop, tasksource, "Picks next task")
     Rel(agentloop, statuswriter, "Marks needs-human after exhausted retries")
     Rel(agentloop, ingestion, "Consumes guarded boundary seam when web/tool events are exposed")
+    Rel(ingestion, armorAdapter, "Calls Guard implementation")
+    Rel(armorAdapter, armorTool, "Invokes over JSON")
     Rel(agentloop, gate, "Verifies target worktree")
     Rel(tasksource, supervisor, "Uses Task model")
     Rel(gate, codeScanner, "Runs in target worktree")
@@ -99,6 +103,7 @@ C4Component
 - ADR 013 fixes the retry escalation policy: non-negative `MaxAttempts`, mandatory stop, status-writer `needs-human` marking, and substitutable escalation hook.
 - ADR 020 fixes the exec-sandbox run adapter seam: command/worktree/typed limits in, result/exit/error out.
 - ADR 024 fixes the ingestion boundary shape: typed web-content and tool-call candidates, guard decisions of allow/block/quarantine, and fail-closed broker release.
+- Task 025 fixes the armor guard adapter shape: external JSON process/service invocation maps allow/findings/failure output to ingestion decisions without vendoring armor source.
 - Task 022 fixes the Claude CLI executor adapter: `claude -p` runs in the task worktree, receives `ANTHROPIC_API_KEY` through env, and reports the produced branch through an executor-owned temp file.
 - Task 017 fixes the supervisor dispatch lifecycle: create one box, run one in-box loop, and tear the box down exactly once.
 - Task 019 fixes the run-record seam: command/stdout/stderr events stream to host-side NDJSON and close before box teardown.

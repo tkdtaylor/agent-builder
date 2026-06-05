@@ -88,6 +88,9 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `executor.ClaudeCLIConfig.CLIPath` | string | none for explicit config; `NewClaudeCLIFromEnv` uses `claude` | yes for explicit config | Path/name of the Claude Code CLI binary to execute. Blank explicit config fails before subprocess start. Tests may point this at a fake CLI subprocess. |
 | `executor.ClaudeCLIConfig.Worktree` | path string | none | yes | Target task worktree used as the Claude CLI subprocess working directory. Blank values fail before subprocess start. |
 | `executor.ClaudeCLIConfig.AuthToken` | secret string | none | yes | Explicit token value supplied to the executor. Production callers normally pass `ANTHROPIC_API_KEY` via `NewClaudeCLIFromEnv`; tests can provide a fake token directly. |
+| `armor.Config.Command` | argv slice | none | yes when no `armor.Config.Runner` is supplied | External armor-compatible command invoked with JSON stdin/stdout by `armor.ProcessRunner`. Missing or blank command fails closed as a block decision. |
+| `armor.Config.Runner` | `armor.Runner` | process runner from `Command` | no | Fakeable invocation seam for tests or service-backed integrations. When nil, the adapter constructs a process runner from `Command`. |
+| `armor.Config.Timeout` | `time.Duration` | disabled (`0`) | no | Optional per-candidate armor invocation timeout. Positive values cause timed-out invocations to return a fail-closed block decision. |
 
 ---
 

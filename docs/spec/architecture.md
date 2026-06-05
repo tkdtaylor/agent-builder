@@ -34,6 +34,7 @@ When the structure changes, both files update in the same commit. The tables her
 |------|------|-------------|-------|
 | agent-builder | In-scope | | This team |
 | Claude Code CLI | External CLI | Cloud executor harness/model subprocess invoked against a task worktree | Anthropic |
+| armor | External CLI/service | LLM guard invoked behind the ingestion boundary to classify content and tool-call candidates | External tool |
 | code-scanner | External CLI | Malware/backdoor/credential-harvest scanner invoked as a blocking gate step | Tooling environment |
 
 ---
@@ -63,6 +64,7 @@ When the structure changes, both files update in the same commit. The tables her
 | agent-builder CLI | Supervisor | `internal/supervisor` | Trusted outside-the-box dispatcher that creates one containment box, starts one in-box loop, streams run output to a durable run-record when configured, logs lifecycle events, and tears down deterministically | Verification Gate model; exec-sandbox Run Adapter |
 | agent-builder CLI | Agent Loop | `internal/loop` | Drives one inside-the-box pick -> attempt -> verify cycle and applies the bounded retry/escalation policy around that policy-free outcome | Supervisor; Task Source; Task Status Writer; Verification Gate |
 | agent-builder CLI | Ingestion Boundary | `internal/ingestion` | Defines typed web-content and tool-call candidates plus the guard/broker seam that releases only allowed candidates to the executor path | |
+| agent-builder CLI | Armor Guard Adapter | `internal/armor` | Adapts an external armor-compatible process/service to the ingestion guard decision model without vendoring armor source | Ingestion Boundary; armor |
 | agent-builder CLI | Claude CLI Executor | `internal/executor` | Concrete `supervisor.Executor` adapter that invokes Claude Code CLI in a task worktree and captures the produced branch | Supervisor; Claude Code CLI |
 | agent-builder CLI | exec-sandbox Run Adapter | `internal/sandbox` | Typed contained-command run seam plus deterministic fake backend | |
 | agent-builder CLI | Verification Gate | `internal/gate` | Runs ordered blocking verification Steps and returns structured Verdicts | code-scanner |
@@ -82,6 +84,7 @@ When the structure changes, both files update in the same commit. The tables her
 - ADR 015: Default-deny execution-box egress allowlist — plain-text exact host:port allowlist, launcher-validated fail-closed parsing, sidecar-owned network administration, and nftables default-drop filtering before workload start.
 - ADR 020: exec-sandbox run adapter seam — typed command/worktree/limits request, result plus exit code plus error response, fake backend for tests.
 - ADR 024: armor ingestion and tool-call boundary — repo-owned in-box boundary for attacker-reachable content and tool-call candidates, with fail-closed guard decisions before executor release.
+- Task 025: armor guard adapter — external process/service invocation seam maps armor allow/findings/failure output into ingestion allow/block/quarantine decisions without editing armor source.
 - Task 017: Supervisor dispatch lifecycle — one task per `Run()`, create -> run-inside -> teardown ordering, teardown-on-error, and recovered-panic teardown.
 - Task 019: RunRecord collection — host-side NDJSON run record captures command/stdout/stderr stream events during `RunInside`, writes terminal outcomes, and closes before teardown.
 

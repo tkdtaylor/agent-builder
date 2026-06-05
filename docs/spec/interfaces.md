@@ -66,6 +66,7 @@ There is no `verify` flag that skips, bypasses, or weakens the Gate. The Gate is
 |------------|-------------|-------------------|--------------|
 | Podman | `podman build`, `podman pod create`, `podman create`, `podman inspect`, `podman start`, `podman run`, `podman logs`, `podman pod rm`, and `podman rm` from `containment/execution-box/run.sh` | process `PATH`; rootless Podman for the current non-root user | Missing binary, failed `podman info`, failed image build, absent quota fields, egress sidecar startup failure, or failed in-box probe exits non-zero and names the failing check |
 | Claude Code CLI | `claude -p <prompt>` in the configured task worktree | process `PATH` or `executor.ClaudeCLIConfig.CLIPath`; auth supplied through `ANTHROPIC_API_KEY` | Missing binary, blank config, missing token, subprocess non-zero exit, or missing/blank produced branch file fails the executor attempt |
+| armor | armor-compatible command configured by `armor.Config.Command` and invoked with JSON stdin/stdout | process `PATH` or caller-supplied command path; fakeable through `armor.Runner` | Missing command, subprocess timeout, non-zero exit, malformed JSON, malformed decision, or armor error output maps to a fail-closed `block` decision |
 | Go toolchain | `go build ./...`, `go vet ./...`, `go test ./...` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `go` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
 | gofmt | `gofmt -l .` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `gofmt` fails the Step; non-zero exit fails the Step; non-empty output fails the Step as formatting drift |
 | golangci-lint | `golangci-lint run` in the target worktree | process `PATH`; version supplied by the runtime environment | Missing `golangci-lint` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
@@ -277,9 +278,34 @@ func (r ToolCallReview) Release() (ToolCallCandidate, bool)
 ```
 
 - **Implementors:** `internal/ingestion.Broker`; fake guards in tests; the task 025 armor adapter implements `Guard`.
+- **Concrete adapter:** `armor.Guard` implements this interface by invoking an external armor-compatible runner.
 - **Consumers:** inside-the-box agent loop and executor-facing harness code when web-ingestion or tool-call events are exposed.
 - **Stability:** governed by ADR 024 and `docs/tasks/test-specs/024-ingestion-tool-call-boundary-test-spec.md`.
 - **Required behavior:** content candidates validate source URI, media type, content bytes, retrieval metadata, provenance, and stable correlation ID before executor context. Tool-call candidates validate tool name, JSON arguments, optional target URI, provenance, and stable correlation ID before execution. The broker invokes the configured guard and releases a candidate only for a valid `allow` decision matching the candidate kind and ID. Guard error, timeout, unavailable guard, malformed result, and explicit `block` or `quarantine` decisions never release the candidate.
+
+### Interface: armor guard adapter
+
+```go
+type Runner interface {
+	Run(context.Context, Request) (Response, error)
+}
+
+type Config struct {
+	Runner  Runner
+	Command []string
+	Timeout time.Duration
+}
+
+func NewGuard(Config) Guard
+
+func (g Guard) DecideContent(context.Context, ingestion.ContentCandidate) (ingestion.Decision, error)
+func (g Guard) DecideToolCall(context.Context, ingestion.ToolCallCandidate) (ingestion.Decision, error)
+```
+
+- **Implementors:** `armor.Guard`; `armor.ProcessRunner`; test fakes implementing `armor.Runner`.
+- **Consumers:** ingestion broker configuration and future executor-facing wiring.
+- **Stability:** governed by ADR 024 and `docs/tasks/test-specs/025-armor-guard-adapter-test-spec.md`.
+- **Required behavior:** the adapter sends candidate data through an external invocation seam as JSON-compatible `armor.Request`, consumes `armor.Response`, and returns `ingestion.Decision`. `allow`/`clean` responses without findings map to `allow`. `flag`/`block` findings map to `block`; `quarantine` maps to `quarantine`; finding categories, severities, warnings, and response metadata remain visible in decision metadata. Missing command, runner error, context timeout, non-zero process exit, malformed JSON, malformed decision strings, and explicit armor error responses map to fail-closed `block` decisions without returning adapter errors.
 
 ### Interface: `loop.RetryingLoop`
 

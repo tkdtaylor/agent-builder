@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-05
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 Implement the external armor guard adapter behind the web-ingestion/tool-call

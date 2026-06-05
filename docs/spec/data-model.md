@@ -334,6 +334,63 @@ Metadata       map[string]string          guard-specific decision metadata
 - **Lifecycle:** produced by a `Guard` or by the broker's fail-closed path; consumed by review `Release` helpers and future audit/run-record code.
 - **Relationships:** `allow` is the only outcome that releases candidate data. `block` and `quarantine` preserve decision metadata but do not release candidate data.
 
+### State: Armor Guard Adapter
+
+- **Shape:** `internal/armor.Guard` owns one external invocation runner and an optional timeout. `ProcessRunner` invokes an armor-compatible command with JSON stdin and parses JSON stdout. Tests can supply an in-process `Runner`.
+- **Owner:** inside-the-box runtime wiring constructs the adapter and passes it to `ingestion.NewBroker`.
+- **Lifetime:** process-local; no adapter request or response is persisted by this package.
+- **Concurrency rules:** no internal mutable state is required by `Guard`; callers choose whether a supplied `Runner` implementation is safe to share.
+- **Bounds:** one guard decision invokes at most one external armor request.
+
+#### Value: `armor.Request`
+
+```
+field          type                  notes
+────────────────────────────────────────────────────────────
+candidate_id   string                ingestion candidate correlation ID
+kind           string                content or tool-call
+content        string                content candidate bytes represented as text for armor-compatible JSON
+source_uri     string                content source URI when applicable
+media_type     string                content media type when applicable
+tool_name      string                requested tool name when applicable
+arguments      json.RawMessage       tool-call arguments when applicable
+target_uri     string                tool-call target URI when applicable
+provenance     map[string]string     task_id and executor metadata when available
+```
+
+- **Identity:** `(candidate_id, kind)` joins the external request to the ingestion decision.
+- **Lifecycle:** produced by `armor.Guard`; consumed by an external command/service runner.
+- **Relationships:** maps directly from `ingestion.ContentCandidate` or `ingestion.ToolCallCandidate`.
+
+#### Value: `armor.Response`
+
+```
+field       type                    notes
+────────────────────────────────────────────────────────────
+decision    string                  allow/clean/pass, block/flag/deny, quarantine, or error/fail
+reason      string                  optional guard reason
+findings    []armor.Finding         guard findings that become decision metadata
+warnings    []string                non-blocking warnings preserved in metadata
+metadata    map[string]string       external guard metadata copied into the decision
+```
+
+- **Identity:** scoped to one external armor invocation.
+- **Lifecycle:** produced by the runner; consumed by `armor.Guard`.
+- **Relationships:** findings force `allow`-like responses to fail closed as `block`; malformed decisions fail closed as `block`.
+
+#### Value: `armor.Finding`
+
+```
+field       type      notes
+────────────────────────────────────────────────────────────
+category    string    finding category such as prompt-injection, exfiltration, unsafe-tool-call
+severity    string    external guard severity label
+message     string    human-readable finding reason
+```
+
+- **Lifecycle:** produced inside `armor.Response`; copied into `ingestion.Decision.Metadata`.
+- **Relationships:** categories and severities are sorted/deduplicated in decision metadata for deterministic assertions.
+
 ### State: Retry Escalation Policy
 
 - **Shape:** `*loop.RetryingLoop` stores a `loop.TaskSource`, current `supervisor.Executor`, `supervisor.Gate`, target worktree path, `loop.StatusWriter`, and `loop.RetryPolicy`.
@@ -457,6 +514,7 @@ run_finished    outcome; error when outcome is failed or timed-out
 - Agent-loop `OutcomeFail` never contains retry count, retry decision, or escalation target state.
 - Ingestion broker release is possible only after a valid `allow` decision whose candidate ID and kind match the reviewed candidate.
 - Ingestion guard error, timeout, unavailable guard, malformed decision, explicit `block`, and explicit `quarantine` outcomes do not release candidate data.
+- Armor adapter invocation failure, timeout, non-zero process exit, malformed JSON, malformed decision string, or explicit armor error response maps to an ingestion `block` decision.
 - Retry policy `MaxAttempts` is non-negative; negative values fail validation.
 - Retry escalation writes only `needs-human` through the constrained task status-writer seam after exhausted failures.
 - A configured RunRecord is host-side and durable: stream events are written during `RunInside`, the terminal outcome is written, and the file is closed before containment teardown.

@@ -135,6 +135,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Missing guard, guard error, guard timeout, context cancellation, malformed decision outcome, mismatched candidate ID, or mismatched candidate kind produces a fail-closed `block` decision and does not release candidate data.
 - **References:** ADR 024; `docs/tasks/test-specs/024-ingestion-tool-call-boundary-test-spec.md`.
 
+### B-015: Map external armor results to ingestion decisions
+
+- **Trigger:** The armor guard adapter receives a content or tool-call candidate through the `ingestion.Guard` interface.
+- **Response:** The adapter builds an armor request preserving candidate ID, candidate kind, candidate data, and provenance; invokes the configured external runner; and maps the armor response to an `ingestion.Decision`. Clean/allow/pass responses without findings return `allow`. Block/flag/deny responses return `block`. Quarantine responses return `quarantine`. Finding categories, severities, warnings, and response metadata are preserved as decision metadata.
+- **Side effects:** A process-backed runner starts the configured armor-compatible command with JSON stdin and reads JSON stdout. The adapter does not fetch web content, execute tool calls, persist audit records, or modify armor source.
+- **Failure modes:** Missing runner/command, runner error, timeout, non-zero process exit, malformed JSON output, malformed decision string, or explicit armor error/fail response returns a fail-closed `block` decision and no adapter error.
+- **References:** ADR 024; `docs/tasks/test-specs/025-armor-guard-adapter-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -173,3 +181,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - One `Supervisor.Run()` call dispatches at most one task and always tears down a successfully created box exactly once.
 - A configured supervisor timeout records `timed-out`, distinct from ordinary loop failure, and does not skip teardown.
 - Ingestion candidate review fails closed: only a valid matching `allow` releases content or tool-call data.
+- The armor adapter invokes armor as an external seam and does not vendor or edit armor source.
