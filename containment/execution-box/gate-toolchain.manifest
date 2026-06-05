@@ -1,0 +1,13 @@
+# execution-box Gate toolchain manifest
+#
+# The execution-box image supplies go and gofmt from its Go base image.
+# The remaining production Gate tools are supplied by a read-only artifact
+# directory mounted at /opt/agent-builder/gate-tools. The launcher validates
+# that each required executable exists before Podman starts, and the in-box
+# probe reports each executable path plus version output when available.
+
+go=base-image
+gofmt=base-image
+golangci-lint=mounted-version-reported
+gods=mounted-version-reported
+code-scanner=mounted-version-reported

@@ -47,7 +47,7 @@ When the structure changes, both files update in the same commit. The tables her
 | Name | Technology | Responsibility | Source path | Depends on |
 |------|------------|----------------|-------------|------------|
 | agent-builder CLI | Go | Entrypoint process for the autonomous builder scaffold | `cmd/agent-builder` | |
-| execution-box profile | Rootless Podman / OCI image with selectable OCI runtime | Product containment artifact for running one target repo worktree with read-only rootfs, scratch tmpfs, non-root execution, dropped workload capabilities, resource quotas, default-deny egress, and workload-tier runtime defaults (`agent` -> `runsc`, `dev` -> `runc`) | `containment/execution-box` | |
+| execution-box profile | Rootless Podman / OCI image with selectable OCI runtime | Product containment artifact for running one target repo worktree with read-only rootfs, scratch tmpfs, non-root execution, dropped workload capabilities, resource quotas, default-deny egress, workload-tier runtime defaults (`agent` -> `runsc`, `dev` -> `runc`), and read-only mounted Gate scanner/linter tools on the in-box `PATH` | `containment/execution-box` | |
 | execution-box egress sidecar | Rootless Podman / nftables sidecar | Trusted per-run network filter that installs default-deny egress rules for the execution-box pod namespace before the workload starts | `containment/execution-box` | execution-box profile |
 
 **Invariants for this table**

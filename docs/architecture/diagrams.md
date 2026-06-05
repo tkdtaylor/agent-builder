@@ -47,7 +47,7 @@ C4Container
 
     System_Boundary(boundary, "agent-builder") {
         Container(cli, "agent-builder CLI", "Go", "Entrypoint process for the autonomous builder scaffold")
-        Container(execBox, "execution-box profile", "Rootless Podman / OCI image + selectable OCI runtime", "Product containment artifact for one target repo worktree")
+        Container(execBox, "execution-box profile", "Rootless Podman / OCI image + selectable OCI runtime", "Product containment artifact for one target repo worktree plus mounted Gate tools")
         Container(egressSidecar, "execution-box egress sidecar", "Rootless Podman / nftables", "Trusted default-deny egress filter for the execution-box pod namespace")
     }
 
@@ -126,6 +126,7 @@ C4Component
 - ADR 014 defines the execution-box profile artifact; supervisor wiring to launch it is deferred to the dispatch task.
 - ADR 015 defines the execution-box egress sidecar and allowlist contract; it changes the execution-box runtime topology without changing the agent-builder CLI component graph.
 - ADR 016 defines the execution-box runtime tier seam; workload containers run with Podman `--runtime` selected by workload default (`agent` -> `runsc`, `dev` -> `runc`) or explicit override, without changing the CLI component graph.
+- Task 033 defines the execution-box Gate toolchain contract; workload containers prepend a read-only mounted scanner/linter artifact directory to `PATH`, and the containment probe reports Gate tool path/version evidence.
 
 ---
 

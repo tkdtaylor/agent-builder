@@ -40,6 +40,26 @@ EOF
     fi
 fi
 
+for tool in go gofmt golangci-lint gods code-scanner; do
+    tool_path="$(command -v "$tool" || true)"
+    [ -n "$tool_path" ] || fail TC-001 "Gate tool missing on PATH: $tool"
+
+    case "$tool" in
+        go)
+            version="$("$tool" version 2>&1 || true)"
+            ;;
+        gofmt)
+            version="path=$tool_path"
+            ;;
+        *)
+            version="$("$tool" --version 2>&1 | sed -n '1p' || true)"
+            [ -n "$version" ] || version="path=$tool_path"
+            ;;
+    esac
+    pass TC-001 "Gate tool $tool path=$tool_path version=$version"
+done
+pass TC-005 'execution-box Gate toolchain available for in-box verification'
+
 printf 'worktree\n' > /work/.execution-box-probe/nested/write.txt ||
     fail TC-001 'worktree mount is not writable'
 printf 'scratch\n' > /scratch/probe/write.txt ||

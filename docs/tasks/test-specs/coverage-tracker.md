@@ -44,7 +44,7 @@
 | 030 | Runtime isolation evidence | 030-runtime-isolation-evidence-test-spec.md | ✅ | ❌ | Not started |
 | 031 | Verification ledger cleanup | 031-verification-ledger-cleanup-test-spec.md | ✅ | ❌ | Not started |
 | 032 | Phase 0 end-to-end acceptance | 032-phase0-end-to-end-acceptance-test-spec.md | ✅ | ❌ | Not started |
-| 033 | Execution-box Gate toolchain | 033-execution-box-gate-toolchain-test-spec.md | ✅ | ❌ | Not started |
+| 033 | Execution-box Gate toolchain | 033-execution-box-gate-toolchain-test-spec.md | ✅ | 🟡 | L5: `go test -count=1 -v ./tests/containment ./tests/cli -run 'TestExecutionBoxGateToolchain\|TestVerifyMissingGateTool'` -> `ok github.com/tkdtaylor/agent-builder/tests/cli`; runtime-visible dry-run `containment/execution-box/run.sh --gate-tools <fixture> --print-toolchain-plan` printed mounted Gate tool path/version lines; L6 pending because local Podman is unavailable |
 | 034 | Branch and PR publication | 034-branch-pr-publication-test-spec.md | ✅ | ❌ | Not started |
 
 ## Status key
