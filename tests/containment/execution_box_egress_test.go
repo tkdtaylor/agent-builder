@@ -50,6 +50,86 @@ api.github.com:443 # TC-002 duplicate is de-duplicated
 	assertContains(t, string(outputBytes), "must be plain host:port")
 }
 
+// printEgressPlan writes allowlist content to a temp file and runs the launcher
+// in --print-egress-plan mode, returning combined output and the run error.
+func printEgressPlan(t *testing.T, root, runPath, content string) (string, error) {
+	t.Helper()
+	f := filepath.Join(t.TempDir(), "egress.allowlist")
+	if err := os.WriteFile(f, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(runPath, "--egress-allowlist", f, "--print-egress-plan")
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+// TC-001 edge cases: a comment-and-blank-only allowlist resolves to total deny
+// and emits no allow rules.
+func TestExecutionBoxEgressPlan_TC001_EmptyAllowlist(t *testing.T) {
+	root := repoRoot(t)
+	runPath := filepath.Join(root, "containment", "execution-box", "run.sh")
+
+	output, err := printEgressPlan(t, root, runPath, "\n# comment-only line, no hosts\n\n   \n")
+	if err != nil {
+		t.Fatalf("comment/blank-only allowlist should parse cleanly: %v\n%s", err, output)
+	}
+	assertContains(t, output, "TC-001 PLAN: defaultAction=deny enforcement=dns-hosts+nftables")
+	assertContains(t, output, "TC-001 PLAN: empty allowlist; total egress deny")
+	if strings.Contains(output, "TC-001 PLAN: allow ") {
+		t.Fatalf("comments and blank lines must not produce allow rules, got:\n%s", output)
+	}
+}
+
+// TC-002 edge cases: missing or non-numeric ports are rejected before Podman.
+func TestExecutionBoxEgressPlan_TC002_PortRejection(t *testing.T) {
+	root := repoRoot(t)
+	runPath := filepath.Join(root, "containment", "execution-box", "run.sh")
+
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"missing port", "api.github.com # TC-002 no explicit port\n", "must include an explicit port"},
+		{"non-numeric port", "api.github.com:https # TC-002 port is not numeric\n", "has a non-numeric port"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := printEgressPlan(t, root, runPath, tc.content)
+			if err == nil {
+				t.Fatalf("%s should be rejected, got success:\n%s", tc.name, output)
+			}
+			assertContains(t, output, tc.want)
+		})
+	}
+}
+
+// TC-002 edge cases: wildcard, IP-literal, and CIDR entries are rejected.
+func TestExecutionBoxEgressPlan_TC002_WildcardIPCIDRRejection(t *testing.T) {
+	root := repoRoot(t)
+	runPath := filepath.Join(root, "containment", "execution-box", "run.sh")
+
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"wildcard", "*.github.com:443 # TC-002 wildcards are not exact hosts\n", "must be plain host:port"},
+		{"ip literal", "192.168.1.1:443 # TC-002 IP literals bypass DNS pinning\n", "does not accept IP literals"},
+		{"cidr", "10.0.0.0/8:443 # TC-002 CIDR ranges are not single hosts\n", "must be plain host:port"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			output, err := printEgressPlan(t, root, runPath, tc.content)
+			if err == nil {
+				t.Fatalf("%s should be rejected, got success:\n%s", tc.name, output)
+			}
+			assertContains(t, output, tc.want)
+		})
+	}
+}
+
 func TestExecutionBoxEgressLauncherContract_TC001_TC003_TC004(t *testing.T) {
 	run := readFile(t, "containment", "execution-box", "run.sh")
 
