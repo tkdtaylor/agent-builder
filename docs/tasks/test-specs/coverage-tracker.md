@@ -28,7 +28,7 @@
 | 014 | Podman containment profile | 014-podman-containment-profile-test-spec.md | ✅ | 🟡 | L3: `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.`; `make fitness` -> `Fitness checks passed.`; L6 probe blocked locally: `containment/execution-box/run.sh --worktree . --probe` -> `execution-box: podman unavailable on PATH` |
 | 015 | Default-deny egress allowlist | 015-egress-allowlist-test-spec.md | stub | ❌ | — |
 | 016 | Tiered OCI runtime selection seam | 016-tiered-runtime-seam-test-spec.md | stub | ❌ | — |
-| 017 | Supervisor dispatch-one-task lifecycle | 017-supervisor-dispatch-test-spec.md | ✅ | 🟡 | L2: `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.`; L3: `make fitness` -> `Fitness checks passed.`; L5 fake dispatch harness: `go test -count=1 -v ./internal/supervisor -run TestRunDispatchesOneTaskAndLogsLifecycle` -> `event=box.created` -> `event=loop.started` -> `event=box.torn_down`; pending spec-verifier before ✅ |
+| 017 | Supervisor dispatch-one-task lifecycle | 017-supervisor-dispatch-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5 fake dispatch harness: `go test -count=1 -v ./internal/supervisor -run TestRunDispatchesOneTaskAndLogsLifecycle` -> `event=box.created` -> `event=loop.started` -> `event=box.torn_down` |
 | 018 | Wall-clock timeout / runaway kill | 018-wall-clock-kill-test-spec.md | stub | ❌ | — |
 | 019 | Run log collection (audit-trail seam) | 019-run-log-collection-test-spec.md | stub | ❌ | — |
 | 020 | exec-sandbox run() adapter seam | 020-exec-sandbox-adapter-seam-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L2/L3: `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.`; unit-test-only; no runtime surface |
