@@ -1,0 +1,20 @@
+# Compiled binaries
+/bin/
+/agent-builder
+
+# Go test/coverage output
+*.out
+coverage.*
+
+# Per-task worktrees (created by scripts/start-task.sh under concurrent sessions)
+.claude/worktrees/
+
+# Per-session lock files (used by session-lock.py to detect concurrent sessions)
+.claude/sessions/
+
+# Secrets / local env
+.env
+
+# Editor
+.idea/
+.vscode/

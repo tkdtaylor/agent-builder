@@ -1,0 +1,40 @@
+# agent-builder — Authoritative Spec
+
+**Project:** agent-builder
+**Last updated:** 2026-06-04
+**Status:** pre-implementation (scaffold). This spec describes the *target* v0; sections fill in as tasks land.
+
+> Authoritative design source: `autonomous-builder.md`. This SPEC is the in-repo snapshot; where they disagree, reconcile in the same change.
+
+## System summary
+
+agent-builder is a Go orchestrator that runs an autonomous coding agent unattended to build the secure-agent ecosystem blocks. It reads a task from a roadmap, routes it to a pluggable executor, runs the executor inside a contained box against one target repo's worktree, verifies the result with a machine-checkable gate, and produces a branch/PR — or escalates.
+
+## Spec index
+
+| Doc | Covers |
+|-----|--------|
+| [behaviors.md](behaviors.md) | What the system does — the loop, routing, escalation |
+| [architecture.md](architecture.md) | Components: supervisor, agent loop, executor seam, containment, gate |
+| [data-model.md](data-model.md) | Task, executor, verdict, run-record shapes |
+| [interfaces.md](interfaces.md) | CLI surface; executor `(harness, model) → branch` contract; exec-sandbox `run()` seam |
+| [configuration.md](configuration.md) | Egress allowlist, executor auth/token handling, resource limits |
+| [fitness-functions.md](fitness-functions.md) | Executable invariants (see below) |
+
+## Invariants (load-bearing)
+
+1. **Verification gate is the definition of done.** No task completes unattended without the gate (tests + build + lint + scanners) passing. The gate is the only ground truth.
+2. **No unattended self-modification.** The agent reads its own repo but never edits it autonomously.
+3. **the internal planning hub is read-mostly.** Roadmap is input; the agent may flip task status, never author/reprioritize.
+4. **One task = one repo = one branch.** No cross-repo sprawl within a task.
+5. **Containment is rootless Podman + tiered runtime + default-deny egress allowlist.** The allowlist is the load-bearing control for the accepted token-in-box risk.
+6. **Executor seam is `(harness, model) → branch`.** Pluggable; mixing uneven-quality executors is made safe by the gate (fail → escalate to a stronger executor).
+7. **Secrets:** executor auth tokens may live in the box (accepted risk — flat-rate/no-overage + tight allowlist + revocability + scanners). vault is for *task* secrets, not executor auth.
+
+## Candidate fitness functions (to wire up)
+
+- **F-001 — no Docker:** no `docker`/`docker-compose`/`Dockerfile` dev-env references in repo (substrate is rootless Podman; product container defs live under a named dir, not a dev container).
+- **F-002 — gate is blocking:** the verification path has no `--no-verify`/skip route around `dep-scan`/`code-scanner`.
+- **F-003 — supervisor has no LLM/untrusted-content dependency:** the supervisor package imports no executor/LLM/web-fetch code (it must stay dumb).
+
+These are declarative until implemented in `make fitness` per [fitness-functions.md](fitness-functions.md).
