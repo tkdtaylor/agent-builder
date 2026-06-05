@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-supervisor-isolation check
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation check
 
 lint:
 	golangci-lint run
@@ -10,7 +10,7 @@ test:
 	go test ./...
 
 # Fitness functions — see docs/spec/fitness-functions.md
-fitness: fitness-no-docker fitness-supervisor-isolation
+fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation
 	@echo "Fitness checks passed."
 
 fitness-no-docker:
@@ -51,6 +51,61 @@ fitness-no-docker:
 		exit 1; \
 	fi; \
 	echo "PASS fitness-no-docker: no forbidden dev-environment references found."
+
+fitness-gate-blocking:
+	@matches=$$( \
+		find cmd/agent-builder internal/gate \
+			-type f \
+			-name '*.go' \
+			! -name '*_test.go' \
+			-print | while IFS= read -r file; do \
+				awk ' \
+					function strip_comments(line, out, block_start, line_comment, block_end) { \
+						out = ""; \
+						while (length(line) > 0) { \
+							if (in_block) { \
+								block_end = index(line, "*/"); \
+								if (block_end == 0) { return out; } \
+								line = substr(line, block_end + 2); \
+								in_block = 0; \
+							} else { \
+								block_start = index(line, "/*"); \
+								line_comment = index(line, "//"); \
+								if (line_comment > 0 && (block_start == 0 || line_comment < block_start)) { \
+									return out substr(line, 1, line_comment - 1); \
+								} \
+								if (block_start > 0) { \
+									out = out substr(line, 1, block_start - 1); \
+									line = substr(line, block_start + 2); \
+									in_block = 1; \
+								} else { \
+									return out line; \
+								} \
+							} \
+						} \
+						return out; \
+					} \
+					{ \
+						code = strip_comments($$0); \
+						if (code ~ /--no-verify|--skip-verify|no-verify|skip-verify/) { \
+							printf "%s:%d: forbidden verify skip flag: %s\n", FILENAME, FNR, code; \
+						} \
+						if (code ~ /(^|[^[:alnum:]_])(NO_VERIFY|SKIP_SCAN|SKIP_DEP_SCAN|SKIP_CODE_SCANNER|SKIP_VERIFY|BYPASS_VERIFY)([^[:alnum:]_]|$$)/) { \
+							printf "%s:%d: forbidden scanner skip env var: %s\n", FILENAME, FNR, code; \
+						} \
+						if (code ~ /(^|[^[:alnum:]_])(if|return)([^[:alnum:]_].*)?(skip|bypass|noVerify|skipScan|skipDepScan|skipCodeScanner|skipVerify|bypassVerify)([^[:alnum:]_]|$$)/ || code ~ /(^|[^[:alnum:]_])(skip|bypass|noVerify|skipScan|skipDepScan|skipCodeScanner|skipVerify|bypassVerify)([^[:alnum:]_].*)?(if|return)([^[:alnum:]_]|$$)/) { \
+							printf "%s:%d: forbidden conditional scanner bypass: %s\n", FILENAME, FNR, code; \
+						} \
+					} \
+				' "$$file"; \
+			done \
+	); \
+	if [ -n "$$matches" ]; then \
+		echo "FAIL fitness-gate-blocking: verification gate bypass affordance(s) found:"; \
+		printf '%s\n' "$$matches" | sort -u; \
+		exit 1; \
+	fi; \
+	echo "PASS fitness-gate-blocking: no verification gate bypass affordances found."
 
 fitness-supervisor-isolation:
 	@deps=$$(go list -deps ./internal/supervisor/...) || exit $$?; \

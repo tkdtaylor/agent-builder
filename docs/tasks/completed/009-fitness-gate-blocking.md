@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** completed (code merged)
 
 ## Goal
 Add a fitness check (`make fitness-gate-blocking`) that asserts the verification path exposes no `--no-verify`/skip flag or conditional that bypasses dep-scan/code-scanner, because the gate is the definition of done and a silent bypass defeats the security model.
@@ -22,15 +22,15 @@ Add a fitness check (`make fitness-gate-blocking`) that asserts the verification
 | REQ-003 | A row for F-002 is added to the Rules table in `docs/spec/fitness-functions.md` (security; asserts the gate path has no skip route around dep-scan/code-scanner; threshold 0 bypasses; severity block) | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 002, 005, 006
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 002, 005, 006
 
 ## Acceptance criteria
-- [ ] [REQ-001] `make fitness-gate-blocking` exits 0 on the current tree (gate steps present, no skip route) and prints a pass message
-- [ ] [REQ-001] Adding a `--no-verify` short-circuit (or a conditional that returns ok without running the scanner steps) causes the target to exit non-zero and report the offending location
-- [ ] [REQ-002] `make fitness` invokes `fitness-gate-blocking` as part of the umbrella run
-- [ ] [REQ-003] The F-002 row exists in `docs/spec/fitness-functions.md` and points to the `make fitness-gate-blocking` check command
+- [x] [REQ-001] `make fitness-gate-blocking` exits 0 on the current tree (gate steps present, no skip route) and prints a pass message
+- [x] [REQ-001] Adding a `--no-verify` short-circuit (or a conditional that returns ok without running the scanner steps) causes the target to exit non-zero and report the offending location
+- [x] [REQ-002] `make fitness` invokes `fitness-gate-blocking` as part of the umbrella run
+- [x] [REQ-003] The F-002 row exists in `docs/spec/fitness-functions.md` and points to the `make fitness-gate-blocking` check command
 
 ## Verification plan
 - **Highest level achievable:** L3 — fitness rule run via Makefile target.
@@ -47,3 +47,12 @@ Add a fitness check (`make fitness-gate-blocking`) that asserts the verification
 - Match on the patterns that constitute a bypass: skip/no-verify flags surfaced by the CLI, env-var gates that disable scanners, and early-return conditionals between gate entry and the scanner steps. Tune to avoid false positives on the words appearing in comments/tests that assert the *absence* of a bypass.
 - This rule is only meaningful once 005/006 land; until then the scanner steps it guards do not exist. Sequence accordingly.
 - Per `docs/spec/fitness-functions.md` "How to run", the three sub-changes (target, umbrella prerequisite, Rules row) land together in the implementing commit.
+
+## Verification evidence
+
+- **Positive fitness check:** `make fitness-gate-blocking` -> `PASS fitness-gate-blocking: no verification gate bypass affordances found.`
+- **Negative CLI flag check:** temporary `const temporaryNegativeFixtureFlag = "--no-verify"` in `cmd/agent-builder/main.go` made `make fitness-gate-blocking` fail and name `cmd/agent-builder/main.go:13`; temporary fixture removed before commit.
+- **Negative env-var check:** temporary `const temporaryNegativeFixtureEnv = "SKIP_SCAN"` in `internal/gate/go_steps.go` made `make fitness-gate-blocking` fail and name `internal/gate/go_steps.go:19`; temporary fixture removed before commit.
+- **Negative early-return check:** temporary `if skip := false; skip { return StepResult{OK: true} }` in `internal/gate/go_steps.go` made `make fitness-gate-blocking` fail and name `internal/gate/go_steps.go:102`; temporary fixture removed before commit.
+- **Umbrella fitness:** `make fitness` includes `fitness-gate-blocking`; clean tree -> `Fitness checks passed.`
+- **Repo checks:** `gofmt -w .` -> no changes; `go test ./...` -> `ok github.com/tkdtaylor/agent-builder/internal/gate`; `go build ./...` -> success; plain `make check` failed because `golangci-lint` was absent from default `PATH`; `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.`

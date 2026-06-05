@@ -35,9 +35,6 @@ agent-builder is a Go orchestrator that runs an autonomous coding agent unattend
 
 - **F-003 — supervisor has no LLM/untrusted-content dependency:** implemented by `make fitness-supervisor-isolation`; the supervisor package import graph contains no executor/LLM/web-fetch packages.
 - **F-001 — no Docker dev-environment references:** implemented by `make fitness-no-docker`; working-tree files contain no `docker`/`docker-compose`/`Dockerfile` dev-environment references outside the allowed product-container path.
-
-Candidate rules that are still declarative:
-
-- **F-002 — gate is blocking:** the verification path has no `--no-verify`/skip route around `dep-scan`/`code-scanner`.
+- **F-002 — gate is blocking:** implemented by `make fitness-gate-blocking`; production gate and CLI source expose no `--no-verify`/skip route around `dep-scan`/`code-scanner`.
 
 See [fitness-functions.md](fitness-functions.md) for executable rule definitions and commands.

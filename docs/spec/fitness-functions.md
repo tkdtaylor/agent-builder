@@ -44,6 +44,7 @@ Keep entries concrete: the rule must be checkable by a tool, and the threshold m
 | ID | Rule | Category | Asserts | Threshold | Check command | Severity | Why this rule earns its row |
 |----|------|----------|---------|-----------|---------------|----------|----------------------------|
 | F-001 | No Docker dev-environment references | structural/security | Working-tree scan reports no `docker`, `docker-compose`, or `Dockerfile` dev-environment references outside `containment/` and excluded narrative/tooling paths | 0 hits | `make fitness-no-docker` | block | The containment substrate is rootless Podman. Docker/devcontainer references outside the product-container artifact path would undermine the promised execution environment. |
+| F-002 | Verification gate has no scanner bypass route | security | Production source under `cmd/agent-builder` and `internal/gate` exposes no `--no-verify`/skip flag, scanner-skip environment variable, or conditional early-return bypass around `dep-scan`/`code-scanner` | 0 bypass affordances | `make fitness-gate-blocking` | block | The verification gate is the definition of done. A silent scanner bypass would let unattended work complete without the security checks the gate promises. |
 | F-003 | Supervisor import graph has no executor/LLM/web-fetch dependency | structural | `go list -deps ./internal/supervisor/...` reports no package path segment named `executor`, `executors`, `llm`, `llms`, `web`, `webfetch`, or `web-fetch` | 0 violations | `make fitness-supervisor-isolation` | block | The supervisor is trusted host-side control code. Keeping executor, LLM, and untrusted-content fetch code out of its transitive imports preserves the "dumb supervisor" boundary. |
 
 Categories: `structural` (cycles, layering, dependency direction), `hygiene` (logging, leftovers, debug code), `performance` (latency, throughput, memory), `complexity` (cyclomatic, file size, fan-out), `security` (deps, surface, secrets), `coverage` (test coverage thresholds).
@@ -63,6 +64,7 @@ None recorded.
 > List which other spec files or ADRs each rule traces back to, so a reader can find the *why*.
 
 - F-001 (no Docker dev-environment references) ← [SPEC.md](SPEC.md) §Fitness functions, [`configuration.md`](configuration.md) §Deployment configuration, [`../architecture/overview.md`](../architecture/overview.md) §The shape of a run.
+- F-002 (verification gate has no scanner bypass route) ← [SPEC.md](SPEC.md) §Invariants and §Fitness functions, [`behaviors.md`](behaviors.md) §B-001 and §Implementation constraints, [`../architecture/overview.md`](../architecture/overview.md) §The shape of a run.
 - F-003 (supervisor isolation) ← [SPEC.md](SPEC.md) §Fitness functions, [`architecture.md`](architecture.md) §4 Components, [`../architecture/overview.md`](../architecture/overview.md) §Components.
 
 ## Notes

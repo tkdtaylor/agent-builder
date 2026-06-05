@@ -1,6 +1,6 @@
 # Test Spec 009: Fitness F-002 — verification gate is blocking (no skip route)
 
-**Linked task:** [`docs/tasks/backlog/009-fitness-gate-blocking.md`](../backlog/009-fitness-gate-blocking.md)
+**Linked task:** [`docs/tasks/completed/009-fitness-gate-blocking.md`](../completed/009-fitness-gate-blocking.md)
 **Written:** 2026-06-04
 **Status:** ready for implementation
 
