@@ -1,6 +1,6 @@
 # Test Spec 020: exec-sandbox run() adapter seam
 
-**Linked task:** [`docs/tasks/backlog/020-exec-sandbox-adapter-seam.md`](../backlog/020-exec-sandbox-adapter-seam.md)
+**Linked task:** [`docs/tasks/completed/020-exec-sandbox-adapter-seam.md`](../completed/020-exec-sandbox-adapter-seam.md)
 **Written:** 2026-06-04
 **Status:** complete — implementation must satisfy every TC marker below before the feature commit
 
