@@ -34,7 +34,7 @@
 | 020 | exec-sandbox run() adapter seam | 020-exec-sandbox-adapter-seam-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L2/L3: `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.`; unit-test-only; no runtime surface |
 | 021 | sandbox-runtime backing adapter | 021-sandbox-runtime-adapter-test-spec.md | stub | ❌ | — |
 | 022 | Claude Code CLI executor adapter | 022-claude-cli-executor-test-spec.md | stub | ❌ | — |
-| 023 | CLI subcommand surface (run/version/verify) | 023-cli-subcommands-test-spec.md | ✅ | ❌ | test spec written; implementation pending |
+| 023 | CLI subcommand surface (run/version/verify) | 023-cli-subcommands-test-spec.md | ✅ | 🟡 | L6 runtime-visible CLI checks: `agent-builder version`, `agent-builder verify <clean-repo>`, `agent-builder verify <failing-repo>`, and `agent-builder bogus`; executor self-check pending spec-verifier |
 | 024 | armor on web-ingestion / tool-call path | 024-armor-ingestion-wiring-test-spec.md | stub | ❌ | — |
 
 ## Status key

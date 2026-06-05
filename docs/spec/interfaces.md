@@ -24,21 +24,25 @@ Not in this file:
 agent-builder <subcommand> [flags] [args]
 
 Subcommands:
-  <subcommand>    <one-line description>
-
-Global flags:
-  --flag <type>   <effect> (default: <value>)
+  run             dispatch one supervisor loop
+  version         print the agent-builder version
+  verify <repo>   run the verification gate against a repo
 ```
 
 | Subcommand / flag | Type | Default | Effect |
 |-------------------|------|---------|--------|
-| | | | |
+| `run` | subcommand | — | Dispatches one supervisor run path. Returns `0` when the supervisor returns nil and `1` when the run fails. |
+| `version` | subcommand | — | Prints `agent-builder <version>` to stdout and exits `0`. |
+| `verify <repo>` | subcommand + path argument | — | Constructs the production verification Gate and runs it against the target repo path. Prints each Gate step result and exits `0` only when every blocking step passes. Exits `1` when any Gate step fails. |
+| `-h`, `--help`, `help` | help command | — | Prints top-level usage, subcommands, and exit codes to stdout and exits `0`. |
+| subcommand `-h` | help flag | — | Prints usage for the selected subcommand to stdout and exits `0`. |
 
 **Exit codes:**
 - `0` — success
 - `1` — generic error
 - `2` — usage error
-- *(add more as defined)*
+
+There is no `verify` flag that skips, bypasses, or weakens the Gate. The Gate is the definition of done and remains blocking.
 
 ### HTTP / RPC API
 
