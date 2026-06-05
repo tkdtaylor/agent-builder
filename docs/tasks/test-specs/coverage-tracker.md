@@ -23,7 +23,7 @@
 | 009 | Fitness F-002: gate is blocking (no skip) | 009-fitness-gate-blocking-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L6 operator-observed: `make fitness-gate-blocking` -> `PASS fitness-gate-blocking: no verification gate bypass affordances found.` Negative fixtures caught CLI flag, scanner skip env-var, and early-return bypass; `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.` |
 | 010 | Roadmap task-source reader (read-only) | 010-roadmap-task-source-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test -count=1 ./internal/tasksource/...` -> `ok github.com/tkdtaylor/agent-builder/internal/tasksource`; `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.` |
 | 011 | Task status writer (status-only) | 011-task-status-writer-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test -count=1 ./internal/tasksource/... ./tests/...` -> `ok github.com/tkdtaylor/agent-builder/tests/tasksource` |
-| 012 | Agent loop state machine | 012-agent-loop-test-spec.md | stub | ❌ | — |
+| 012 | Agent loop state machine | 012-agent-loop-test-spec.md | ✅ | ❌ | — |
 | 013 | Escalation + retry-N + stop condition | 013-escalation-retry-policy-test-spec.md | stub | ❌ | — |
 | 014 | Podman containment profile | 014-podman-containment-profile-test-spec.md | stub | ❌ | — |
 | 015 | Default-deny egress allowlist | 015-egress-allowlist-test-spec.md | stub | ❌ | — |
