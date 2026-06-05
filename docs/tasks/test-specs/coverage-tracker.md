@@ -33,7 +33,7 @@
 | 019 | Run log collection (audit-trail seam) | 019-run-log-collection-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test -v ./tests/supervisor -run TestRunRecordStreamsOutputAndPersistsAfterTeardown -count=1` -> `TC-003-Persist-After-Teardown sample persisted line: {"box_id":"box-019"` |
 | 020 | exec-sandbox run() adapter seam | 020-exec-sandbox-adapter-seam-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L2/L3: `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.`; unit-test-only; no runtime surface |
 | 021 | sandbox-runtime backing adapter | 021-sandbox-runtime-adapter-test-spec.md | stub | ❌ | — |
-| 022 | Claude Code CLI executor adapter | 022-claude-cli-executor-test-spec.md | ✅ | 🟡 | L5 stubbed CLI harness: `go test -count=1 -v ./tests/executor -run TestClaudeCLIRunInvokesSubprocessAgainstWorktreeAndCapturesBranch` -> `Result.Branch = task/022-claude-cli-executor`, `Result.OK == true`; L6 real Claude CLI/auth pending |
+| 022 | Claude Code CLI executor adapter | 022-claude-cli-executor-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5 stubbed CLI harness: `go test -count=1 -v ./tests/executor -run TestClaudeCLIRunInvokesSubprocessAgainstWorktreeAndCapturesBranch` -> `Result.Branch = task/022-claude-cli-executor`, `Result.OK == true`; L6 real Claude CLI/auth pending |
 | 023 | CLI subcommand surface (run/version/verify) | 023-cli-subcommands-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L6 runtime-visible CLI checks: `agent-builder version`, `agent-builder verify <clean-repo>`, `agent-builder verify <failing-repo>`, and `agent-builder bogus` |
 | 024 | armor on web-ingestion / tool-call path | 024-armor-ingestion-wiring-test-spec.md | stub | ❌ | — |
 
