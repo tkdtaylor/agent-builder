@@ -2,38 +2,42 @@
 
 **Linked task:** [`docs/tasks/backlog/016-tiered-runtime-seam.md`](../backlog/016-tiered-runtime-seam.md)
 **Written:** 2026-06-04
-**Status:** stub — fleshed out fully when the task is picked up (before implementation)
+**Status:** ready
 
 ## Requirements coverage
 | Req ID | Test cases | Covered? |
 |--------|-----------|----------|
-| REQ-001 | TC-001 | ❌ |
-| REQ-002 | TC-002, TC-004 | ❌ |
-| REQ-003 | TC-003 | ❌ |
+| REQ-001 | TC-001 | ✅ |
+| REQ-002 | TC-002, TC-004 | ✅ |
+| REQ-003 | TC-003 | ✅ |
 
 ## Test cases
 ### TC-001: Runtime selectable via config/flag (happy path)
 - **Requirement:** REQ-001
-- **Input:** Launch box with `--runtime runc`, then with `--runtime runsc` (if available); observe the active runtime
-- **Expected output:** Box runs under the selected runtime; active runtime is observable and matches the request
-- **Edge cases:** unknown runtime value rejected loudly; runtime binary missing on host
+- **Harness:** `go test ./tests/containment/... -run Runtime` for static/no-Podman assertions; `containment/execution-box/run.sh --worktree . --runtime runc --probe` and `containment/execution-box/run.sh --worktree . --runtime runsc --probe` for L6 runtime observation where runtimes are installed.
+- **Input:** Launch box with `--runtime runc`, then with `--runtime runsc`; inspect the created workload container runtime and print the requested runtime from inside the probe.
+- **Expected output:** Launcher passes Podman `--runtime <value>` to the workload/probe container, host inspection reports the requested runtime, and the in-box probe prints a `TC-016-RUNTIME PASS` line naming the selected runtime and workload tier.
+- **Edge cases:** Unknown runtime values are rejected before Podman; missing runtime support on the host fails closed with an explicit unavailable-runtime message.
 
 ### TC-002: Go toolchain compatibility under runsc (recorded finding)
 - **Requirement:** REQ-002
-- **Input:** Under `runsc`, run `go build` of a trivial module
-- **Expected output:** Build succeeds; OR build fails on an unimplemented syscall — the specific gap and chosen fallback are recorded in the ADR
-- **Edge cases:** cgo-enabled build; build that triggers a syscall outside gVisor's implemented set
+- **Harness:** `containment/execution-box/run.sh --worktree . --runtime runsc --probe` in an environment with rootless Podman and `runsc`.
+- **Input:** Under `runsc`, the in-box probe writes a trivial Go module under `/scratch` and runs `CGO_ENABLED=0 go build`.
+- **Expected output:** Probe prints `TC-016-GO PASS: go build trivial module succeeded under runsc`; OR it fails with captured compiler/runtime output and the ADR records the syscall gap plus fallback.
+- **Edge cases:** `runsc` unavailable locally; cgo-enabled builds or dependency builds that exercise syscalls outside gVisor's implemented set.
 
 ### TC-003: Default tier per workload (happy path)
 - **Requirement:** REQ-003
-- **Input:** Launch a dev workload and an agent workload with no runtime override
-- **Expected output:** Dev → `runc`; agent → `runsc`
-- **Edge cases:** explicit override beats the default
+- **Harness:** `containment/execution-box/run.sh --print-runtime-plan`; `containment/execution-box/run.sh --workload dev --print-runtime-plan`; `containment/execution-box/run.sh --workload agent --runtime runc --print-runtime-plan`.
+- **Input:** Resolve runtime defaults for agent and dev workloads with no Podman dependency, then resolve an explicit override.
+- **Expected output:** Agent workload defaults to `runsc`; dev workload defaults to `runc`; explicit `--runtime` overrides the workload default and is reported as the selected runtime source.
+- **Edge cases:** Unknown workload tiers are rejected before Podman.
 
 ### TC-004 (NEGATIVE / fallback): Syscall gap forces fallback
 - **Requirement:** REQ-002
-- **Input:** A build that hits an unimplemented `runsc` syscall
-- **Expected output:** Failure is detected (not silently passed) and the recorded fallback (bubblewrap / Kata) is the documented response
+- **Harness:** same L6 `--runtime runsc --probe` as TC-002; ADR evidence records the pass/fail finding.
+- **Input:** A Go build under `runsc` that fails because of an unimplemented syscall or runtime restriction.
+- **Expected output:** The probe exits non-zero, prints `TC-016-GO FAIL` with captured output, and the ADR records the specific gap plus the selected fallback response instead of silently treating `runsc` as compatible.
 
 ## Notes
-Framework: integration test launching boxes under each available OCI runtime + in-box `go build` probe; assertion on active runtime and build exit code. Runtime tier is observed at L6 — quote per-runtime results. gVisor toolchain-compat caveat is the central risk: if `runsc` is unavailable in the test env, record that and the runc-only result, and capture the runsc finding when the toolchain is exercised.
+Static tests can prove parsing, defaults, docs, and Podman argument construction, but cannot promote the task beyond 🟡 because the selected OCI runtime is a host runtime effect. The L6 command for promotion is `containment/execution-box/run.sh --worktree . --runtime runsc --probe`; quote both the `TC-016-RUNTIME PASS` and `TC-016-GO PASS` lines, or quote the failing syscall output and the fallback recorded in the ADR.
