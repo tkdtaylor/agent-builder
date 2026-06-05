@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed (code merged)
+**Status:** completed (verified L6)
 
 ## Goal
 Add a fitness check (`make fitness-gate-blocking`) that asserts the verification path exposes no `--no-verify`/skip flag or conditional that bypasses dep-scan/code-scanner, because the gate is the definition of done and a silent bypass defeats the security model.
@@ -56,3 +56,4 @@ Add a fitness check (`make fitness-gate-blocking`) that asserts the verification
 - **Negative early-return check:** temporary `if skip := false; skip { return StepResult{OK: true} }` in `internal/gate/go_steps.go` made `make fitness-gate-blocking` fail and name `internal/gate/go_steps.go:102`; temporary fixture removed before commit.
 - **Umbrella fitness:** `make fitness` includes `fitness-gate-blocking`; clean tree -> `Fitness checks passed.`
 - **Repo checks:** `gofmt -w .` -> no changes; `go test ./...` -> `ok github.com/tkdtaylor/agent-builder/internal/gate`; `go build ./...` -> success; plain `make check` failed because `golangci-lint` was absent from default `PATH`; `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.`
+- **Spec-verifier:** read-only worker verifier APPROVE — all REQ/TC assertions satisfied; `make fitness-gate-blocking`, `make fitness`, `go test ./...`, `go build ./...`, and `env PATH=/tmp/agent-builder-tools:$PATH make check` passed; residual risk limited to not rerunning negative fixtures in the read-only verifier.
