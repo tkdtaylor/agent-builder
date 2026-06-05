@@ -9,6 +9,7 @@ import (
 	"errors"
 
 	"github.com/tkdtaylor/agent-builder/internal/gate"
+	"github.com/tkdtaylor/agent-builder/internal/sandbox"
 )
 
 // Version is the current build version.
@@ -50,11 +51,28 @@ type Gate interface {
 // The default-deny egress allowlist — the load-bearing control for the accepted
 // token-in-box risk (see docs/spec/configuration.md) — will be added here in the
 // containment task (Phase 0.3), when something actually enforces it.
-type Supervisor struct{}
+type Supervisor struct {
+	sandboxRunner sandbox.Runner
+}
+
+// Option configures a Supervisor.
+type Option func(*Supervisor)
+
+// WithSandboxRunner configures the exec-sandbox run adapter used for contained
+// command execution.
+func WithSandboxRunner(runner sandbox.Runner) Option {
+	return func(s *Supervisor) {
+		s.sandboxRunner = runner
+	}
+}
 
 // New returns a Supervisor with default (empty) configuration.
-func New() *Supervisor {
-	return &Supervisor{}
+func New(options ...Option) *Supervisor {
+	s := &Supervisor{}
+	for _, option := range options {
+		option(s)
+	}
+	return s
 }
 
 // Run is the outer loop: pick task -> create box -> run agent loop inside ->

@@ -63,11 +63,13 @@ C4Component
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
         Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher and stable seams")
+        Component(sandbox, "exec-sandbox Run Adapter", "internal/sandbox", "Typed contained-command seam and test fake")
         Component(tasksource, "Task Source", "internal/tasksource", "Read-only roadmap/task parser and next-task selector")
         Component(gate, "Verification Gate", "internal/gate", "Ordered blocking checks with structured Verdicts")
     }
 
     Rel(main, supervisor, "Starts")
+    Rel(supervisor, sandbox, "Uses Runner interface")
     Rel(supervisor, gate, "Consumes Verdict model / Gate seam")
     Rel(tasksource, supervisor, "Uses Task model")
     Rel(gate, codeScanner, "Runs in target worktree")
@@ -75,6 +77,7 @@ C4Component
 
 **Key contracts**
 - ADR 002 fixes the gate shape: ordered Steps, structured Verdict, first-failure short-circuit, and no skip path.
+- ADR 020 fixes the exec-sandbox run adapter seam: command/worktree/typed limits in, result/exit/error out.
 - The supervisor remains trusted and dumb; the gate contains verification orchestration only, not executor/LLM/web logic.
 - The task source is read-only and only selects tasks; task status mutation is a separate component.
 

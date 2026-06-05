@@ -58,6 +58,7 @@ When the structure changes, both files update in the same commit. The tables her
 | Container | Component | Source path | Responsibility | Depends on |
 |-----------|-----------|-------------|----------------|------------|
 | agent-builder CLI | Supervisor | `internal/supervisor` | Trusted outside-the-box dispatcher and stable seams | Verification Gate model |
+| agent-builder CLI | exec-sandbox Run Adapter | `internal/sandbox` | Typed contained-command run seam plus deterministic fake backend | |
 | agent-builder CLI | Verification Gate | `internal/gate` | Runs ordered blocking verification Steps and returns structured Verdicts | code-scanner |
 | agent-builder CLI | Task Source | `internal/tasksource` | Reads roadmap/task metadata and selects the next ready task without writing task state | Supervisor Task model |
 
@@ -68,6 +69,7 @@ When the structure changes, both files update in the same commit. The tables her
 > Architectural choices that span multiple containers or components and don't naturally fit in any single row above — auth approach, observability strategy, error-handling convention, retry policy, transaction boundaries. Each entry should link to an ADR.
 
 - ADR 002: Gate orchestrator shape — ordered Step interface, structured Verdict model, first-failure short-circuit, no skip path.
+- ADR 020: exec-sandbox run adapter seam — typed command/worktree/limits request, result plus exit code plus error response, fake backend for tests.
 
 ---
 

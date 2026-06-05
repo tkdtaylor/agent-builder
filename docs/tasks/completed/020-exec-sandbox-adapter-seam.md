@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** completed (code merged + green; pending formal spec-verifier pass before ✅)
 
 ## Goal
 Define the `run()` adapter interface (the isolation seam) the supervisor uses to execute work inside a box, decoupled from any concrete isolation backend, so the rented bootstrap backend can later be swapped for the produced exec-sandbox v0 with zero caller changes.
@@ -11,7 +11,7 @@ Define the `run()` adapter interface (the isolation seam) the supervisor uses to
 - Tech stack: Go 1.26
 - Authoritative design: `autonomous-builder.md` (§1 adopt-to-bootstrap / build-to-ship; §4 tiered runtime)
 - Roadmap: `docs/plans/roadmap.md` (Phase 0.5)
-- Related ADRs: ADR required: exec-sandbox adapter seam
+- Related ADRs: ADR 020: exec-sandbox run adapter seam
 - Dependencies: 001
 
 ## Requirements
@@ -22,14 +22,14 @@ Define the `run()` adapter interface (the isolation seam) the supervisor uses to
 | REQ-003 | The supervisor depends only on the interface, never on a concrete backend type. | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 001
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 001
 
 ## Acceptance criteria
-- [ ] [REQ-001] A Go interface defines `run(command, worktree, limits) → (result, exitCode, error)`; the contract is recorded in `docs/spec/interfaces.md`.
-- [ ] [REQ-002] A fake backend satisfies the interface and is used by supervisor unit tests without invoking any real isolation runtime.
-- [ ] [REQ-003] The supervisor field/parameter is typed as the interface; no concrete backend is imported by the supervisor package.
+- [x] [REQ-001] A Go interface defines `run(command, worktree, limits) → (result, exitCode, error)`; the contract is recorded in `docs/spec/interfaces.md`.
+- [x] [REQ-002] A fake backend satisfies the interface and is used by supervisor unit tests without invoking any real isolation runtime.
+- [x] [REQ-003] The supervisor field/parameter is typed as the interface; no concrete backend is imported by the supervisor package.
 
 ## Verification plan
 - **Highest level achievable:** L2 — this is a pure internal seam. There is no runtime binary surface to observe yet; the only behaviour is the contract itself, exercised through the fake backend in unit tests. The real backend that produces observable isolation is task 021. Claiming L5/L6 here would be claiming a runtime that does not exist.
