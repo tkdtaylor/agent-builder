@@ -77,6 +77,7 @@ C4Component
         Component(agentloop, "Agent Loop", "internal/loop", "Inside-the-box pick-attempt-verify cycle plus bounded retry policy")
         Component(ingestion, "Ingestion Boundary", "internal/ingestion", "Typed content/tool-call candidates plus guard/broker release seam")
         Component(armorAdapter, "Armor Guard Adapter", "internal/armor", "External armor invocation adapter for ingestion decisions")
+        Component(executorHarness, "Executor Ingestion Harness", "internal/executorharness", "Executor-facing event wrapper that emits broker-reviewed release values")
         Component(executor, "Claude CLI Executor", "internal/executor", "Concrete supervisor.Executor adapter")
         Component(sandbox, "exec-sandbox Run Adapter", "internal/sandbox", "Typed contained-command seam and test fake")
         Component(sandboxRuntimeAdapter, "sandbox-runtime Adapter", "internal/sandbox/sandboxruntime", "Concrete srt-backed sandbox.Runner")
@@ -95,7 +96,8 @@ C4Component
     Rel(executor, claudeCLI, "Invokes with task prompt")
     Rel(agentloop, tasksource, "Picks next task")
     Rel(agentloop, statuswriter, "Marks needs-human after exhausted retries")
-    Rel(agentloop, ingestion, "Consumes guarded boundary seam when web/tool events are exposed")
+    Rel(agentloop, executorHarness, "Uses when executor web/tool events are exposed")
+    Rel(executorHarness, ingestion, "Builds candidates and reviews through Broker")
     Rel(ingestion, armorAdapter, "Calls Guard implementation")
     Rel(armorAdapter, armorTool, "Invokes over JSON")
     Rel(agentloop, gate, "Verifies target worktree")
@@ -111,6 +113,7 @@ C4Component
 - Task 021 fixes the sandbox-runtime backing adapter: `internal/sandbox/sandboxruntime` generates per-request settings and invokes `srt --settings` while callers continue to depend on the ADR 020 seam.
 - ADR 024 fixes the ingestion boundary shape: typed web-content and tool-call candidates, guard decisions of allow/block/quarantine, and fail-closed broker release.
 - Task 025 fixes the armor guard adapter shape: external JSON process/service invocation maps allow/findings/failure output to ingestion decisions without vendoring armor source.
+- Task 027 fixes the executor ingestion harness shape: executor-facing web-content and tool-call events become ingestion candidates before continuation or execution, and direct release values cannot be valid without broker review.
 - Task 022 fixes the Claude CLI executor adapter: `claude -p` runs in the task worktree, receives `ANTHROPIC_API_KEY` through env, and reports the produced branch through an executor-owned temp file.
 - Task 017 fixes the supervisor dispatch lifecycle: create one box, run one in-box loop, and tear the box down exactly once.
 - Task 019 fixes the run-record seam: command/stdout/stderr events stream to host-side NDJSON and close before box teardown.

@@ -143,6 +143,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Missing runner/command, runner error, timeout, non-zero process exit, malformed JSON output, malformed decision string, or explicit armor error/fail response returns a fail-closed `block` decision and no adapter error.
 - **References:** ADR 024; `docs/tasks/test-specs/025-armor-guard-adapter-test-spec.md`.
 
+### B-016: Route executor-facing events through ingestion before use
+
+- **Trigger:** Executor-facing code receives web-ingested content or a requested tool call.
+- **Response:** The executor ingestion harness constructs an `ingestion.ContentCandidate` or `ingestion.ToolCallCandidate`, records producer-consumer trace checkpoints when configured, routes the candidate through the ingestion broker, and invokes the continuation or tool executor only after a matching `allow` release.
+- **Side effects:** The harness itself writes no persistent state, fetches no web content, and executes no tool calls. Caller-supplied continuations or executors run only after broker release.
+- **Failure modes:** Invalid event fields fail before guard invocation. Broker `block`, `quarantine`, guard error, guard timeout, unavailable guard, malformed decision, nil continuation, or nil executor prevents continuation/execution. Directly constructed release values are invalid and return `executorharness.ErrUnreviewedRelease`.
+- **References:** ADR 024; `docs/tasks/test-specs/027-executor-ingestion-tool-harness-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -182,3 +190,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - A configured supervisor timeout records `timed-out`, distinct from ordinary loop failure, and does not skip teardown.
 - Ingestion candidate review fails closed: only a valid matching `allow` releases content or tool-call data.
 - The armor adapter invokes armor as an external seam and does not vendor or edit armor source.
+- Executor-facing web/tool events use broker-reviewed release values before continuation or execution.

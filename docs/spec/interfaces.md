@@ -299,6 +299,32 @@ func (r ToolCallReview) Release() (ToolCallCandidate, bool)
 - **Stability:** governed by ADR 024 and `docs/tasks/test-specs/024-ingestion-tool-call-boundary-test-spec.md`.
 - **Required behavior:** content candidates validate source URI, media type, content bytes, retrieval metadata, provenance, and stable correlation ID before executor context. Tool-call candidates validate tool name, JSON arguments, optional target URI, provenance, and stable correlation ID before execution. The broker invokes the configured guard and releases a candidate only for a valid `allow` decision matching the candidate kind and ID. Guard error, timeout, unavailable guard, malformed result, and explicit `block` or `quarantine` decisions never release the candidate.
 
+### Interface: executor ingestion harness
+
+```go
+type TraceRecorder interface {
+	RecordTrace(TraceEvent)
+}
+
+type ContentContinuation func(context.Context, ContentRelease) error
+type ToolExecutor func(context.Context, ToolCallRelease) error
+
+func New(executorharness.Config) executorharness.Harness
+
+func (h Harness) HandleWebContent(context.Context, WebContentEvent, ContentContinuation) ContentResult
+func (h Harness) HandleToolCall(context.Context, ToolCallEvent, ToolExecutor) ToolCallResult
+
+func (r ContentRelease) Candidate() (ingestion.ContentCandidate, error)
+func (r ContentRelease) Content() ([]byte, error)
+func (r ToolCallRelease) Candidate() (ingestion.ToolCallCandidate, error)
+func (r ToolCallRelease) Arguments() (json.RawMessage, error)
+```
+
+- **Implementors:** `internal/executorharness.Harness`; tests provide fake guards, trace recorders, continuations, and tool executors.
+- **Consumers:** inside-the-box executor-facing wiring that receives web content or tool-call requests before executor context/tool execution.
+- **Stability:** governed by ADR 024 and `docs/tasks/test-specs/027-executor-ingestion-tool-harness-test-spec.md`.
+- **Required behavior:** each web-content event is converted to an `ingestion.ContentCandidate` before continuation, and each tool-call event is converted to an `ingestion.ToolCallCandidate` before execution. The harness calls the broker before any continuation/executor callback. Only matching `allow` decisions produce valid opaque release values. Invalid event inputs, fail-closed broker outcomes, nil callbacks, and externally constructed release values do not reach executor use.
+
 ### Interface: armor guard adapter
 
 ```go

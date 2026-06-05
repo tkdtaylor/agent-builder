@@ -38,7 +38,7 @@
 | 024 | Web-ingestion/tool-call boundary seam | 024-ingestion-tool-call-boundary-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test -count=1 ./internal/ingestion/... ./tests/ingestion/...` -> `ok github.com/tkdtaylor/agent-builder/tests/ingestion`; `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.` |
 | 025 | armor guard adapter | 025-armor-guard-adapter-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test -count=1 ./internal/armor/... ./tests/armor/...` -> `ok github.com/tkdtaylor/agent-builder/tests/armor`; `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.` |
 | 026 | armor on web-ingestion / tool-call path | 026-armor-ingestion-wiring-test-spec.md | stub | ⚠️ | blocked 2026-06-05: pending task 027; current `executor.ClaudeCLI` owns its web/tool loop inside `claude -p`, so no producer-consumer trace can prove candidates reach the task 024 broker before executor use |
-| 027 | Executor ingestion/tool-call harness | 027-executor-ingestion-tool-harness-test-spec.md | ✅ | ❌ | not started; unblocks task 026 by adding the executor-facing producer path that emits task 024 candidates before executor use |
+| 027 | Executor ingestion/tool-call harness | 027-executor-ingestion-tool-harness-test-spec.md | ✅ | 🟡 | L5: `go test -count=1 -v ./tests/executorharness -run TestHarnessProducerConsumerTraceCoversLivePath` -> `TC-005 producer-consumer trace:`; pending spec-verifier before ✅ |
 
 ## Status key
 

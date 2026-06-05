@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-05
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 Add an executor-facing harness or CLI/tool wrapper that exposes web-ingestion
@@ -32,11 +32,11 @@ tool execution can use them.
 - [x] Blocking tasks complete: 022 and 024
 
 ## Acceptance criteria
-- [ ] [REQ-001] A web-ingestion fixture produced by the executor-facing path becomes an `ingestion.ContentCandidate` with source URI, media type, content bytes, retrieval metadata, provenance, and correlation ID before executor release.
-- [ ] [REQ-002] A tool-call fixture produced by the executor-facing path becomes an `ingestion.ToolCallCandidate` with tool name, JSON arguments, target/provenance when applicable, and correlation ID before execution.
-- [ ] [REQ-003] A fake guard returning `allow`, `block`, `quarantine`, error, or timeout controls whether the harness releases content/tool calls, and fail-closed decisions do not reach executor context or execution.
-- [ ] [REQ-004] The validation harness can prove that direct web/tool bypass of the broker fails the task instead of silently succeeding.
-- [ ] [REQ-005] `make fitness-supervisor-isolation` remains green.
+- [x] [REQ-001] A web-ingestion fixture produced by the executor-facing path becomes an `ingestion.ContentCandidate` with source URI, media type, content bytes, retrieval metadata, provenance, and correlation ID before executor release.
+- [x] [REQ-002] A tool-call fixture produced by the executor-facing path becomes an `ingestion.ToolCallCandidate` with tool name, JSON arguments, target/provenance when applicable, and correlation ID before execution.
+- [x] [REQ-003] A fake guard returning `allow`, `block`, `quarantine`, error, or timeout controls whether the harness releases content/tool calls, and fail-closed decisions do not reach executor context or execution.
+- [x] [REQ-004] The validation harness can prove that direct web/tool bypass of the broker fails the task instead of silently succeeding.
+- [x] [REQ-005] `make fitness-supervisor-isolation` remains green.
 
 ## Verification plan
 - **Highest level achievable:** L5 - drive the executor-facing harness with benign web content, blocked/quarantined content, a safe tool call, a blocked tool call, guard-unavailable behavior, and a bypass attempt. Expected final assertion: only broker-released candidates reach the executor-facing continuation/execution point.

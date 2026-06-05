@@ -1,6 +1,6 @@
 # Test Spec 027: executor ingestion/tool-call harness
 
-**Linked task:** [`docs/tasks/backlog/027-executor-ingestion-tool-harness.md`](../backlog/027-executor-ingestion-tool-harness.md)
+**Linked task:** [`docs/tasks/completed/027-executor-ingestion-tool-harness.md`](../completed/027-executor-ingestion-tool-harness.md)
 **Written:** 2026-06-05
 **Status:** ready
 

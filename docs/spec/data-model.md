@@ -334,6 +334,52 @@ Metadata       map[string]string          guard-specific decision metadata
 - **Lifecycle:** produced by a `Guard` or by the broker's fail-closed path; consumed by review `Release` helpers and future audit/run-record code.
 - **Relationships:** `allow` is the only outcome that releases candidate data. `block` and `quarantine` preserve decision metadata but do not release candidate data.
 
+### State: Executor Ingestion Harness
+
+- **Shape:** `internal/executorharness` owns event input structs for executor-facing web content and tool calls, result structs that expose the produced candidate and broker decision, opaque release values for allowed candidates, and optional trace events for producer-consumer evidence.
+- **Owner:** inside-the-box executor-facing wiring constructs a harness with an `ingestion.Broker` and passes web/tool events through it before continuation or execution.
+- **Lifetime:** process-local. Events, results, release values, and trace events are not persisted by this package.
+- **Concurrency rules:** `Harness` is pass-by-value and contains the caller-supplied broker and trace recorder. Callers choose whether those collaborators are safe to share across goroutines.
+- **Bounds:** one harness call constructs one candidate, performs one broker review, and invokes at most one continuation or tool executor.
+
+#### Value: `executorharness.WebContentEvent`
+
+```
+field          type                  notes
+────────────────────────────────────────────────────────────
+ID             ingestion.CandidateID optional caller-supplied correlation ID
+Content        []byte                executor-facing web content bytes
+SourceURI      string                required http/https source URI
+MediaType      string                optional media type; blank becomes ingestion default
+RetrievedAt    time.Time             retrieval timestamp or zero value when unavailable
+Provenance     ingestion.Provenance  task/executor origin metadata
+```
+
+- **Lifecycle:** produced by executor-facing web ingestion code; consumed by `Harness.HandleWebContent`.
+- **Relationships:** maps directly to `ingestion.ContentInput`.
+
+#### Value: `executorharness.ToolCallEvent`
+
+```
+field          type                  notes
+────────────────────────────────────────────────────────────
+ID             ingestion.CandidateID optional caller-supplied correlation ID
+ToolName       string                requested tool name
+Arguments      json.RawMessage       requested tool arguments
+TargetURI      string                optional http/https target URI
+Provenance     ingestion.Provenance  task/executor origin metadata
+```
+
+- **Lifecycle:** produced by executor-facing tool-call code; consumed by `Harness.HandleToolCall`.
+- **Relationships:** maps directly to `ingestion.ToolCallInput`.
+
+#### Value: `executorharness.ContentRelease` / `executorharness.ToolCallRelease`
+
+- **Shape:** opaque values with unexported validity state and accessor methods that return copied candidate data.
+- **Identity:** each valid release corresponds to one broker-reviewed `allow` candidate.
+- **Lifecycle:** produced only by `Harness.HandleWebContent` or `Harness.HandleToolCall` after broker release; consumed by caller-supplied continuation or executor callbacks.
+- **Relationships:** zero-value or externally constructed releases are invalid and return `ErrUnreviewedRelease`.
+
 ### State: Armor Guard Adapter
 
 - **Shape:** `internal/armor.Guard` owns one external invocation runner and an optional timeout. `ProcessRunner` invokes an armor-compatible command with JSON stdin and parses JSON stdout. Tests can supply an in-process `Runner`.
