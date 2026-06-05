@@ -120,7 +120,7 @@ Spec        string    path to the task file the executor must satisfy
 ```
 field       type      notes
 ────────────────────────────────────────────────────────────
-CLIPath     string    Claude Code CLI path/name; defaults to `claude` when blank
+CLIPath     string    Claude Code CLI path/name; required for explicit config, while `NewClaudeCLIFromEnv` supplies `claude`
 Worktree    string    target task worktree used as subprocess working directory
 AuthToken   string    secret supplied as `ANTHROPIC_API_KEY` in subprocess env
 ```

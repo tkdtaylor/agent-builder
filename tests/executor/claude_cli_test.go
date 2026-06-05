@@ -16,7 +16,7 @@ import (
 func TestClaudeCLIRunInvokesSubprocessAgainstWorktreeAndCapturesBranch(t *testing.T) {
 	worktree := t.TempDir()
 	recordPath := filepath.Join(t.TempDir(), "record.env")
-	cliPath := writeFakeClaudeCLI(t, recordPath, "task/022-claude-cli-executor", 0, "")
+	cliPath := writeFakeClaudeCLI(t, recordPath, "task/022-claude-cli-executor", 0, "", "")
 
 	claudeExecutor := executor.NewClaudeCLI(executor.ClaudeCLIConfig{
 		CLIPath:   cliPath,
@@ -59,6 +59,16 @@ func TestClaudeCLIRunInvokesSubprocessAgainstWorktreeAndCapturesBranch(t *testin
 			t.Fatalf("TC-005 fake CLI prompt record missing %q:\n%s", want, record)
 		}
 	}
+	branchPath := promptBranchPath(t, record)
+	if !filepath.IsAbs(branchPath) {
+		t.Fatalf("TC-005 branch-output path = %q, want absolute temp path", branchPath)
+	}
+	if strings.HasPrefix(branchPath, worktree+string(os.PathSeparator)) || branchPath == worktree {
+		t.Fatalf("TC-005 branch-output path %q is inside worktree %q", branchPath, worktree)
+	}
+	if !strings.Contains(filepath.Base(filepath.Dir(branchPath)), "agent-builder-claude-cli-") {
+		t.Fatalf("TC-005 branch-output path %q was not in executor-owned temp storage", branchPath)
+	}
 	if !strings.Contains(record, executor.ClaudeCLIAuthEnv+"=test-token-value") {
 		t.Fatalf("TC-004 fake CLI did not receive %s through environment:\n%s", executor.ClaudeCLIAuthEnv, record)
 	}
@@ -68,12 +78,15 @@ func TestClaudeCLIRunInvokesSubprocessAgainstWorktreeAndCapturesBranch(t *testin
 	if strings.Contains(record, "HOME="+os.Getenv("HOME")) && os.Getenv("HOME") != "" {
 		t.Fatalf("TC-006 fake CLI received host HOME:\n%s", record)
 	}
+	if strings.Contains(result.Branch, "test-token-value") || strings.Contains(branchPath, "test-token-value") {
+		t.Fatalf("TC-004 token leaked through branch result/path: branch=%q path=%q", result.Branch, branchPath)
+	}
 }
 
 func TestClaudeCLIRunRejectsInvalidInputsBeforeSubprocess(t *testing.T) {
 	worktree := t.TempDir()
 	recordPath := filepath.Join(t.TempDir(), "record.env")
-	cliPath := writeFakeClaudeCLI(t, recordPath, "unused", 0, "")
+	cliPath := writeFakeClaudeCLI(t, recordPath, "unused", 0, "", "")
 
 	tests := []struct {
 		name string
@@ -81,6 +94,12 @@ func TestClaudeCLIRunRejectsInvalidInputsBeforeSubprocess(t *testing.T) {
 		task supervisor.Task
 		want error
 	}{
+		{
+			name: "blank explicit CLI path",
+			exec: executor.NewClaudeCLI(executor.ClaudeCLIConfig{CLIPath: " \t", Worktree: worktree, AuthToken: "test-token-value"}),
+			task: supervisor.Task{ID: "022", Spec: "docs/tasks/completed/022-claude-cli-executor.md"},
+			want: executor.ErrBlankCLIPath,
+		},
 		{
 			name: "blank worktree",
 			exec: executor.NewClaudeCLI(executor.ClaudeCLIConfig{CLIPath: cliPath, AuthToken: "test-token-value"}),
@@ -113,6 +132,9 @@ func TestClaudeCLIRunRejectsInvalidInputsBeforeSubprocess(t *testing.T) {
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("Run error = %v, want %v", err, tt.want)
 			}
+			if tt.want == executor.ErrMissingClaudeToken && !strings.Contains(err.Error(), executor.ClaudeCLIAuthEnv) {
+				t.Fatalf("TC-004 missing-token error %q does not name %s", err, executor.ClaudeCLIAuthEnv)
+			}
 			if _, err := os.Stat(recordPath); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("TC-001 invalid input started subprocess; record stat error = %v", err)
 			}
@@ -123,7 +145,7 @@ func TestClaudeCLIRunRejectsInvalidInputsBeforeSubprocess(t *testing.T) {
 func TestClaudeCLIRunReportsMissingBranch(t *testing.T) {
 	worktree := t.TempDir()
 	recordPath := filepath.Join(t.TempDir(), "record.env")
-	cliPath := writeFakeClaudeCLI(t, recordPath, "", 0, "")
+	cliPath := writeFakeClaudeCLI(t, recordPath, "", 0, "", "")
 
 	claudeExecutor := executor.NewClaudeCLI(executor.ClaudeCLIConfig{
 		CLIPath:   cliPath,
@@ -140,10 +162,30 @@ func TestClaudeCLIRunReportsMissingBranch(t *testing.T) {
 	}
 }
 
+func TestClaudeCLIRunReportsWhitespaceOnlyBranch(t *testing.T) {
+	worktree := t.TempDir()
+	recordPath := filepath.Join(t.TempDir(), "record.env")
+	cliPath := writeFakeClaudeCLI(t, recordPath, "__WHITESPACE_BRANCH__", 0, "", "")
+
+	claudeExecutor := executor.NewClaudeCLI(executor.ClaudeCLIConfig{
+		CLIPath:   cliPath,
+		Worktree:  worktree,
+		AuthToken: "test-token-value",
+	})
+
+	result, err := claudeExecutor.Run(supervisor.Task{ID: "022", Spec: "docs/tasks/completed/022-claude-cli-executor.md"})
+	if !errors.Is(err, executor.ErrMissingBranch) {
+		t.Fatalf("TC-002 whitespace-only branch error = %v, want ErrMissingBranch", err)
+	}
+	if result.OK || result.Branch != "" {
+		t.Fatalf("TC-002 whitespace-only branch result = %+v, want empty failed result", result)
+	}
+}
+
 func TestClaudeCLIRunReportsFailureWithoutLeakingToken(t *testing.T) {
 	worktree := t.TempDir()
 	recordPath := filepath.Join(t.TempDir(), "record.env")
-	cliPath := writeFakeClaudeCLI(t, recordPath, "", 7, "failure mentions test-token-value")
+	cliPath := writeFakeClaudeCLI(t, recordPath, "", 7, "safe stdout before failure", "safe stderr mentions test-token-value")
 
 	claudeExecutor := executor.NewClaudeCLI(executor.ClaudeCLIConfig{
 		CLIPath:   cliPath,
@@ -158,6 +200,14 @@ func TestClaudeCLIRunReportsFailureWithoutLeakingToken(t *testing.T) {
 	if result.OK {
 		t.Fatalf("TC-003 Result.OK = true, want false on subprocess failure")
 	}
+	if !strings.Contains(err.Error(), cliPath) {
+		t.Fatalf("TC-003 subprocess error %q does not name failed CLI %q", err, cliPath)
+	}
+	for _, want := range []string{"safe stdout before failure", "safe stderr mentions"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("TC-003 subprocess error %q does not preserve captured output %q", err, want)
+		}
+	}
 	if strings.Contains(err.Error(), "test-token-value") {
 		t.Fatalf("TC-004 subprocess error leaked token: %v", err)
 	}
@@ -169,7 +219,7 @@ func TestClaudeCLIRunReportsFailureWithoutLeakingToken(t *testing.T) {
 func TestClaudeCLIFromEnvUsesDocumentedTokenVariable(t *testing.T) {
 	worktree := t.TempDir()
 	recordPath := filepath.Join(t.TempDir(), "record.env")
-	cliPath := writeFakeClaudeCLI(t, recordPath, "task/022-claude-cli-executor", 0, "")
+	cliPath := writeFakeClaudeCLI(t, recordPath, "task/022-claude-cli-executor", 0, "", "")
 	t.Setenv(executor.ClaudeCLIAuthEnv, "env-token")
 	t.Setenv("PATH", filepath.Dir(cliPath)+string(os.PathListSeparator)+os.Getenv("PATH"))
 
@@ -189,12 +239,28 @@ func TestClaudeCLIFromEnvUsesDocumentedTokenVariable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fake CLI record: %v", err)
 	}
-	if !strings.Contains(string(recordBytes), executor.ClaudeCLIAuthEnv+"=env-token") {
+	record := string(recordBytes)
+	if !strings.Contains(record, executor.ClaudeCLIAuthEnv+"=env-token") {
 		t.Fatalf("TC-006 fake CLI did not receive documented env token:\n%s", recordBytes)
+	}
+	if strings.Contains(record, "ARGV_HAS_TOKEN=true") || strings.Contains(result.Branch, "env-token") {
+		t.Fatalf("TC-004 env token leaked through argv or branch: record=%s branch=%q", record, result.Branch)
 	}
 }
 
-func writeFakeClaudeCLI(t *testing.T, recordPath, branch string, exitCode int, failure string) string {
+func promptBranchPath(t *testing.T, record string) string {
+	t.Helper()
+	lines := strings.Split(record, "\n")
+	for _, line := range lines {
+		if strings.HasSuffix(line, "produced-branch.txt") {
+			return line
+		}
+	}
+	t.Fatalf("TC-005 record did not contain produced branch path:\n%s", record)
+	return ""
+}
+
+func writeFakeClaudeCLI(t *testing.T, recordPath, branch string, exitCode int, stdoutText, stderrText string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("shell fake CLI is POSIX-only")
@@ -207,8 +273,9 @@ set -eu
 record="$1"
 branch="$2"
 exit_code="$3"
-failure="$4"
-prompt="${6:-}"
+stdout_text="$4"
+stderr_text="$5"
+prompt="${7:-}"
 branch_file=$(printf '%s\n' "$prompt" | awk '/produced-branch.txt$/ { print; exit }')
 argv_has_token=false
 case "$*" in
@@ -223,10 +290,13 @@ esac
   printf 'PROMPT<<EOF\n%s\nEOF\n' "$prompt"
 } > "$record"
 if [ "$exit_code" -ne 0 ]; then
-  printf '%s\n' "$failure" >&2
+  printf '%s\n' "$stdout_text"
+  printf '%s\n' "$stderr_text" >&2
   exit "$exit_code"
 fi
-if [ -n "$branch" ] && [ -n "$branch_file" ]; then
+if [ "$branch" = "__WHITESPACE_BRANCH__" ] && [ -n "$branch_file" ]; then
+  printf ' \n\t \n' > "$branch_file"
+elif [ -n "$branch" ] && [ -n "$branch_file" ]; then
   printf '%s\n' "$branch" > "$branch_file"
 fi
 `
@@ -235,7 +305,7 @@ fi
 	}
 
 	wrapper := filepath.Join(dir, "claude")
-	wrapperScript := fmt.Sprintf("#!/bin/sh\nexec %q %q %q %q %q \"$@\"\n", path, recordPath, branch, fmt.Sprint(exitCode), failure)
+	wrapperScript := fmt.Sprintf("#!/bin/sh\nexec %q %q %q %q %q %q \"$@\"\n", path, recordPath, branch, fmt.Sprint(exitCode), stdoutText, stderrText)
 	if err := os.WriteFile(wrapper, []byte(wrapperScript), 0o755); err != nil {
 		t.Fatalf("write fake CLI wrapper: %v", err)
 	}

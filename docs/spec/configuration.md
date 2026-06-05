@@ -85,7 +85,7 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 |-----------|------|---------|----------|--------|
 | `loop.RetryPolicy.MaxAttempts` | non-negative integer | none | yes | Bounds Executor attempts for one picked task. `0` means mark `needs-human` immediately without running Executor or Gate; positive values permit exactly that many attempts before exhausted failures escalate. |
 | `supervisor.WithRunTimeout` | `time.Duration` | disabled (`0`) | no | Bounds the wall-clock duration of one in-box `Supervisor.Run` loop. Positive values arm a deadline; expiry kills the containment box, tears it down, and records the terminal outcome as `timed-out`. Non-positive values preserve the existing no-timeout dispatch behavior. |
-| `executor.ClaudeCLIConfig.CLIPath` | string | `claude` | no | Path/name of the Claude Code CLI binary to execute. Tests may point this at a fake CLI subprocess. |
+| `executor.ClaudeCLIConfig.CLIPath` | string | none for explicit config; `NewClaudeCLIFromEnv` uses `claude` | yes for explicit config | Path/name of the Claude Code CLI binary to execute. Blank explicit config fails before subprocess start. Tests may point this at a fake CLI subprocess. |
 | `executor.ClaudeCLIConfig.Worktree` | path string | none | yes | Target task worktree used as the Claude CLI subprocess working directory. Blank values fail before subprocess start. |
 | `executor.ClaudeCLIConfig.AuthToken` | secret string | none | yes | Explicit token value supplied to the executor. Production callers normally pass `ANTHROPIC_API_KEY` via `NewClaudeCLIFromEnv`; tests can provide a fake token directly. |
 

@@ -46,13 +46,8 @@ type ClaudeCLI struct {
 
 // NewClaudeCLI constructs a Claude Code CLI executor with an explicit token.
 func NewClaudeCLI(config ClaudeCLIConfig) *ClaudeCLI {
-	cliPath := strings.TrimSpace(config.CLIPath)
-	if cliPath == "" {
-		cliPath = "claude"
-	}
-
 	return &ClaudeCLI{
-		cliPath:   cliPath,
+		cliPath:   strings.TrimSpace(config.CLIPath),
 		worktree:  strings.TrimSpace(config.Worktree),
 		authToken: config.AuthToken,
 	}
@@ -62,6 +57,7 @@ func NewClaudeCLI(config ClaudeCLIConfig) *ClaudeCLI {
 // from the process environment. It reads no host-home credential files.
 func NewClaudeCLIFromEnv(worktree string) *ClaudeCLI {
 	return NewClaudeCLI(ClaudeCLIConfig{
+		CLIPath:   "claude",
 		Worktree:  worktree,
 		AuthToken: os.Getenv(ClaudeCLIAuthEnv),
 	})
@@ -99,7 +95,7 @@ func (e *ClaudeCLI) RunContext(ctx context.Context, task supervisor.Task) (super
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return supervisor.Result{OK: false}, fmt.Errorf("executor: Claude CLI failed: %w: %s", err, sanitizeCLIOutput(stdout.String(), stderr.String(), e.authToken))
+		return supervisor.Result{OK: false}, fmt.Errorf("executor: Claude CLI %q failed: %w: %s", e.cliPath, err, sanitizeCLIOutput(stdout.String(), stderr.String(), e.authToken))
 	}
 
 	branchBytes, err := os.ReadFile(branchPath)
