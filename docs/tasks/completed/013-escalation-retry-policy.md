@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed (code merged + green; pending formal spec-verifier pass before ✅)
+**Status:** completed (verified L5)
 
 ## Goal
 The policy layer on the loop: on Gate fail, retry up to a configurable N attempts (with an escalation hook for a stronger executor — single-executor for bootstrap), then mark the task escalated/needs-human and advance — a mandatory stop condition guaranteeing the loop never thrashes infinitely.

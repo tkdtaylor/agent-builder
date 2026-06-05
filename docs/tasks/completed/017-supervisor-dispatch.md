@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed (code merged + green; pending formal spec-verifier pass before ✅)
+**Status:** completed (verified L5)
 
 ## Goal
 Replace the stubbed `Supervisor.Run()` with the real outside-the-box lifecycle that dispatches exactly one task, creates an ephemeral containment box, runs the agent loop inside it, collects the result, and tears the box down deterministically.

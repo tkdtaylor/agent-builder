@@ -2,13 +2,13 @@
 
 **Project:** agent-builder
 **Last updated:** 2026-06-05
-**Status:** pre-implementation (scaffold). This spec describes the *target* v0; sections fill in as tasks land.
+**Status:** Phase 0 implementation snapshot. The core Gate, loop, supervisor lifecycle, CLI, containment launcher contracts, sandbox-runtime adapter, and ingestion/armor harness seams are implemented as described here; runtime-security rows remain explicitly yellow where local Podman, `runsc`, or `srt` evidence is unavailable.
 
 > Authoritative design source: `autonomous-builder.md`. This SPEC is the in-repo snapshot; where they disagree, reconcile in the same change.
 
 ## System summary
 
-agent-builder is a Go orchestrator that runs an autonomous coding agent unattended to build the secure-agent ecosystem blocks. It reads a task from a roadmap, routes it to a pluggable executor, runs the executor inside a contained box against one target repo's worktree, verifies the result with a machine-checkable gate, and produces a branch/PR — or escalates.
+agent-builder is a Go orchestrator that runs an autonomous coding agent unattended to build the secure-agent ecosystem blocks. In the current Phase 0 implementation it can read ready task metadata, route one task through the Claude CLI executor seam, run the attempt through sandbox-runtime-backed containment wiring, verify the result with the machine-checkable Gate, record run evidence, and escalate exhausted attempts through the constrained task-status writer. Branch and PR publication is not implemented yet.
 
 ## Spec index
 

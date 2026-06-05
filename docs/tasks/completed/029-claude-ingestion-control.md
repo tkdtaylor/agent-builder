@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-05
-**Status:** completed
+**Status:** completed (code merged; pending spec-verifier before ✅)
 
 ## Goal
 Close the gap between the armor-guarded executor harness and the concrete Claude CLI executor so web-ingestion and tool-call routes are either broker-reviewed before use or explicitly disabled as unsupported.

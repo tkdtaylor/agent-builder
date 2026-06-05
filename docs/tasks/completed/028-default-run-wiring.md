@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-05
-**Status:** completed
+**Status:** completed (code merged; pending spec-verifier before ✅)
 
 ## Goal
 Make `agent-builder run` construct the real Phase 0 pipeline instead of an empty supervisor, so one configured task can be picked, attempted, verified, logged, and torn down through the repo-owned seams.

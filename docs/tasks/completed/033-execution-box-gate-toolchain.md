@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-05
-**Status:** completed (code merged)
+**Status:** completed (code merged; L6 pending because Podman is unavailable)
 
 ## Goal
 Make the contained execution environment capable of running the production verification Gate without relying on host-only tool shims.

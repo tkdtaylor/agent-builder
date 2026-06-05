@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed (code merged + green; pending formal spec-verifier pass before ✅)
+**Status:** completed (verified L5)
 
 ## Goal
 Implement the inside-the-box cycle: pick a task via the task-source, run the Executor against the worktree, run the Gate; on pass record the branch and mark done, on fail emit a fail outcome for the escalation policy, then advance to the next task — happy-path state machine only.

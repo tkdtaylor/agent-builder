@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-05
-**Status:** completed
+**Status:** completed (code merged; runtime probes blocked in local environment)
 
 ## Goal
 Collect the missing runtime evidence for containment, egress, tiered runtime selection, and sandbox-runtime so tasks 014, 015, 016, and 021 can be honestly verified or explicitly left blocked.

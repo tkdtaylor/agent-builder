@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed
+**Status:** completed (code merged; L6 runtime evidence blocked by missing Podman)
 
 ## Goal
 Define the rootless-Podman execution-box profile — a product artifact under a named dir (`containment/`) — that runs agent code with a read-only rootfs, a writable repo worktree + tmpfs scratch, no host home, no container socket, non-root + dropped capabilities, and resource quotas.

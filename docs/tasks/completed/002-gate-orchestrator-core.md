@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed (code merged + green; tracker remains 🟡 pending formal spec-verifier pass before ✅)
+**Status:** completed (verified L2; unit-test-only, no runtime surface)
 
 ## Goal
 Replace the stubbed `Gate` with a concrete orchestrator that runs an ordered list of named, pluggable check Steps against a repo worktree and returns a structured `Verdict`, short-circuiting on the first failing blocking step with no skip path.

@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed (code merged + green; tracker remains 🟡 pending formal spec-verifier pass before ✅)
+**Status:** completed (code merged; verification blocked by stale Task 001 assertions)
 
 ## Goal
 

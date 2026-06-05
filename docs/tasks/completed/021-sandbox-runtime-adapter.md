@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed
+**Status:** completed (code merged; L6 runtime evidence blocked by missing srt/Snap go issue)
 
 ## Goal
 Implement the run() adapter (the seam from task 020) backed by `@anthropic-ai/sandbox-runtime` (bubblewrap + dual proxy + allowlist, Apache-2.0) as the bootstrap per-command isolation — the rented isolation that exec-sandbox v0 later replaces.

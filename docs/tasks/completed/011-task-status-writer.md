@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed (code merged + green; pending formal spec-verifier pass before ✅)
+**Status:** completed (verified L5)
 
 ## Goal
 Flip a task's STATUS (done / blocked / needs-human) in its source file, editing only the status field/marker and never the plan prose, priorities, or ordering — enforcing the the internal design hub read-mostly invariant.

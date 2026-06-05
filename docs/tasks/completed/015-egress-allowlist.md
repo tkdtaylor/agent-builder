@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed
+**Status:** completed (code merged; L6 runtime evidence blocked by missing Podman)
 
 ## Goal
 Establish a default-deny network posture for the execution box plus a plain-text egress allowlist permitting only registries, the provider API, and approved research domains — the load-bearing control bounding the accepted executor-token-in-box risk.

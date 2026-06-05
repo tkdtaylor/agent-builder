@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed (code merged + green; pending formal spec-verifier pass before ✅)
+**Status:** completed (verified L2/L3; unit-test-only, no runtime surface)
 
 ## Goal
 Define the `run()` adapter interface (the isolation seam) the supervisor uses to execute work inside a box, decoupled from any concrete isolation backend, so the rented bootstrap backend can later be swapped for the produced exec-sandbox v0 with zero caller changes.

@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed
+**Status:** completed (verified L5)
 
 ## Goal
 Wire the armor guard adapter onto the repo-owned web-ingestion and tool-call path so executor research content and tool-call requests are blocked or quarantined before they reach executor context or execution.
@@ -50,16 +50,9 @@ Wire the armor guard adapter onto the repo-owned web-ingestion and tool-call pat
 - armor lowers injection *likelihood* on the ingestion path; it is one layer, not the whole defense.
 - Direct executor web/tool use that bypasses the task 024 boundary is a blocker for this task.
 
-## Blocker recorded 2026-06-05
-The current live executor is `executor.ClaudeCLI`, which invokes `claude -p`
-as an opaque subprocess. agent-builder does not currently observe or control
-Claude Code's internal web research or tool-call loop, so it cannot prove that
-web-ingested content or tool-call requests are produced as task 024 candidates
-before reaching executor context or execution.
-
-Unblock this task by adding an executor-facing harness or CLI configuration
-that exposes interceptable web-ingestion and tool-call events to the task 024
-broker before the executor can use them. Prompt instructions alone are not a
-blocking control and do not satisfy ADR 024.
-
-Tracked as task 027.
+## Historical blocker resolved 2026-06-05
+The original blocker was that `executor.ClaudeCLI` invoked `claude -p` as an
+opaque subprocess, so agent-builder could not prove web-ingestion/tool-call
+events passed through the task 024 broker before executor use. Task 027 added
+the executor-facing harness, and Task 031 recorded spec-verifier APPROVE for
+the armor-backed wiring using the L5 producer-consumer trace harness.

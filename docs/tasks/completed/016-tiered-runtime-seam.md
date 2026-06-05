@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed
+**Status:** completed (code merged; L6 runtime evidence blocked by missing Podman/runsc probe)
 
 ## Goal
 Add a `--runtime` selection seam under the same rootless Podman that maps a configured tier to an OCI runtime (`runc` for normal dev / reproducibility, gVisor `runsc` for agent / untrusted code, Kata+Firecracker later), with `runsc` as the agent default — gated on a tested Go-toolchain compatibility result.

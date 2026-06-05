@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed (code merged + green; pending formal spec-verifier pass before ✅)
+**Status:** completed (verified L5)
 
 ## Goal
 A read-only component that parses the roadmap and task files and yields the next actionable `Task` whose dependencies are satisfied and whose status is not-started.
