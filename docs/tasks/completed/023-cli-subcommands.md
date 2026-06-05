@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 Replace the status-only `main` with a real CLI surface: `run` (dispatch the loop), `version`, and `verify <repo>` (run the gate against a repo standalone), with defined exit codes (0 ok, 1 generic, 2 usage).
@@ -22,14 +22,14 @@ Replace the status-only `main` with a real CLI surface: `run` (dispatch the loop
 | REQ-003 | Unknown subcommand / usage error exits 2. | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 002, 017
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 002, 017
 
 ## Acceptance criteria
-- [ ] [REQ-001] `agent-builder run`, `version`, and `verify <repo>` exist with documented flags; exit codes follow 0/1/2; the surface is recorded in `docs/spec/interfaces.md`.
-- [ ] [REQ-002] `verify <repo>` invokes the Gate against the repo and exits non-zero when the gate fails; there is no flag that skips or bypasses the gate.
-- [ ] [REQ-003] An unrecognized subcommand or malformed usage exits with code 2.
+- [x] [REQ-001] `agent-builder run`, `version`, and `verify <repo>` exist with documented flags; exit codes follow 0/1/2; the surface is recorded in `docs/spec/interfaces.md`.
+- [x] [REQ-002] `verify <repo>` invokes the Gate against the repo and exits non-zero when the gate fails; there is no flag that skips or bypasses the gate.
+- [x] [REQ-003] An unrecognized subcommand or malformed usage exits with code 2.
 
 ## Verification plan
 - **Highest level achievable:** L6 — `agent-builder version` prints the version; `agent-builder verify <clean-repo>` exits 0; `agent-builder verify <dirty-repo>` exits non-zero; a bad subcommand exits 2. Quote each output and exit code.
