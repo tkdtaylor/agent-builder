@@ -102,6 +102,30 @@ type Gate interface {
 - **Stability:** governed by ADR 002.
 - **Required behavior:** `Verify` has no skip or bypass parameter. It returns OK only when every configured blocking step passes.
 
+### Interface: supervisor dispatch lifecycle seams
+
+```go
+type ContainmentBox interface {
+	Create(Task) (BoxHandle, error)
+	Teardown(BoxHandle) error
+}
+
+type InBoxLoop interface {
+	RunInside(BoxHandle, Task) error
+}
+
+func WithTask(task Task) Option
+func WithContainmentBox(box ContainmentBox) Option
+func WithInBoxLoop(loop InBoxLoop) Option
+func WithLogger(logger *slog.Logger) Option
+func (s *Supervisor) Run() error
+```
+
+- **Implementors:** fake boxes and fake in-box loops in tests; concrete containment and loop wiring when runtime backends land.
+- **Consumers:** `internal/supervisor.Supervisor`.
+- **Stability:** governed by `docs/tasks/test-specs/017-supervisor-dispatch-test-spec.md`.
+- **Required behavior:** `Run` dispatches exactly one configured task per call. It creates a box before starting the in-box loop, passes the created `BoxHandle` and task to the loop, and tears the box down exactly once after the loop returns or panics. Missing task, box, or loop dependencies fail before creation. Loop errors and recovered panics are returned after teardown; retry, escalation, timeout, and run-record policy are intentionally absent from this seam.
+
 ### Interface: exec-sandbox `run()` adapter seam
 
 ```go

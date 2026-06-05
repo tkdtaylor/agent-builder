@@ -7,6 +7,10 @@ package supervisor
 
 import (
 	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"strings"
 
 	"github.com/tkdtaylor/agent-builder/internal/gate"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox"
@@ -17,6 +21,17 @@ const Version = "0.0.0-scaffold"
 
 // ErrNotImplemented marks seams that are stubbed during the Phase 0 bootstrap.
 var ErrNotImplemented = errors.New("agent-builder: not implemented")
+
+var (
+	// ErrNilContainmentBox means Run was called without the outside-the-box lifecycle seam.
+	ErrNilContainmentBox = errors.New("supervisor: nil containment box")
+
+	// ErrNilInBoxLoop means Run was called without the inside-the-box loop seam.
+	ErrNilInBoxLoop = errors.New("supervisor: nil in-box loop")
+
+	// ErrMissingTask means Run was called without the one task it must dispatch.
+	ErrMissingTask = errors.New("supervisor: missing task")
+)
 
 // Task is one unit of work: build or modify exactly one target repo on its own
 // branch. One task = one repo = one branch (no cross-repo sprawl).
@@ -46,6 +61,23 @@ type Gate interface {
 	Verify(repoPath string) gate.Verdict
 }
 
+// BoxHandle identifies a created containment box for one dispatched task.
+type BoxHandle struct {
+	ID       string
+	Worktree string
+}
+
+// ContainmentBox is the fakeable outside-the-box lifecycle seam.
+type ContainmentBox interface {
+	Create(Task) (BoxHandle, error)
+	Teardown(BoxHandle) error
+}
+
+// InBoxLoop is the fakeable seam for one agent-loop run inside a created box.
+type InBoxLoop interface {
+	RunInside(BoxHandle, Task) error
+}
+
 // Supervisor is the outside-the-box dispatcher.
 //
 // The default-deny egress allowlist — the load-bearing control for the accepted
@@ -53,6 +85,10 @@ type Gate interface {
 // containment task (Phase 0.3), when something actually enforces it.
 type Supervisor struct {
 	sandboxRunner sandbox.Runner
+	box           ContainmentBox
+	loop          InBoxLoop
+	task          Task
+	logger        *slog.Logger
 }
 
 // Option configures a Supervisor.
@@ -66,17 +102,96 @@ func WithSandboxRunner(runner sandbox.Runner) Option {
 	}
 }
 
+// WithContainmentBox configures the lifecycle seam that creates and tears down
+// the ephemeral execution box for one dispatched task.
+func WithContainmentBox(box ContainmentBox) Option {
+	return func(s *Supervisor) {
+		s.box = box
+	}
+}
+
+// WithInBoxLoop configures the agent loop seam that runs inside the created box.
+func WithInBoxLoop(loop InBoxLoop) Option {
+	return func(s *Supervisor) {
+		s.loop = loop
+	}
+}
+
+// WithTask configures the single task dispatched by one Run call.
+func WithTask(task Task) Option {
+	return func(s *Supervisor) {
+		s.task = task
+	}
+}
+
+// WithLogger configures structured lifecycle logging for Run.
+func WithLogger(logger *slog.Logger) Option {
+	return func(s *Supervisor) {
+		s.logger = logger
+	}
+}
+
 // New returns a Supervisor with default (empty) configuration.
 func New(options ...Option) *Supervisor {
-	s := &Supervisor{}
+	s := &Supervisor{
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
 	for _, option := range options {
 		option(s)
 	}
 	return s
 }
 
-// Run is the outer loop: pick task -> create box -> run agent loop inside ->
-// verify -> branch/PR or escalate -> teardown. Stubbed during Phase 0.
-func (s *Supervisor) Run() error {
-	return ErrNotImplemented
+// Run dispatches exactly one configured task through create -> run-inside ->
+// teardown. Retry, escalation, timeout, and run-record policy live in later
+// tasks; this method only guarantees deterministic lifecycle ordering.
+func (s *Supervisor) Run() (err error) {
+	if s.box == nil {
+		return ErrNilContainmentBox
+	}
+	if s.loop == nil {
+		return ErrNilInBoxLoop
+	}
+	if strings.TrimSpace(s.task.ID) == "" {
+		return ErrMissingTask
+	}
+
+	handle, err := s.box.Create(s.task)
+	if err != nil {
+		return fmt.Errorf("supervisor: create box: %w", err)
+	}
+	s.logLifecycle("box.created", handle)
+
+	defer func() {
+		var panicErr error
+		if recovered := recover(); recovered != nil {
+			panicErr = fmt.Errorf("supervisor: run inside box panic: %v", recovered)
+		}
+
+		teardownErr := s.box.Teardown(handle)
+		s.logLifecycle("box.torn_down", handle)
+		if teardownErr != nil {
+			teardownErr = fmt.Errorf("supervisor: teardown box: %w", teardownErr)
+		}
+
+		err = errors.Join(err, panicErr, teardownErr)
+	}()
+
+	s.logLifecycle("loop.started", handle)
+	if loopErr := s.loop.RunInside(handle, s.task); loopErr != nil {
+		err = fmt.Errorf("supervisor: run inside box: %w", loopErr)
+	}
+	return err
+}
+
+func (s *Supervisor) logLifecycle(event string, handle BoxHandle) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.Info("supervisor lifecycle",
+		"event", event,
+		"task_id", s.task.ID,
+		"box_id", handle.ID,
+		"worktree", handle.Worktree,
+	)
 }

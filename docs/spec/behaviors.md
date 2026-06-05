@@ -111,6 +111,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** A negative attempt limit is rejected before the policy runs. Missing source, Executor, Gate, worktree path, status writer, or escalation hook is rejected at construction. Task-source errors, escalation hook errors, nil hook-returned Executors, and status-write errors are returned to the caller. No failure mode creates an unbounded retry loop.
 - **References:** ADR 013; `docs/tasks/test-specs/013-escalation-retry-policy-test-spec.md`.
 
+### B-012: Dispatch one task through a containment lifecycle
+
+- **Trigger:** A caller invokes `Supervisor.Run()` with one configured task, one containment-box seam, and one in-box loop seam.
+- **Response:** The supervisor creates one containment box for the configured task, starts the in-box loop once with the created box handle and task, then tears the box down exactly once.
+- **Side effects:** When a logger is configured, the supervisor emits structured lifecycle log records for `box.created`, `loop.started`, and `box.torn_down` with the task ID, box ID, and worktree path.
+- **Failure modes:** Missing dispatch dependencies fail before box creation. A box-create error is returned without teardown. A loop error is returned after teardown. A loop panic is recovered, converted into an error that includes the panic value, and returned after teardown. Teardown errors are joined with any loop or panic error.
+- **References:** `docs/tasks/test-specs/017-supervisor-dispatch-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -146,3 +154,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - The agent loop reports failures without deciding retry count, escalation target, or mandatory stop condition.
 - The retrying loop has a mandatory stop condition: each picked task runs no more than the configured non-negative `MaxAttempts`, and exhausted failures are marked `needs-human`.
 - The execution-box profile exposes no host home mount, no container-engine socket mount, no privileged mode, and no capability add-back by default.
+- One `Supervisor.Run()` call dispatches at most one task and always tears down a successfully created box exactly once.

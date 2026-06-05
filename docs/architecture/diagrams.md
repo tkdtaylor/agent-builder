@@ -64,7 +64,7 @@ C4Component
 
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
-        Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher and stable seams")
+        Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher, lifecycle logger, and stable seams")
         Component(agentloop, "Agent Loop", "internal/loop", "Inside-the-box pick-attempt-verify cycle plus bounded retry policy")
         Component(sandbox, "exec-sandbox Run Adapter", "internal/sandbox", "Typed contained-command seam and test fake")
         Component(tasksource, "Task Source", "internal/tasksource", "Read-only roadmap/task parser and next-task selector")
@@ -73,7 +73,7 @@ C4Component
     }
 
     Rel(main, supervisor, "Starts")
-    Rel(supervisor, sandbox, "Uses Runner interface")
+    Rel(supervisor, sandbox, "Stores Runner / box seam")
     Rel(supervisor, gate, "Consumes Verdict model / Gate seam")
     Rel(agentloop, supervisor, "Consumes Task / Executor / Gate seams")
     Rel(agentloop, tasksource, "Picks next task")
@@ -88,6 +88,7 @@ C4Component
 - ADR 012 fixes the agent loop shape: pick -> attempt -> verify -> advance states, done/idle/fail outcomes, and policy-free fail reporting.
 - ADR 013 fixes the retry escalation policy: non-negative `MaxAttempts`, mandatory stop, status-writer `needs-human` marking, and substitutable escalation hook.
 - ADR 020 fixes the exec-sandbox run adapter seam: command/worktree/typed limits in, result/exit/error out.
+- Task 017 fixes the supervisor dispatch lifecycle: create one box, run one in-box loop, and tear the box down exactly once.
 - The supervisor remains trusted and dumb; the gate contains verification orchestration only, not executor/LLM/web logic.
 - The task source is read-only and only selects tasks; the task status writer is the separate constrained mutation component.
 - ADR 014 defines the execution-box profile artifact; supervisor wiring to launch it is deferred to the dispatch task.
@@ -102,6 +103,7 @@ C4Component
 sequenceDiagram
     autonumber
     participant Supervisor
+    participant Box as Containment Box
     participant AgentLoop as Agent Loop
     participant TaskSource as Task Source
     participant Executor
@@ -111,7 +113,11 @@ sequenceDiagram
     participant Roadmap as docs/plans/roadmap.md
     participant Tasks as docs/tasks/*.md
 
-    Supervisor->>AgentLoop: RunOnce() with RetryPolicy
+    Supervisor->>Box: Create(Task)
+    Box-->>Supervisor: BoxHandle
+    Supervisor-->>Supervisor: log box.created
+    Supervisor-->>Supervisor: log loop.started
+    Supervisor->>AgentLoop: RunInside(BoxHandle, Task)
     AgentLoop->>TaskSource: Next()
     TaskSource->>Roadmap: read
     TaskSource->>Tasks: read task files
@@ -137,6 +143,8 @@ sequenceDiagram
     else no ready task
         AgentLoop-->>Supervisor: RetryOutcome{idle}
     end
+    Supervisor->>Box: Teardown(BoxHandle)
+    Supervisor-->>Supervisor: log box.torn_down
 ```
 
 ---
