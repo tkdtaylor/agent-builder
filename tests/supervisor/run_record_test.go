@@ -46,7 +46,19 @@ func TestRunRecordWireFormatAndOutcomeVocabulary(t *testing.T) {
 
 func TestRunRecordStreamsOutputAndPersistsAfterTeardown(t *testing.T) {
 	recordPath := filepath.Join(t.TempDir(), "run-record.ndjson")
-	box := &recordBox{handle: supervisor.BoxHandle{ID: "box-019", Worktree: "/work/agent-builder"}}
+	box := &recordBox{
+		handle: supervisor.BoxHandle{ID: "box-019", Worktree: "/work/agent-builder"},
+		onTeardown: func() error {
+			content, err := os.ReadFile(recordPath)
+			if err != nil {
+				return err
+			}
+			if !strings.Contains(string(content), `"type":"run_finished"`) {
+				return errors.New("run_finished was not flushed before teardown")
+			}
+			return nil
+		},
+	}
 	loop := recordLoop{
 		duringRun: func(streams supervisor.RunStreams) error {
 			if _, err := io.WriteString(streams.Stdout, "stdout-one\n"); err != nil {
@@ -58,14 +70,20 @@ func TestRunRecordStreamsOutputAndPersistsAfterTeardown(t *testing.T) {
 			if _, err := io.WriteString(streams.Command, "go test ./...\n"); err != nil {
 				return err
 			}
+			if _, err := io.WriteString(streams.Stdout, "stdout-two\n"); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(streams.Stderr, "stderr-two\n"); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(streams.Command, "make fitness\n"); err != nil {
+				return err
+			}
 			content, err := os.ReadFile(recordPath)
 			if err != nil {
 				return err
 			}
-			if !strings.Contains(string(content), "stdout-one") {
-				return errors.New("stdout was not visible during RunInside")
-			}
-			return nil
+			return requireContentDuringRun(string(content), "stdout-one", "stderr-one", "go test ./...", "stdout-two", "stderr-two", "make fitness")
 		},
 	}
 
@@ -86,6 +104,9 @@ func TestRunRecordStreamsOutputAndPersistsAfterTeardown(t *testing.T) {
 	assertContainsEvent(t, "TC-002-Stream-Capture", events, "stdout", "data", "stdout-one\n")
 	assertContainsEvent(t, "TC-002-Stream-Capture", events, "stderr", "data", "stderr-one\n")
 	assertContainsEvent(t, "TC-002-Stream-Capture", events, "command", "command", "go test ./...\n")
+	assertEventSequence(t, "TC-002-Stream-Capture", events, "stdout", "data", []string{"stdout-one\n", "stdout-two\n"})
+	assertEventSequence(t, "TC-002-Stream-Capture", events, "stderr", "data", []string{"stderr-one\n", "stderr-two\n"})
+	assertEventSequence(t, "TC-002-Stream-Capture", events, "command", "command", []string{"RunInside task 019", "go test ./...\n", "make fitness\n"})
 	assertContainsEvent(t, "TC-003-Persist-After-Teardown", events, "run_finished", "outcome", "completed")
 	t.Logf("TC-003-Persist-After-Teardown sample persisted line: %s", firstLine(t, recordPath))
 }
@@ -121,6 +142,9 @@ func TestRunRecordKeepsPartialStreamWhenLoopFails(t *testing.T) {
 	if !box.tornDown {
 		t.Fatal("TC-004-No-Post-Teardown-Readback: fake box was not torn down")
 	}
+	if box.readbackCalls != 0 {
+		t.Fatalf("TC-004-No-Post-Teardown-Readback: post-teardown readback calls = %d, want 0", box.readbackCalls)
+	}
 
 	events := readRunRecord(t, recordPath)
 	assertContainsEvent(t, "TC-004-No-Post-Teardown-Readback", events, "stdout", "data", "partial stdout\n")
@@ -130,8 +154,10 @@ func TestRunRecordKeepsPartialStreamWhenLoopFails(t *testing.T) {
 }
 
 type recordBox struct {
-	handle   supervisor.BoxHandle
-	tornDown bool
+	handle        supervisor.BoxHandle
+	tornDown      bool
+	onTeardown    func() error
+	readbackCalls int
 }
 
 func (b *recordBox) Create(supervisor.Task) (supervisor.BoxHandle, error) {
@@ -139,8 +165,17 @@ func (b *recordBox) Create(supervisor.Task) (supervisor.BoxHandle, error) {
 }
 
 func (b *recordBox) Teardown(supervisor.BoxHandle) error {
+	if b.onTeardown != nil {
+		if err := b.onTeardown(); err != nil {
+			return err
+		}
+	}
 	b.tornDown = true
 	return nil
+}
+
+func (b *recordBox) ReadBackAfterTeardown() {
+	b.readbackCalls++
 }
 
 type recordLoop struct {
@@ -196,6 +231,34 @@ func assertContainsEvent(t *testing.T, marker string, events []map[string]any, e
 		}
 	}
 	t.Fatalf("%s: missing event type=%q %s=%q in %#v", marker, eventType, field, value, events)
+}
+
+func assertEventSequence(t *testing.T, marker string, events []map[string]any, eventType, field string, want []string) {
+	t.Helper()
+
+	got := []string{}
+	for _, event := range events {
+		if event["type"] == eventType {
+			got = append(got, asString(event[field]))
+		}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%s: %s sequence length = %d (%v), want %d (%v)", marker, eventType, len(got), got, len(want), want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%s: %s sequence[%d] = %q, want %q; full sequence %v", marker, eventType, i, got[i], want[i], got)
+		}
+	}
+}
+
+func requireContentDuringRun(content string, values ...string) error {
+	for _, value := range values {
+		if !strings.Contains(content, value) {
+			return errors.New(value + " was not visible during RunInside")
+		}
+	}
+	return nil
 }
 
 func asString(value any) string {
