@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** completed (code merged + green; tracker remains 🟡 pending formal spec-verifier pass before ✅)
+**Status:** completed (verified L6)
 
 ## Goal
 Add a fitness check (`make fitness-no-docker`) that greps the repo for `docker`/`docker-compose`/`Dockerfile` dev-environment references and fails on any hit outside a designated product-container directory, enforcing that the substrate is rootless Podman, not Docker.
@@ -58,4 +58,4 @@ Add a fitness check (`make fitness-no-docker`) that greps the repo for `docker`/
 - **Allowed product-container path:** temporary `containment/tmp-reference.txt` containing `docker run allowed-product-artifact` did not trip `make fitness-no-docker`; temporary file removed before commit.
 - **Umbrella fitness:** `make fitness` includes `fitness-no-docker`; clean tree -> `Fitness checks passed.`; root-level `Dockerfile` fixture fails through the umbrella target before the success message.
 - **Repo checks:** `gofmt -w .` -> no changes; `go test ./...` -> `ok github.com/tkdtaylor/agent-builder/internal/gate`; `go build ./...` -> success; `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.`
-- **Spec-verifier:** pending separate verification commit.
+- **Spec-verifier:** read-only worker verifier APPROVE — all REQ/TC assertions satisfied; case-insensitive filename variants covered; lifecycle hygiene confirmed.
