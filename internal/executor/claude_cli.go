@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/tkdtaylor/agent-builder/internal/executorharness"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
 
@@ -22,34 +23,53 @@ const (
 )
 
 var (
-	ErrBlankCLIPath       = errors.New("executor: blank Claude CLI path")
-	ErrBlankWorktree      = errors.New("executor: blank worktree")
-	ErrMissingClaudeToken = errors.New("executor: missing ANTHROPIC_API_KEY")
-	ErrBlankTaskID        = errors.New("executor: blank task ID")
-	ErrBlankTaskSpec      = errors.New("executor: blank task spec")
-	ErrMissingBranch      = errors.New("executor: Claude CLI did not write produced branch")
+	ErrBlankCLIPath                     = errors.New("executor: blank Claude CLI path")
+	ErrBlankWorktree                    = errors.New("executor: blank worktree")
+	ErrMissingClaudeToken               = errors.New("executor: missing ANTHROPIC_API_KEY")
+	ErrBlankTaskID                      = errors.New("executor: blank task ID")
+	ErrBlankTaskSpec                    = errors.New("executor: blank task spec")
+	ErrMissingBranch                    = errors.New("executor: Claude CLI did not write produced branch")
+	ErrUnsupportedClaudeIngestionPolicy = errors.New("executor: unsupported Claude ingestion policy")
+	ErrMissingClaudeIngestionHarness    = errors.New("executor: reviewed Claude ingestion policy requires harness")
+	ErrClaudeIngestionDisabled          = errors.New("executor: Claude web/tool capability disabled")
+)
+
+// ClaudeIngestionPolicy declares how Claude-facing web/tool routes are handled.
+type ClaudeIngestionPolicy string
+
+const (
+	// ClaudeIngestionDisabled denies Claude-facing web/tool events before use.
+	ClaudeIngestionDisabled ClaudeIngestionPolicy = "disabled"
+	// ClaudeIngestionReviewed routes Claude-facing web/tool events through the harness.
+	ClaudeIngestionReviewed ClaudeIngestionPolicy = "reviewed"
 )
 
 // ClaudeCLIConfig configures the Claude Code CLI subprocess executor.
 type ClaudeCLIConfig struct {
-	CLIPath   string
-	Worktree  string
-	AuthToken string
+	CLIPath          string
+	Worktree         string
+	AuthToken        string
+	IngestionPolicy  ClaudeIngestionPolicy
+	IngestionHarness *executorharness.Harness
 }
 
 // ClaudeCLI drives Claude Code in non-interactive mode against one target worktree.
 type ClaudeCLI struct {
-	cliPath   string
-	worktree  string
-	authToken string
+	cliPath          string
+	worktree         string
+	authToken        string
+	ingestionPolicy  ClaudeIngestionPolicy
+	ingestionHarness *executorharness.Harness
 }
 
 // NewClaudeCLI constructs a Claude Code CLI executor with an explicit token.
 func NewClaudeCLI(config ClaudeCLIConfig) *ClaudeCLI {
 	return &ClaudeCLI{
-		cliPath:   strings.TrimSpace(config.CLIPath),
-		worktree:  strings.TrimSpace(config.Worktree),
-		authToken: config.AuthToken,
+		cliPath:          strings.TrimSpace(config.CLIPath),
+		worktree:         strings.TrimSpace(config.Worktree),
+		authToken:        config.AuthToken,
+		ingestionPolicy:  normalizeClaudeIngestionPolicy(config.IngestionPolicy),
+		ingestionHarness: config.IngestionHarness,
 	}
 }
 
@@ -61,6 +81,43 @@ func NewClaudeCLIFromEnv(worktree string) *ClaudeCLI {
 		Worktree:  worktree,
 		AuthToken: os.Getenv(ClaudeCLIAuthEnv),
 	})
+}
+
+// ParseClaudeIngestionPolicy validates a text policy name from configuration.
+func ParseClaudeIngestionPolicy(raw string) (ClaudeIngestionPolicy, error) {
+	switch policy := ClaudeIngestionPolicy(strings.TrimSpace(raw)); policy {
+	case ClaudeIngestionDisabled, ClaudeIngestionReviewed:
+		return policy, nil
+	default:
+		return "", fmt.Errorf("%w: %q", ErrUnsupportedClaudeIngestionPolicy, raw)
+	}
+}
+
+// IngestionPolicy returns the effective Claude web/tool policy.
+func (e *ClaudeCLI) IngestionPolicy() ClaudeIngestionPolicy {
+	return e.ingestionPolicy
+}
+
+// HandleWebContent applies the configured Claude web-ingestion policy.
+func (e *ClaudeCLI) HandleWebContent(ctx context.Context, event executorharness.WebContentEvent, continuation executorharness.ContentContinuation) executorharness.ContentResult {
+	if err := e.validateIngestionPolicy(); err != nil {
+		return executorharness.ContentResult{Err: err}
+	}
+	if e.ingestionPolicy == ClaudeIngestionDisabled {
+		return executorharness.ContentResult{Err: ErrClaudeIngestionDisabled}
+	}
+	return e.ingestionHarness.HandleWebContent(ctx, event, continuation)
+}
+
+// HandleToolCall applies the configured Claude tool-call policy.
+func (e *ClaudeCLI) HandleToolCall(ctx context.Context, event executorharness.ToolCallEvent, toolExecutor executorharness.ToolExecutor) executorharness.ToolCallResult {
+	if err := e.validateIngestionPolicy(); err != nil {
+		return executorharness.ToolCallResult{Err: err}
+	}
+	if e.ingestionPolicy == ClaudeIngestionDisabled {
+		return executorharness.ToolCallResult{Err: ErrClaudeIngestionDisabled}
+	}
+	return e.ingestionHarness.HandleToolCall(ctx, event, toolExecutor)
 }
 
 // Run invokes the Claude Code CLI subprocess and returns the branch it reports.
@@ -126,7 +183,31 @@ func (e *ClaudeCLI) validate(task supervisor.Task) error {
 	if strings.TrimSpace(task.Spec) == "" {
 		return ErrBlankTaskSpec
 	}
+	if err := e.validateIngestionPolicy(); err != nil {
+		return err
+	}
 	return nil
+}
+
+func normalizeClaudeIngestionPolicy(policy ClaudeIngestionPolicy) ClaudeIngestionPolicy {
+	if strings.TrimSpace(string(policy)) == "" {
+		return ClaudeIngestionDisabled
+	}
+	return ClaudeIngestionPolicy(strings.TrimSpace(string(policy)))
+}
+
+func (e *ClaudeCLI) validateIngestionPolicy() error {
+	switch e.ingestionPolicy {
+	case ClaudeIngestionDisabled:
+		return nil
+	case ClaudeIngestionReviewed:
+		if e.ingestionHarness == nil {
+			return ErrMissingClaudeIngestionHarness
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w: %q", ErrUnsupportedClaudeIngestionPolicy, e.ingestionPolicy)
+	}
 }
 
 func buildClaudePrompt(task supervisor.Task, worktree, branchPath string) string {

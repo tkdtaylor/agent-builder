@@ -40,7 +40,7 @@
 | 026 | armor on web-ingestion / tool-call path | 026-armor-ingestion-wiring-test-spec.md | ✅ | 🟡 | L5: `go test -count=1 -v ./tests/executorharness -run TestArmorGuardedHarnessProducerConsumerTraceCoversLiveExecutorPath` -> `TC-005 armor producer-consumer trace:`; pending spec-verifier before ✅ |
 | 027 | Executor ingestion/tool-call harness | 027-executor-ingestion-tool-harness-test-spec.md | ✅ | 🟡 | L5: `go test -count=1 -v ./tests/executorharness -run TestHarnessProducerConsumerTraceCoversLivePath` -> `TC-005 producer-consumer trace:`; pending spec-verifier before ✅ |
 | 028 | Default run wiring | 028-default-run-wiring-test-spec.md | ✅ | ❌ | Not started |
-| 029 | Claude executor ingestion control | 029-claude-ingestion-control-test-spec.md | ✅ | ❌ | Not started |
+| 029 | Claude executor ingestion control | 029-claude-ingestion-control-test-spec.md | ✅ | 🟡 | L5: `go test -count=1 -v ./tests/executor ./tests/executorharness -run 'TestClaude.*Ingestion|TestArmorGuardedHarnessProducerConsumerTraceCoversLiveExecutorPath'` -> `TC-005 Claude executor web/tool route is reviewed or disabled fail-closed`; pending spec-verifier before ✅ |
 | 030 | Runtime isolation evidence | 030-runtime-isolation-evidence-test-spec.md | ✅ | ❌ | Not started |
 | 031 | Verification ledger cleanup | 031-verification-ledger-cleanup-test-spec.md | ✅ | ❌ | Not started |
 | 032 | Phase 0 end-to-end acceptance | 032-phase0-end-to-end-acceptance-test-spec.md | ✅ | ❌ | Not started |

@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-05
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 Close the gap between the armor-guarded executor harness and the concrete Claude CLI executor so web-ingestion and tool-call routes are either broker-reviewed before use or explicitly disabled as unsupported.
@@ -28,10 +28,10 @@ Close the gap between the armor-guarded executor harness and the concrete Claude
 - [x] Blocking tasks complete: 022, 024, 025, 026, and 027
 
 ## Acceptance criteria
-- [ ] [REQ-001] The Claude executor has an explicit web/tool policy visible in code and spec: `reviewed` or `disabled`; the default is fail-closed.
-- [ ] [REQ-002] A validation harness proves reviewed content/tool events pass through `executorharness.NewArmorGuarded` before continuation or execution.
-- [ ] [REQ-003] A simulated direct web/tool bypass fails the harness instead of silently reaching executor context or tool execution.
-- [ ] [REQ-004] Armor unavailable, armor block/quarantine, malformed tool arguments, and allow-with-findings all prevent executor use.
+- [x] [REQ-001] The Claude executor has an explicit web/tool policy visible in code and spec: `reviewed` or `disabled`; the default is fail-closed.
+- [x] [REQ-002] A validation harness proves reviewed content/tool events pass through `executorharness.NewArmorGuarded` before continuation or execution.
+- [x] [REQ-003] A simulated direct web/tool bypass fails the harness instead of silently reaching executor context or tool execution.
+- [x] [REQ-004] Armor unavailable, armor block/quarantine, malformed tool arguments, and allow-with-findings all prevent executor use.
 
 ## Verification plan
 - **Highest level achievable:** L5 - harness drives the concrete Claude executor adapter or its configured tool/web wrapper with fake Claude and fake armor processes.

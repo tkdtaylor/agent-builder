@@ -159,6 +159,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Armor `block` or `quarantine` decisions, allow-with-findings responses, missing armor command, runner errors, timeouts, malformed armor decisions, invalid event fields, and unavailable armor all prevent continuation or tool execution.
 - **References:** ADR 024; `docs/tasks/test-specs/026-armor-ingestion-wiring-test-spec.md`.
 
+### B-018: Fail closed or review Claude executor web/tool routes
+
+- **Trigger:** Claude executor-facing code presents web-ingested content or a requested tool call through `executor.ClaudeCLI`.
+- **Response:** The Claude executor declares one effective ingestion policy. `disabled` denies web/tool events before executor context or tool execution. `reviewed` requires a configured `executorharness.Harness` and delegates content/tool events to that harness, so continuations and tool executors receive only broker-reviewed release values. The zero-value policy defaults to `disabled`.
+- **Side effects:** Normal Claude CLI subprocess execution for code-editing tasks remains available under the disabled policy when no web/tool event is requested. Reviewed routes may invoke armor through `executorharness.NewArmorGuarded` when the configured harness uses that adapter.
+- **Failure modes:** Unknown policy names, reviewed policy without a harness, disabled web/tool routes, direct unreviewed release values, armor block/quarantine, armor unavailable, armor allow-with-findings, malformed tool arguments, guard errors, and malformed guard decisions all prevent executor context continuation or tool execution.
+- **References:** ADR 024; `docs/tasks/test-specs/029-claude-ingestion-control-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -200,3 +208,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - The armor adapter invokes armor as an external seam and does not vendor or edit armor source.
 - Executor-facing web/tool events use broker-reviewed release values before continuation or execution.
 - Armor-guarded executor harness wiring fails closed and releases only armor-allowed candidates.
+- Claude executor web/tool routes are explicitly `disabled` or `reviewed`; prompt text or subprocess flags alone are not treated as the blocking control.

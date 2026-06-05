@@ -1,6 +1,8 @@
 package executor_test
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -9,7 +11,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tkdtaylor/agent-builder/internal/armor"
 	"github.com/tkdtaylor/agent-builder/internal/executor"
+	"github.com/tkdtaylor/agent-builder/internal/executorharness"
+	"github.com/tkdtaylor/agent-builder/internal/ingestion"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
 
@@ -248,6 +253,287 @@ func TestClaudeCLIFromEnvUsesDocumentedTokenVariable(t *testing.T) {
 	}
 }
 
+func TestClaudeIngestionPolicyDeclaresReviewedOrDisabledFailClosed(t *testing.T) {
+	worktree := t.TempDir()
+	recordPath := filepath.Join(t.TempDir(), "record.env")
+	cliPath := writeFakeClaudeCLI(t, recordPath, "task/029-claude-ingestion-control", 0, "", "")
+
+	defaultExecutor := executor.NewClaudeCLI(executor.ClaudeCLIConfig{
+		CLIPath:   cliPath,
+		Worktree:  worktree,
+		AuthToken: "test-token-value",
+	})
+	if got := defaultExecutor.IngestionPolicy(); got != executor.ClaudeIngestionDisabled {
+		t.Fatalf("TC-001 default ingestion policy = %q, want %q", got, executor.ClaudeIngestionDisabled)
+	}
+
+	if _, err := executor.ParseClaudeIngestionPolicy(""); !errors.Is(err, executor.ErrUnsupportedClaudeIngestionPolicy) {
+		t.Fatalf("TC-001 blank policy parse error = %v, want ErrUnsupportedClaudeIngestionPolicy", err)
+	}
+	if _, err := executor.ParseClaudeIngestionPolicy("prompt-only"); !errors.Is(err, executor.ErrUnsupportedClaudeIngestionPolicy) {
+		t.Fatalf("TC-001 unknown policy parse error = %v, want ErrUnsupportedClaudeIngestionPolicy", err)
+	}
+
+	reviewedWithoutHarness := executor.NewClaudeCLI(executor.ClaudeCLIConfig{
+		CLIPath:         cliPath,
+		Worktree:        worktree,
+		AuthToken:       "test-token-value",
+		IngestionPolicy: executor.ClaudeIngestionReviewed,
+	})
+	_, err := reviewedWithoutHarness.Run(supervisor.Task{ID: "029", Spec: "docs/tasks/backlog/029-claude-ingestion-control.md"})
+	if !errors.Is(err, executor.ErrMissingClaudeIngestionHarness) {
+		t.Fatalf("TC-001 reviewed policy without harness Run error = %v, want ErrMissingClaudeIngestionHarness", err)
+	}
+
+	unknownPolicy := executor.NewClaudeCLI(executor.ClaudeCLIConfig{
+		CLIPath:         cliPath,
+		Worktree:        worktree,
+		AuthToken:       "test-token-value",
+		IngestionPolicy: executor.ClaudeIngestionPolicy("prompt-only"),
+	})
+	_, err = unknownPolicy.Run(supervisor.Task{ID: "029", Spec: "docs/tasks/backlog/029-claude-ingestion-control.md"})
+	if !errors.Is(err, executor.ErrUnsupportedClaudeIngestionPolicy) {
+		t.Fatalf("TC-001 unknown policy Run error = %v, want ErrUnsupportedClaudeIngestionPolicy", err)
+	}
+}
+
+func TestClaudeReviewedIngestionReleasesContentAndToolOnlyAfterArmorBrokerReview(t *testing.T) {
+	trace := &claudeTraceRecorder{}
+	runner := &claudePolicyArmorRunner{trace: trace}
+	harness := executorharness.NewArmorGuarded(executorharness.ArmorConfig{
+		Armor: armor.Config{Runner: runner},
+		Trace: trace,
+	})
+	claudeExecutor := executor.NewClaudeCLI(executor.ClaudeCLIConfig{
+		CLIPath:          "unused",
+		Worktree:         t.TempDir(),
+		AuthToken:        "test-token-value",
+		IngestionPolicy:  executor.ClaudeIngestionReviewed,
+		IngestionHarness: &harness,
+	})
+
+	var continuedContent string
+	result := claudeExecutor.HandleWebContent(context.Background(), claudeWebEvent("review me"), func(_ context.Context, release executorharness.ContentRelease) error {
+		content, err := release.Content()
+		if err != nil {
+			return err
+		}
+		continuedContent = string(content)
+		trace.RecordTrace(executorharness.TraceEvent{Stage: claudeTraceContentContinuationCalled, CandidateID: resultID(release)})
+		return nil
+	})
+	if result.Err != nil {
+		t.Fatalf("TC-002 HandleWebContent error = %v", result.Err)
+	}
+	if !result.Released || continuedContent != "review me" {
+		t.Fatalf("TC-002 released=%v content=%q, want reviewed content released", result.Released, continuedContent)
+	}
+	if len(runner.requests) != 1 {
+		t.Fatalf("TC-002 armor requests = %d, want 1 before continuation", len(runner.requests))
+	}
+	request := runner.requests[0]
+	if request.CandidateID != string(result.Candidate.ID) || request.Kind != string(ingestion.CandidateKindContent) || request.Content != "review me" {
+		t.Fatalf("TC-002 armor request = %+v, want matching content candidate %q", request, result.Candidate.ID)
+	}
+	assertClaudeTraceOrder(t, trace.stages(),
+		executorharness.TraceContentCandidateProduced,
+		claudeTraceArmorContentConsumed,
+		executorharness.TraceContentBrokerReviewed,
+		executorharness.TraceContentReleased,
+		claudeTraceContentContinuationCalled,
+	)
+
+	var executedTool ingestion.ToolCallCandidate
+	toolResult := claudeExecutor.HandleToolCall(context.Background(), claudeToolEvent("web.fetch", json.RawMessage(`{"url":"https://example.test"}`)), func(_ context.Context, release executorharness.ToolCallRelease) error {
+		candidate, err := release.Candidate()
+		if err != nil {
+			return err
+		}
+		executedTool = candidate
+		return nil
+	})
+	if toolResult.Err != nil {
+		t.Fatalf("TC-002 HandleToolCall error = %v", toolResult.Err)
+	}
+	if !toolResult.Released || executedTool.ID != toolResult.Candidate.ID {
+		t.Fatalf("TC-002 tool released=%v executed=%q candidate=%q, want reviewed tool execution", toolResult.Released, executedTool.ID, toolResult.Candidate.ID)
+	}
+	if len(runner.requests) != 2 {
+		t.Fatalf("TC-002 armor requests = %d, want content and tool reviewed", len(runner.requests))
+	}
+	toolRequest := runner.requests[1]
+	if toolRequest.CandidateID != string(toolResult.Candidate.ID) || toolRequest.Kind != string(ingestion.CandidateKindToolCall) || toolRequest.ToolName != "web.fetch" {
+		t.Fatalf("TC-002 armor tool request = %+v, want matching tool candidate %q", toolRequest, toolResult.Candidate.ID)
+	}
+	assertClaudeTraceOrder(t, trace.stages(),
+		executorharness.TraceToolCandidateProduced,
+		claudeTraceArmorToolConsumed,
+		executorharness.TraceToolBrokerReviewed,
+		executorharness.TraceToolReleased,
+		executorharness.TraceToolExecuted,
+	)
+}
+
+func TestClaudeDirectIngestionBypassFails(t *testing.T) {
+	contentBypass := func(release executorharness.ContentRelease) error {
+		_, err := release.Content()
+		return err
+	}
+	if err := contentBypass(executorharness.ContentRelease{}); !errors.Is(err, executorharness.ErrUnreviewedRelease) {
+		t.Fatalf("TC-003 direct content bypass error = %v, want ErrUnreviewedRelease", err)
+	}
+
+	toolBypass := func(release executorharness.ToolCallRelease) error {
+		_, err := release.Arguments()
+		return err
+	}
+	if err := toolBypass(executorharness.ToolCallRelease{}); !errors.Is(err, executorharness.ErrUnreviewedRelease) {
+		t.Fatalf("TC-003 direct tool bypass error = %v, want ErrUnreviewedRelease", err)
+	}
+}
+
+func TestClaudeDisabledIngestionPolicyFailsClosedAndAllowsNormalSubprocess(t *testing.T) {
+	worktree := t.TempDir()
+	recordPath := filepath.Join(t.TempDir(), "record.env")
+	cliPath := writeFakeClaudeCLI(t, recordPath, "task/029-claude-ingestion-control", 0, "", "")
+	claudeExecutor := executor.NewClaudeCLI(executor.ClaudeCLIConfig{
+		CLIPath:         cliPath,
+		Worktree:        worktree,
+		AuthToken:       "test-token-value",
+		IngestionPolicy: executor.ClaudeIngestionDisabled,
+	})
+
+	var continued bool
+	contentResult := claudeExecutor.HandleWebContent(context.Background(), claudeWebEvent("blocked by disabled policy"), func(context.Context, executorharness.ContentRelease) error {
+		continued = true
+		return nil
+	})
+	if !errors.Is(contentResult.Err, executor.ErrClaudeIngestionDisabled) || continued {
+		t.Fatalf("TC-004 disabled content result = %+v continued=%v, want disabled denial before continuation", contentResult, continued)
+	}
+	if !strings.Contains(contentResult.Err.Error(), "disabled") {
+		t.Fatalf("TC-004 disabled content error = %q, want disabled reason", contentResult.Err)
+	}
+
+	var executed bool
+	toolResult := claudeExecutor.HandleToolCall(context.Background(), claudeToolEvent("web.fetch", json.RawMessage(`{"url":"https://example.test"}`)), func(context.Context, executorharness.ToolCallRelease) error {
+		executed = true
+		return nil
+	})
+	if !errors.Is(toolResult.Err, executor.ErrClaudeIngestionDisabled) || executed {
+		t.Fatalf("TC-004 disabled tool result = %+v executed=%v, want disabled denial before execution", toolResult, executed)
+	}
+
+	result, err := claudeExecutor.Run(supervisor.Task{
+		ID:   "029",
+		Repo: "agent-builder",
+		Spec: "docs/tasks/backlog/029-claude-ingestion-control.md",
+	})
+	if err != nil {
+		t.Fatalf("TC-004 normal subprocess under disabled policy returned error: %v", err)
+	}
+	if !result.OK || result.Branch != "task/029-claude-ingestion-control" {
+		t.Fatalf("TC-004 normal subprocess result = %+v, want branch capture", result)
+	}
+}
+
+func TestClaudeReviewedIngestionBlocksArmorFailuresBeforeExecutorUse(t *testing.T) {
+	tests := []struct {
+		name      string
+		runner    *claudePolicyArmorRunner
+		event     executorharness.ToolCallEvent
+		wantErr   error
+		wantCalls int
+	}{
+		{
+			name:      "block",
+			runner:    &claudePolicyArmorRunner{response: armor.Response{Decision: "block", Reason: "blocked by armor"}},
+			event:     claudeToolEvent("web.fetch", json.RawMessage(`{"url":"https://example.test"}`)),
+			wantCalls: 1,
+		},
+		{
+			name:      "quarantine",
+			runner:    &claudePolicyArmorRunner{response: armor.Response{Decision: "quarantine", Reason: "quarantined by armor"}},
+			event:     claudeToolEvent("web.fetch", json.RawMessage(`{"url":"https://example.test"}`)),
+			wantCalls: 1,
+		},
+		{
+			name: "allow with findings",
+			runner: &claudePolicyArmorRunner{response: armor.Response{
+				Decision: "allow",
+				Findings: []armor.Finding{{Category: "prompt-injection", Severity: "high", Message: "finding blocks allow"}},
+			}},
+			event:     claudeToolEvent("web.fetch", json.RawMessage(`{"url":"https://example.test"}`)),
+			wantCalls: 1,
+		},
+		{
+			name:      "runner unavailable",
+			runner:    &claudePolicyArmorRunner{err: errors.New("armor unavailable")},
+			event:     claudeToolEvent("web.fetch", json.RawMessage(`{"url":"https://example.test"}`)),
+			wantCalls: 1,
+		},
+		{
+			name:      "malformed arguments",
+			runner:    &claudePolicyArmorRunner{response: armor.Response{Decision: "allow"}},
+			event:     claudeToolEvent("web.fetch", json.RawMessage(`{"url":`)),
+			wantErr:   ingestion.ErrMalformedToolArguments,
+			wantCalls: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			harness := executorharness.NewArmorGuarded(executorharness.ArmorConfig{
+				Armor: armor.Config{Runner: tt.runner},
+			})
+			claudeExecutor := executor.NewClaudeCLI(executor.ClaudeCLIConfig{
+				CLIPath:          "unused",
+				Worktree:         t.TempDir(),
+				AuthToken:        "test-token-value",
+				IngestionPolicy:  executor.ClaudeIngestionReviewed,
+				IngestionHarness: &harness,
+			})
+
+			var executed bool
+			result := claudeExecutor.HandleToolCall(context.Background(), tt.event, func(context.Context, executorharness.ToolCallRelease) error {
+				executed = true
+				return nil
+			})
+			if tt.wantErr != nil {
+				if !errors.Is(result.Err, tt.wantErr) {
+					t.Fatalf("TC-005 result error = %v, want %v", result.Err, tt.wantErr)
+				}
+			} else if result.Decision.Outcome != ingestion.DecisionBlock && result.Decision.Outcome != ingestion.DecisionQuarantine {
+				t.Fatalf("TC-005 decision outcome = %q, want block/quarantine", result.Decision.Outcome)
+			}
+			if result.Released || executed {
+				t.Fatalf("TC-005 result = %+v executed=%v, want prevented executor use", result, executed)
+			}
+			if len(tt.runner.requests) != tt.wantCalls {
+				t.Fatalf("TC-005 armor calls = %d, want %d", len(tt.runner.requests), tt.wantCalls)
+			}
+		})
+	}
+
+	missingArmor := executorharness.NewArmorGuarded(executorharness.ArmorConfig{})
+	claudeExecutor := executor.NewClaudeCLI(executor.ClaudeCLIConfig{
+		CLIPath:          "unused",
+		Worktree:         t.TempDir(),
+		AuthToken:        "test-token-value",
+		IngestionPolicy:  executor.ClaudeIngestionReviewed,
+		IngestionHarness: &missingArmor,
+	})
+	var continued bool
+	contentResult := claudeExecutor.HandleWebContent(context.Background(), claudeWebEvent("review me"), func(context.Context, executorharness.ContentRelease) error {
+		continued = true
+		return nil
+	})
+	if contentResult.Released || continued || contentResult.Decision.Outcome != ingestion.DecisionBlock {
+		t.Fatalf("TC-005 missing armor result = %+v continued=%v, want fail-closed block", contentResult, continued)
+	}
+	t.Log("TC-005 Claude executor web/tool route is reviewed or disabled fail-closed")
+}
+
 func promptBranchPath(t *testing.T, record string) string {
 	t.Helper()
 	lines := strings.Split(record, "\n")
@@ -258,6 +544,110 @@ func promptBranchPath(t *testing.T, record string) string {
 	}
 	t.Fatalf("TC-005 record did not contain produced branch path:\n%s", record)
 	return ""
+}
+
+type claudePolicyArmorRunner struct {
+	requests []armor.Request
+	response armor.Response
+	err      error
+	trace    *claudeTraceRecorder
+}
+
+func (r *claudePolicyArmorRunner) Run(_ context.Context, request armor.Request) (armor.Response, error) {
+	r.requests = append(r.requests, cloneClaudeArmorRequest(request))
+	if r.trace != nil {
+		stage := claudeTraceArmorContentConsumed
+		kind := ingestion.CandidateKindContent
+		if request.Kind == string(ingestion.CandidateKindToolCall) {
+			stage = claudeTraceArmorToolConsumed
+			kind = ingestion.CandidateKindToolCall
+		}
+		r.trace.RecordTrace(executorharness.TraceEvent{
+			Stage:       stage,
+			CandidateID: ingestion.CandidateID(request.CandidateID),
+			Kind:        kind,
+		})
+	}
+	if r.err != nil {
+		return armor.Response{}, r.err
+	}
+	if strings.TrimSpace(r.response.Decision) != "" {
+		return r.response, nil
+	}
+	return armor.Response{Decision: "allow"}, nil
+}
+
+type claudeTraceRecorder struct {
+	events []executorharness.TraceEvent
+}
+
+func (r *claudeTraceRecorder) RecordTrace(event executorharness.TraceEvent) {
+	r.events = append(r.events, event)
+}
+
+func (r *claudeTraceRecorder) stages() []executorharness.TraceStage {
+	stages := make([]executorharness.TraceStage, 0, len(r.events))
+	for _, event := range r.events {
+		stages = append(stages, event.Stage)
+	}
+	return stages
+}
+
+const (
+	claudeTraceArmorContentConsumed      executorharness.TraceStage = "claude-armor-content-consumed"
+	claudeTraceArmorToolConsumed         executorharness.TraceStage = "claude-armor-tool-consumed"
+	claudeTraceContentContinuationCalled executorharness.TraceStage = "claude-content-continuation-called"
+)
+
+func claudeWebEvent(content string) executorharness.WebContentEvent {
+	return executorharness.WebContentEvent{
+		Content:    []byte(content),
+		SourceURI:  "https://example.test/research",
+		MediaType:  "text/plain",
+		Provenance: ingestion.Provenance{TaskID: "029", Executor: "claude-cli"},
+	}
+}
+
+func claudeToolEvent(toolName string, arguments json.RawMessage) executorharness.ToolCallEvent {
+	return executorharness.ToolCallEvent{
+		ToolName:   toolName,
+		Arguments:  arguments,
+		TargetURI:  "https://example.test",
+		Provenance: ingestion.Provenance{TaskID: "029", Executor: "claude-cli"},
+	}
+}
+
+func cloneClaudeArmorRequest(request armor.Request) armor.Request {
+	request.Arguments = append([]byte(nil), request.Arguments...)
+	if len(request.Provenance) > 0 {
+		provenance := make(map[string]string, len(request.Provenance))
+		for key, value := range request.Provenance {
+			provenance[key] = value
+		}
+		request.Provenance = provenance
+	}
+	return request
+}
+
+func resultID(release executorharness.ContentRelease) ingestion.CandidateID {
+	candidate, err := release.Candidate()
+	if err != nil {
+		return ""
+	}
+	return candidate.ID
+}
+
+func assertClaudeTraceOrder(t *testing.T, got []executorharness.TraceStage, want ...executorharness.TraceStage) {
+	t.Helper()
+	next := 0
+	for _, stage := range got {
+		if next < len(want) && stage == want[next] {
+			next++
+		}
+	}
+	if next != len(want) {
+		t.Fatalf("trace stages = %v, want ordered subsequence %v", got, want)
+	}
 }
 
 func writeFakeClaudeCLI(t *testing.T, recordPath, branch string, exitCode int, stdoutText, stderrText string) string {

@@ -109,25 +109,40 @@ Spec        string    path to the task file the executor must satisfy
 
 ### State: Claude CLI Executor
 
-- **Shape:** `*executor.ClaudeCLI` stores a Claude CLI executable path, one target worktree path, and one in-memory auth token value supplied at construction time.
+- **Shape:** `*executor.ClaudeCLI` stores a Claude CLI executable path, one target worktree path, one in-memory auth token value supplied at construction time, one effective web/tool ingestion policy, and an optional executor ingestion harness for reviewed routes.
 - **Owner:** callers construct it with `executor.NewClaudeCLI` or `executor.NewClaudeCLIFromEnv` and pass it through the `supervisor.Executor` seam.
 - **Lifetime:** process-local; no executor state is persisted. Each `Run(Task)` call creates an executor-owned temporary directory for the branch-output file and temporary CLI home/XDG directories, then removes it before returning.
 - **Concurrency rules:** no internal synchronization is provided. Callers should give each concurrent task attempt its own executor instance or otherwise ensure the configured worktree is not shared unsafely.
 - **Bounds:** one `Run(Task)` call starts at most one Claude CLI subprocess.
 
+#### Value: `executor.ClaudeIngestionPolicy`
+
+```
+value       meaning
+────────────────────────────────────────────────────────────
+disabled    deny Claude-facing web/tool events before executor context or tool execution
+reviewed    route Claude-facing web/tool events through the configured executor harness
+```
+
+- **Identity:** policy is scoped to one `*executor.ClaudeCLI` instance.
+- **Lifecycle:** produced by caller configuration or by `ParseClaudeIngestionPolicy`; copied into `*executor.ClaudeCLI`; not persisted.
+- **Default:** blank zero-value configuration normalizes to `disabled` for fail-closed behavior. Text parsing rejects blank or unknown policy strings.
+
 #### Value: `executor.ClaudeCLIConfig`
 
 ```
-field       type      notes
+field             type                         notes
 ────────────────────────────────────────────────────────────
-CLIPath     string    Claude Code CLI path/name; required for explicit config, while `NewClaudeCLIFromEnv` supplies `claude`
-Worktree    string    target task worktree used as subprocess working directory
-AuthToken   string    secret supplied as `ANTHROPIC_API_KEY` in subprocess env
+CLIPath           string                       Claude Code CLI path/name; required for explicit config, while `NewClaudeCLIFromEnv` supplies `claude`
+Worktree          string                       target task worktree used as subprocess working directory
+AuthToken         string                       secret supplied as `ANTHROPIC_API_KEY` in subprocess env
+IngestionPolicy   ClaudeIngestionPolicy        web/tool route policy; zero value defaults to `disabled`
+IngestionHarness  *executorharness.Harness     required when `IngestionPolicy == reviewed`
 ```
 
 - **Identity:** configuration is scoped to one executor instance.
 - **Lifecycle:** produced by caller configuration, copied into `*executor.ClaudeCLI`, and not persisted.
-- **Relationships:** `AuthToken` corresponds to the `ANTHROPIC_API_KEY` secret documented in `configuration.md`.
+- **Relationships:** `AuthToken` corresponds to the `ANTHROPIC_API_KEY` secret documented in `configuration.md`. `IngestionHarness` is normally produced by `executorharness.NewArmorGuarded` for reviewed web/tool routes.
 
 #### Value: `supervisor.Result` from `executor.ClaudeCLI`
 

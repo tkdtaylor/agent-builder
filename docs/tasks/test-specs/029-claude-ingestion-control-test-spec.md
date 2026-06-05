@@ -1,6 +1,6 @@
 # Test Spec 029: Claude executor ingestion control
 
-**Linked task:** [`docs/tasks/backlog/029-claude-ingestion-control.md`](../backlog/029-claude-ingestion-control.md)
+**Linked task:** [`docs/tasks/completed/029-claude-ingestion-control.md`](../completed/029-claude-ingestion-control.md)
 **Written:** 2026-06-05
 **Status:** ready
 
