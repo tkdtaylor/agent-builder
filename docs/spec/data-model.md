@@ -135,6 +135,59 @@ needs-human    status-only writer marker for work that requires human attention;
 - **Lifecycle:** provided by callers to `StatusWriter.WriteStatus`; persisted only as the task file status marker.
 - **Relationships:** the reader accepts writer-produced markers. `done` is normalized to completed for dependency checks; `needs-human` is non-ready and is skipped by `Next()`.
 
+### State: Agent Loop
+
+- **Shape:** `*loop.Loop` stores a `loop.TaskSource`, a `supervisor.Executor`, a `supervisor.Gate`, and the target worktree path supplied at construction.
+- **Owner:** inside-the-box runtime wiring constructs the loop from the stable seams.
+- **Lifetime:** process-local; each `RunOnce()` call returns a fresh `Outcome`.
+- **Concurrency rules:** no internal mutation occurs during `RunOnce`; callers choose whether the supplied source, executor, and gate implementations are safe to share.
+- **Bounds:** one `RunOnce()` call attempts at most one task and runs at most one gate verification.
+
+#### Value: `loop.State`
+
+```
+value      notes
+────────────────────────────────────────────────────────────
+pick       task-source selection is running
+attempt    executor attempt is running for the picked task
+verify     gate verification is running against the configured worktree path
+advance    gate passed and the cycle can advance to the next task
+```
+
+- **Identity:** states are ordered entries in an `Outcome.Trace`.
+- **Lifecycle:** produced during one `RunOnce()` call.
+- **Relationships:** `advance` appears only in a done outcome after a passing Gate verdict.
+
+#### Value: `loop.Outcome`
+
+```
+field       type              notes
+────────────────────────────────────────────────────────────
+Kind        OutcomeKind       idle, done, or fail
+Task        supervisor.Task   picked task, empty only for idle/no-task
+Branch      string            executor branch; required for done, optional diagnostic for fail
+Verdict     gate.Verdict      gate result when verification ran
+Failure     loop.Failure      policy-free failure diagnostics for fail outcomes
+Trace       []loop.State      observed state sequence for this cycle
+```
+
+- **Identity:** one Outcome belongs to one `RunOnce()` call.
+- **Lifecycle:** produced by the loop and returned to the caller for status, escalation, or runtime wiring.
+- **Relationships:** `OutcomeDone` carries the branch returned by the Executor and a passing Verdict. `OutcomeFail` can carry executor error diagnostics or a failing Verdict, but it carries no retry count, retry decision, or escalation target. `OutcomeIdle` records only the pick state and calls neither Executor nor Gate.
+
+#### Value: `loop.Failure`
+
+```
+field       type                 notes
+────────────────────────────────────────────────────────────
+Reason      FailureReason        executor-error, executor-incomplete, or gate-fail
+Err         error                optional executor error preserved for the policy consumer
+```
+
+- **Identity:** meaningful only when `Outcome.Kind == OutcomeFail`.
+- **Lifecycle:** produced by the loop when attempt or verify does not complete successfully.
+- **Relationships:** retry and escalation policy is intentionally absent; the escalation policy consumer decides next action.
+
 ---
 
 ## Wire / interchange formats
@@ -181,3 +234,5 @@ needs-human    status-only writer marker for work that requires human attention;
 - Task-source selection is deterministic: candidates are ordered by task ID, with task path as the duplicate-ID tiebreaker used only for diagnostics.
 - Task status writes are constrained to `done`, `blocked`, or `needs-human`; invalid status values fail before file mutation.
 - A task status write changes at most one `**Status:**` line. Missing or duplicate status lines fail instead of guessing which bytes are safe to mutate.
+- Agent-loop `OutcomeDone` is possible only after pick, attempt, verify, and advance states, and only with a passing Gate verdict.
+- Agent-loop `OutcomeFail` never contains retry count, retry decision, or escalation target state.

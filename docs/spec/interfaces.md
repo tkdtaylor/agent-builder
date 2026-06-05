@@ -128,6 +128,32 @@ func (w *StatusWriter) WriteStatus(taskID string, status WritableStatus) (Status
 - **Stability:** governed by `docs/tasks/test-specs/011-task-status-writer-test-spec.md`.
 - **Required behavior:** the writer exposes only a task ID plus constrained status marker mutation method. It accepts `WritableStatusDone`, `WritableStatusBlocked`, and `WritableStatusNeedsHuman`; it rejects every other status value before writing. It rewrites exactly one `**Status:**` line in the matched task file and has no API for arbitrary content replacement.
 
+### Interface: `loop.TaskSource`
+
+```go
+type TaskSource interface {
+	Next() (supervisor.Task, bool, error)
+}
+```
+
+- **Implementors:** `*tasksource.Source` and test fakes.
+- **Consumers:** `loop.Loop`.
+- **Stability:** governed by ADR 012 and `docs/tasks/test-specs/012-agent-loop-test-spec.md`.
+- **Required behavior:** returns one ready task plus `ok == true`, no task plus `ok == false`, or an error before any executor attempt begins.
+
+### Interface: `loop.Loop`
+
+```go
+func New(source TaskSource, executor supervisor.Executor, verifier supervisor.Gate, worktreePath string) (*Loop, error)
+
+func (l *Loop) RunOnce() (Outcome, error)
+```
+
+- **Implementors:** `*loop.Loop`.
+- **Consumers:** callers that need one inside-the-box loop cycle and escalation-policy consumers.
+- **Stability:** governed by ADR 012 and `docs/tasks/test-specs/012-agent-loop-test-spec.md`.
+- **Required behavior:** `RunOnce` records explicit state transitions, invokes the Executor only after a task is picked, invokes the Gate only after a successful executor attempt, returns `done` with the Executor branch only when the Gate passes, and returns `fail` without retry or escalation policy decisions when the Executor or Gate fails.
+
 ---
 
 ## Extension points

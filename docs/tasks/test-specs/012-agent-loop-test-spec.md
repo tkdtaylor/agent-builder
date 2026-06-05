@@ -1,6 +1,6 @@
 # Test Spec 012: Agent loop state machine (pick → attempt → verify → next)
 
-**Linked task:** [`docs/tasks/backlog/012-agent-loop.md`](../backlog/012-agent-loop.md)
+**Linked task:** [`docs/tasks/completed/012-agent-loop.md`](../completed/012-agent-loop.md)
 **Written:** 2026-06-04
 **Status:** written — ready for implementation
 

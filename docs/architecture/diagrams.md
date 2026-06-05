@@ -63,18 +63,23 @@ C4Component
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
         Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher and stable seams")
+        Component(agentloop, "Agent Loop", "internal/loop", "Inside-the-box pick-attempt-verify cycle")
         Component(tasksource, "Task Source", "internal/tasksource", "Read-only roadmap/task parser and next-task selector")
         Component(gate, "Verification Gate", "internal/gate", "Ordered blocking checks with structured Verdicts")
     }
 
     Rel(main, supervisor, "Starts")
     Rel(supervisor, gate, "Consumes Verdict model / Gate seam")
+    Rel(agentloop, supervisor, "Consumes Task / Executor / Gate seams")
+    Rel(agentloop, tasksource, "Picks next task")
+    Rel(agentloop, gate, "Verifies target worktree")
     Rel(tasksource, supervisor, "Uses Task model")
     Rel(gate, codeScanner, "Runs in target worktree")
 ```
 
 **Key contracts**
 - ADR 002 fixes the gate shape: ordered Steps, structured Verdict, first-failure short-circuit, and no skip path.
+- ADR 012 fixes the agent loop shape: pick -> attempt -> verify -> advance states, done/idle/fail outcomes, and policy-free fail reporting.
 - The supervisor remains trusted and dumb; the gate contains verification orchestration only, not executor/LLM/web logic.
 - The task source is read-only and only selects tasks; task status mutation is a separate component.
 
@@ -88,14 +93,23 @@ C4Component
 sequenceDiagram
     autonumber
     participant Supervisor
+    participant AgentLoop as Agent Loop
     participant TaskSource as Task Source
+    participant Executor
+    participant Gate as Verification Gate
     participant Roadmap as docs/plans/roadmap.md
     participant Tasks as docs/tasks/*.md
 
-    Supervisor->>TaskSource: Next()
+    Supervisor->>AgentLoop: RunOnce()
+    AgentLoop->>TaskSource: Next()
     TaskSource->>Roadmap: read
     TaskSource->>Tasks: read task files
-    TaskSource-->>Supervisor: first ready Task or empty result
+    TaskSource-->>AgentLoop: first ready Task or empty result
+    AgentLoop->>Executor: Run(Task)
+    Executor-->>AgentLoop: Result{Branch, OK}
+    AgentLoop->>Gate: Verify(worktreePath)
+    Gate-->>AgentLoop: Verdict
+    AgentLoop-->>Supervisor: Outcome{done branch | idle | fail}
 ```
 
 ---

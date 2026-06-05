@@ -87,6 +87,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Empty task ID, invalid target status, missing task ID, duplicate task ID, missing status line, duplicate status lines, unreadable task directories/files, stat failures, and write failures return errors. Invalid target status is rejected before any task file is opened for writing.
 - **References:** `docs/tasks/test-specs/011-task-status-writer-test-spec.md`.
 
+### B-009: Drive one task through the agent loop
+
+- **Trigger:** A caller invokes the agent loop for one cycle with a task source, Executor, Gate, and target worktree path.
+- **Response:** The loop records `pick`, asks the task source for the next ready task, records `attempt` and runs the Executor when a task exists, records `verify` and runs the Gate when the Executor reports a successful attempt, and records `advance` only when the Gate passes. A passing cycle returns a `done` outcome carrying the Executor branch.
+- **Side effects:** The loop itself writes no persistent state. The supplied task source may read task files, the Executor may edit the target worktree and produce a branch, and the Gate may spawn verification subprocesses in the configured worktree.
+- **Failure modes:** With no ready task, the loop returns an `idle` outcome after `pick` and calls neither Executor nor Gate. A task-source error is returned before attempt. An Executor error, Executor unsuccessful result, or failing Gate verdict returns a `fail` outcome with diagnostics and no retry count, retry decision, or escalation target.
+- **References:** ADR 012; `docs/tasks/test-specs/012-agent-loop-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -119,3 +127,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - The code-scanner Step always runs in the caller-supplied worktree, never implicitly in the agent-builder repo.
 - Task selection is read-only; writing task status is handled by a separate status-writer component.
 - The task status writer has no content-patch or prose-editing API; its only mutation path is task ID plus constrained status marker.
+- The agent loop reports failures without deciding retry count, escalation target, or mandatory stop condition.
