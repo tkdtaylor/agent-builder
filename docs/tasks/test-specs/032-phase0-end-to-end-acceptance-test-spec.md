@@ -1,6 +1,6 @@
 # Test Spec 032: Phase 0 end-to-end acceptance
 
-**Linked task:** [`docs/tasks/backlog/032-phase0-end-to-end-acceptance.md`](../backlog/032-phase0-end-to-end-acceptance.md)
+**Linked task:** [`docs/tasks/completed/032-phase0-end-to-end-acceptance.md`](../completed/032-phase0-end-to-end-acceptance.md)
 **Written:** 2026-06-05
 **Status:** ready
 

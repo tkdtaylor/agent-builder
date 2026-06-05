@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Last updated:** 2026-06-05
-**Status:** Phase 0 implementation snapshot. The core Gate, loop, supervisor lifecycle, CLI, containment launcher contracts, sandbox-runtime adapter, and ingestion/armor harness seams are implemented as described here; runtime-security rows remain explicitly yellow where local Podman, `runsc`, or `srt` evidence is unavailable.
+**Status:** Phase 0 implementation snapshot. The core Gate, loop, supervisor lifecycle, CLI, containment launcher contracts, sandbox-runtime adapter, ingestion/armor harness seams, and branch/PR artifact publication are implemented as described here. Phase 0 end-to-end acceptance is recorded at fake-provider L5 by the Task 032 harness; real Podman, `runsc`, real `srt`, real Claude, and real PR publication remain pending L6/operator evidence where local tooling is unavailable.
 
 > Authoritative design source: `autonomous-builder.md`. This SPEC is the in-repo snapshot; where they disagree, reconcile in the same change.
 

@@ -1,13 +1,15 @@
 # Roadmap
 
 **Project:** agent-builder
-**Last updated:** 2026-06-04
+**Last updated:** 2026-06-05
 
 Derived from `autonomous-builder.md` §2, §8. This roadmap doubles as the agent's own work queue once it runs — but during bootstrap it is built by hand (supervised).
 
 ## Phase 0 — Bootstrap the loop (supervised, human-in-the-loop)
 
 Goal: a runnable orchestrator that can take one task, route it to one executor, run the verification gate, and branch+PR — all inside rented isolation. This is the minimum to "flip the switch."
+
+Acceptance status: Phase 0 is accepted at fake-provider L5 by the Task 032 end-to-end harness. Real Podman, `runsc`, real `srt`, real Claude, and real PR publication remain pending L6/operator evidence; local evidence still names Podman and `srt` blockers rather than implying live runtime acceptance.
 
 | # | Deliverable | Notes |
 |---|-------------|-------|

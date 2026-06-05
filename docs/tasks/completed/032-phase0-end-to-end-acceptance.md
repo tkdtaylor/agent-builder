@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-05
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 Prove the Phase 0 system can execute one representative task end to end: select it, run the executor inside the configured containment/run adapter, pass the verification gate, produce a branch artifact, collect logs, and report a final outcome.
@@ -26,14 +26,14 @@ Prove the Phase 0 system can execute one representative task end to end: select 
 ## Readiness gate
 - [x] Test spec `032-phase0-end-to-end-acceptance-test-spec.md` exists in `docs/tasks/test-specs/`
 - [x] All acceptance criteria below have a linked REQ ID
-- [ ] Blocking tasks complete: 028, 029, 030, 031, 033, and 034
+- [x] Blocking tasks complete: 028, 029, 030, 031, 033, and 034
 
 ## Acceptance criteria
-- [ ] [REQ-001] A runtime-visible harness invokes the built `agent-builder run` binary, not just package-level fakes.
-- [ ] [REQ-002] Success requires executor branch output and a passing production Gate.
-- [ ] [REQ-003] Run-record NDJSON survives teardown and contains the required lifecycle, branch, PR artifact, and terminal fields.
-- [ ] [REQ-004] Negative harness cases prove failures do not mutate task status to done or claim verification success.
-- [ ] [REQ-005] Roadmap/spec/tracker language says Phase 0 is accepted only to the level actually observed: fake-provider harness, real containment, real sandbox-runtime, or real Claude as applicable.
+- [x] [REQ-001] A runtime-visible harness invokes the built `agent-builder run` binary, not just package-level fakes.
+- [x] [REQ-002] Success requires executor branch output and a passing production Gate.
+- [x] [REQ-003] Run-record NDJSON survives teardown and contains the required lifecycle, branch, PR artifact, and terminal fields.
+- [x] [REQ-004] Negative harness cases prove failures do not mutate task status to done or claim verification success.
+- [x] [REQ-005] Roadmap/spec/tracker language says Phase 0 is accepted only to the level actually observed: fake-provider harness, real containment, real sandbox-runtime, or real Claude as applicable.
 
 ## Verification plan
 - **Highest level achievable:** L5/L6 - L5 with fake provider CLIs is required; L6 with real containment/provider is optional and must be labeled honestly.
