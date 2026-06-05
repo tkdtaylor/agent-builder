@@ -103,6 +103,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Missing Podman, failed `podman info`, root invocation, missing worktree, absent quota fields, or any failed in-box probe exits non-zero and prints the failing TC marker. Static tests cover the launcher contract; only a successful rootless Podman probe proves runtime containment.
 - **References:** ADR 014; `docs/tasks/test-specs/014-podman-containment-profile-test-spec.md`.
 
+### B-011: Apply bounded retry and escalation after failed task attempts
+
+- **Trigger:** A caller invokes the retrying loop with a task source, Executor, Gate, target worktree path, status writer, and retry policy.
+- **Response:** The retrying loop picks one ready task. With `MaxAttempts == 0`, it immediately marks the task `needs-human` and returns an escalated terminal outcome without running Executor or Gate. With `MaxAttempts > 0`, it runs the task cycle at most `MaxAttempts` times. A successful Executor plus passing Gate returns a done terminal outcome carrying the successful branch and performs no escalation write. Executor error, Executor incomplete, and Gate fail outcomes are retryable until the attempt bound is exhausted.
+- **Side effects:** After each failed non-terminal attempt, the escalation hook is invoked and may return the Executor for the next attempt. When failures exhaust the bound, the retrying loop writes `needs-human` through the constrained task status-writer seam exactly once for the picked task.
+- **Failure modes:** A negative attempt limit is rejected before the policy runs. Missing source, Executor, Gate, worktree path, status writer, or escalation hook is rejected at construction. Task-source errors, escalation hook errors, nil hook-returned Executors, and status-write errors are returned to the caller. No failure mode creates an unbounded retry loop.
+- **References:** ADR 013; `docs/tasks/test-specs/013-escalation-retry-policy-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -136,4 +144,5 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - Task selection is read-only; writing task status is handled by a separate status-writer component.
 - The task status writer has no content-patch or prose-editing API; its only mutation path is task ID plus constrained status marker.
 - The agent loop reports failures without deciding retry count, escalation target, or mandatory stop condition.
+- The retrying loop has a mandatory stop condition: each picked task runs no more than the configured non-negative `MaxAttempts`, and exhausted failures are marked `needs-human`.
 - The execution-box profile exposes no host home mount, no container-engine socket mount, no privileged mode, and no capability add-back by default.

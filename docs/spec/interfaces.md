@@ -157,7 +157,7 @@ func (w *StatusWriter) WriteStatus(taskID string, status WritableStatus) (Status
 ```
 
 - **Implementors:** `*tasksource.StatusWriter`.
-- **Consumers:** future supervisor/agent-loop status governance code.
+- **Consumers:** retrying loop status governance code.
 - **Stability:** governed by `docs/tasks/test-specs/011-task-status-writer-test-spec.md`.
 - **Required behavior:** the writer exposes only a task ID plus constrained status marker mutation method. It accepts `WritableStatusDone`, `WritableStatusBlocked`, and `WritableStatusNeedsHuman`; it rejects every other status value before writing. It rewrites exactly one `**Status:**` line in the matched task file and has no API for arbitrary content replacement.
 
@@ -187,6 +187,41 @@ func (l *Loop) RunOnce() (Outcome, error)
 - **Stability:** governed by ADR 012 and `docs/tasks/test-specs/012-agent-loop-test-spec.md`.
 - **Required behavior:** `RunOnce` records explicit state transitions, invokes the Executor only after a task is picked, invokes the Gate only after a successful executor attempt, returns `done` with the Executor branch only when the Gate passes, and returns `fail` without retry or escalation policy decisions when the Executor or Gate fails.
 
+### Interface: `loop.RetryingLoop`
+
+```go
+type StatusWriter interface {
+	WriteStatus(taskID string, status tasksource.WritableStatus) (tasksource.StatusWriteResult, error)
+}
+
+type EscalationHook func(EscalationRequest) (supervisor.Executor, error)
+
+type EscalationRequest struct {
+	Task            supervisor.Task
+	Attempt         int
+	Outcome         loop.Outcome
+	CurrentExecutor supervisor.Executor
+}
+
+type RetryPolicy struct {
+	MaxAttempts int
+	Escalate    EscalationHook
+}
+
+func NewRetryPolicy(maxAttempts int, hook EscalationHook) (RetryPolicy, error)
+
+func BootstrapEscalationHook(EscalationRequest) (supervisor.Executor, error)
+
+func NewRetryingLoop(source TaskSource, executor supervisor.Executor, verifier supervisor.Gate, worktreePath string, statusWriter StatusWriter, policy RetryPolicy) (*RetryingLoop, error)
+
+func (l *RetryingLoop) RunOnce() (RetryOutcome, error)
+```
+
+- **Implementors:** `*loop.RetryingLoop`; test fakes implement `loop.StatusWriter`, `supervisor.Executor`, and `supervisor.Gate`.
+- **Consumers:** future inside-the-box runtime wiring and supervisor dispatch lifecycle.
+- **Stability:** governed by ADR 013 and `docs/tasks/test-specs/013-escalation-retry-policy-test-spec.md`.
+- **Required behavior:** `MaxAttempts` is non-negative. `MaxAttempts == 0` escalates immediately without Executor or Gate attempts. Positive values bound Executor attempts exactly. Failed non-terminal attempts invoke `EscalationHook`, and the returned Executor is used for the next attempt. Exhausted failures write `needs-human` through `StatusWriter`; success before exhaustion returns done without a status write.
+
 ---
 
 ## Extension points
@@ -195,6 +230,7 @@ func (l *Loop) RunOnce() (Outcome, error)
 
 - Gate checks are extended by registering additional `gate.Step` implementations with `gate.New(steps ...Step)`. Registration rejects nil, blank-name, and duplicate-name steps.
 - Task-source input locations are supplied by constructing `tasksource.Source` with a different `fs.FS`, roadmap path, or task directory list.
+- Retry escalation behavior is extended by providing a different `loop.EscalationHook`. `loop.BootstrapEscalationHook` returns the current Executor; router-like hooks can return a different Executor for the next attempt.
 
 ### Executable artifact: execution-box launcher
 

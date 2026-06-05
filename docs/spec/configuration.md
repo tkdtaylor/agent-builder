@@ -48,6 +48,14 @@ The image supplies the Go toolchain, `/work`, `/scratch`, and the in-box probe b
 
 > CLI flags that affect runtime mode rather than acting like commands. List here if [interfaces.md](interfaces.md) doesn't already cover them — avoid duplication. Cross-reference rather than restate.
 
+## Runtime parameters
+
+> Typed values supplied by callers at construction time rather than parsed from environment or CLI flags.
+
+| Parameter | Type | Default | Required | Effect |
+|-----------|------|---------|----------|--------|
+| `loop.RetryPolicy.MaxAttempts` | non-negative integer | none | yes | Bounds Executor attempts for one picked task. `0` means mark `needs-human` immediately without running Executor or Gate; positive values permit exactly that many attempts before exhausted failures escalate. |
+
 ---
 
 ## Secrets

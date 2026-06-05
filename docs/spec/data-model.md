@@ -188,6 +188,61 @@ Err         error                optional executor error preserved for the polic
 - **Lifecycle:** produced by the loop when attempt or verify does not complete successfully.
 - **Relationships:** retry and escalation policy is intentionally absent; the escalation policy consumer decides next action.
 
+### State: Retry Escalation Policy
+
+- **Shape:** `*loop.RetryingLoop` stores a `loop.TaskSource`, current `supervisor.Executor`, `supervisor.Gate`, target worktree path, `loop.StatusWriter`, and `loop.RetryPolicy`.
+- **Owner:** inside-the-box runtime wiring constructs it around the policy-free loop seams.
+- **Lifetime:** process-local; each `RunOnce()` call picks at most one task and returns a fresh `RetryOutcome`.
+- **Concurrency rules:** no internal synchronization is provided. Callers choose whether supplied source, Executor, Gate, status writer, and hook implementations are safe to share.
+- **Bounds:** one `RunOnce()` call performs no more than `RetryPolicy.MaxAttempts` Executor attempts. `MaxAttempts == 0` performs no Executor or Gate attempt.
+
+#### Value: `loop.RetryPolicy`
+
+```
+field          type                  notes
+────────────────────────────────────────────────────────────
+MaxAttempts    int                   non-negative bound for one picked task
+Escalate       loop.EscalationHook   called only after failed non-terminal attempts
+```
+
+- **Identity:** scoped to one retrying loop configuration.
+- **Lifecycle:** constructed by `loop.NewRetryPolicy`; consumed by `loop.NewRetryingLoop`.
+- **Relationships:** the hook may return the same Executor for bootstrap or a different Executor for router-like escalation.
+
+#### Value: `loop.EscalationRequest`
+
+```
+field             type                  notes
+────────────────────────────────────────────────────────────
+Task              supervisor.Task       picked task being retried
+Attempt           int                   1-based failed attempt number
+Outcome           loop.Outcome          policy-free failed attempt outcome
+CurrentExecutor   supervisor.Executor   executor that produced the failed attempt
+```
+
+- **Identity:** produced once for each failed attempt that still has another retry remaining.
+- **Lifecycle:** passed to `loop.EscalationHook`; not persisted.
+- **Relationships:** the returned Executor becomes the producer for the next attempt.
+
+#### Value: `loop.RetryOutcome`
+
+```
+field          type                         notes
+────────────────────────────────────────────────────────────
+Kind           loop.RetryOutcomeKind        idle, done, or escalated
+Task           supervisor.Task              picked task, empty only for idle
+Branch         string                       successful branch for done
+Attempts       int                          number of Executor attempts performed
+LastOutcome    loop.Outcome                 final policy-free attempt outcome
+StatusWrite    tasksource.StatusWriteResult result of terminal needs-human write
+Advanced       bool                         true when caller can advance past task
+Terminal       bool                         true when this retry cycle is complete
+```
+
+- **Identity:** one RetryOutcome belongs to one `RetryingLoop.RunOnce()` call.
+- **Lifecycle:** produced by the retrying loop and consumed by runtime wiring or tests.
+- **Relationships:** `Kind == done` carries a successful branch and no status write. `Kind == escalated` carries the exhausted task and the status-writer result. `Kind == idle` carries no task and performs no side effects.
+
 ---
 
 ## Wire / interchange formats
@@ -236,3 +291,5 @@ Err         error                optional executor error preserved for the polic
 - A task status write changes at most one `**Status:**` line. Missing or duplicate status lines fail instead of guessing which bytes are safe to mutate.
 - Agent-loop `OutcomeDone` is possible only after pick, attempt, verify, and advance states, and only with a passing Gate verdict.
 - Agent-loop `OutcomeFail` never contains retry count, retry decision, or escalation target state.
+- Retry policy `MaxAttempts` is non-negative; negative values fail validation.
+- Retry escalation writes only `needs-human` through the constrained task status-writer seam after exhausted failures.

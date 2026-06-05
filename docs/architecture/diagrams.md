@@ -65,9 +65,10 @@ C4Component
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
         Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher and stable seams")
-        Component(agentloop, "Agent Loop", "internal/loop", "Inside-the-box pick-attempt-verify cycle")
+        Component(agentloop, "Agent Loop", "internal/loop", "Inside-the-box pick-attempt-verify cycle plus bounded retry policy")
         Component(sandbox, "exec-sandbox Run Adapter", "internal/sandbox", "Typed contained-command seam and test fake")
         Component(tasksource, "Task Source", "internal/tasksource", "Read-only roadmap/task parser and next-task selector")
+        Component(statuswriter, "Task Status Writer", "internal/tasksource", "Constrained task status mutation")
         Component(gate, "Verification Gate", "internal/gate", "Ordered blocking checks with structured Verdicts")
     }
 
@@ -76,6 +77,7 @@ C4Component
     Rel(supervisor, gate, "Consumes Verdict model / Gate seam")
     Rel(agentloop, supervisor, "Consumes Task / Executor / Gate seams")
     Rel(agentloop, tasksource, "Picks next task")
+    Rel(agentloop, statuswriter, "Marks needs-human after exhausted retries")
     Rel(agentloop, gate, "Verifies target worktree")
     Rel(tasksource, supervisor, "Uses Task model")
     Rel(gate, codeScanner, "Runs in target worktree")
@@ -84,9 +86,10 @@ C4Component
 **Key contracts**
 - ADR 002 fixes the gate shape: ordered Steps, structured Verdict, first-failure short-circuit, and no skip path.
 - ADR 012 fixes the agent loop shape: pick -> attempt -> verify -> advance states, done/idle/fail outcomes, and policy-free fail reporting.
+- ADR 013 fixes the retry escalation policy: non-negative `MaxAttempts`, mandatory stop, status-writer `needs-human` marking, and substitutable escalation hook.
 - ADR 020 fixes the exec-sandbox run adapter seam: command/worktree/typed limits in, result/exit/error out.
 - The supervisor remains trusted and dumb; the gate contains verification orchestration only, not executor/LLM/web logic.
-- The task source is read-only and only selects tasks; task status mutation is a separate component.
+- The task source is read-only and only selects tasks; the task status writer is the separate constrained mutation component.
 - ADR 014 defines the execution-box profile artifact; supervisor wiring to launch it is deferred to the dispatch task.
 
 ---
@@ -102,20 +105,38 @@ sequenceDiagram
     participant AgentLoop as Agent Loop
     participant TaskSource as Task Source
     participant Executor
+    participant EscalationHook as Escalation Hook
     participant Gate as Verification Gate
+    participant StatusWriter as Task Status Writer
     participant Roadmap as docs/plans/roadmap.md
     participant Tasks as docs/tasks/*.md
 
-    Supervisor->>AgentLoop: RunOnce()
+    Supervisor->>AgentLoop: RunOnce() with RetryPolicy
     AgentLoop->>TaskSource: Next()
     TaskSource->>Roadmap: read
     TaskSource->>Tasks: read task files
     TaskSource-->>AgentLoop: first ready Task or empty result
-    AgentLoop->>Executor: Run(Task)
-    Executor-->>AgentLoop: Result{Branch, OK}
-    AgentLoop->>Gate: Verify(worktreePath)
-    Gate-->>AgentLoop: Verdict
-    AgentLoop-->>Supervisor: Outcome{done branch | idle | fail}
+    loop up to MaxAttempts
+        AgentLoop->>Executor: Run(Task)
+        Executor-->>AgentLoop: Result{Branch, OK}
+        opt Executor OK
+            AgentLoop->>Gate: Verify(worktreePath)
+            Gate-->>AgentLoop: Verdict
+        end
+        alt attempt failed and retries remain
+            AgentLoop->>EscalationHook: select next Executor
+            EscalationHook-->>AgentLoop: Executor
+        else Gate passed
+            AgentLoop-->>Supervisor: RetryOutcome{done branch}
+        end
+    end
+    alt failures exhausted
+        AgentLoop->>StatusWriter: WriteStatus(Task.ID, needs-human)
+        StatusWriter->>Tasks: rewrite status line
+        AgentLoop-->>Supervisor: RetryOutcome{escalated}
+    else no ready task
+        AgentLoop-->>Supervisor: RetryOutcome{idle}
+    end
 ```
 
 ---

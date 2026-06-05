@@ -1,6 +1,6 @@
 # Test Spec 013: Escalation + retry-N + mandatory stop condition
 
-**Linked task:** [`docs/tasks/backlog/013-escalation-retry-policy.md`](../backlog/013-escalation-retry-policy.md)
+**Linked task:** [`docs/tasks/completed/013-escalation-retry-policy.md`](../completed/013-escalation-retry-policy.md)
 **Written:** 2026-06-04
 **Status:** written
 

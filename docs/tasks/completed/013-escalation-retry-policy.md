@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** completed (code merged + green; pending formal spec-verifier pass before ✅)
 
 ## Goal
 The policy layer on the loop: on Gate fail, retry up to a configurable N attempts (with an escalation hook for a stronger executor — single-executor for bootstrap), then mark the task escalated/needs-human and advance — a mandatory stop condition guaranteeing the loop never thrashes infinitely.
@@ -22,18 +22,19 @@ The policy layer on the loop: on Gate fail, retry up to a configurable N attempt
 | REQ-003 | The escalation hook is a seam (single executor now, multi-provider router later) | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 012
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 012
 
 ## Acceptance criteria
-- [ ] [REQ-001] Retry count N is configurable; the policy honours the configured value
-- [ ] [REQ-002] With an always-failing Executor, exactly N attempts run, then the task is marked escalated/needs-human and the loop advances; attempt count is bounded and the loop terminates (no infinite loop)
-- [ ] [REQ-003] The escalation step is a named seam invoked between attempts; bootstrap uses a single executor, and the seam is shaped so a router can be substituted without changing the policy
+- [x] [REQ-001] Retry count N is configurable; the policy honours the configured value
+- [x] [REQ-002] With an always-failing Executor, exactly N attempts run, then the task is marked escalated/needs-human and the loop advances; attempt count is bounded and the loop terminates (no infinite loop)
+- [x] [REQ-003] The escalation step is a named seam invoked between attempts; bootstrap uses a single executor, and the seam is shaped so a router can be substituted without changing the policy
 
 ## Verification plan
 - **Highest level achievable:** L5 — fake always-failing Executor → assert exactly N attempts, then one escalation, then loop termination (bounded attempt count, no infinite loop).
-- Harness: `go test ./internal/loop/... -run TestEscalation`. Expected final assertion: attempt counter == N, task status == escalated/needs-human, loop returns/advances.
+- Harness: `go test ./tests/loop/... -run 'TestRetryPolicy|TestEscalation' -count=1`. Expected final assertion: attempt counter == N, task status == escalated/needs-human, loop returns/advances.
+- **Executor runtime result:** L5 reached with `go test ./tests/loop/... -run 'TestRetryPolicy|TestEscalation' -count=1` → `ok  	github.com/tkdtaylor/agent-builder/tests/loop	0.002s`.
 - **Cross-module state risk:** names the escalation outcome / policy config; on escalate it drives the status writer (011) to mark needs-human. Updates `docs/spec/<file>.md` in same commit (retry/escalation policy contract).
 - **Runtime-visible surface:** none directly (status write goes through 011's surface).
 
