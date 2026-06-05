@@ -5,7 +5,11 @@
 // can never reach back through it.
 package supervisor
 
-import "errors"
+import (
+	"errors"
+
+	"github.com/tkdtaylor/agent-builder/internal/gate"
+)
 
 // Version is the current build version.
 const Version = "0.0.0-scaffold"
@@ -38,7 +42,7 @@ type Executor interface {
 // Gate is the machine-checkable definition of done (tests + build + lint +
 // dep-scan/code-scanner). A Task is never "done" unattended unless Verify passes.
 type Gate interface {
-	Verify(repoPath string) (bool, error)
+	Verify(repoPath string) gate.Verdict
 }
 
 // Supervisor is the outside-the-box dispatcher.

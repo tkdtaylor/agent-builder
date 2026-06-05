@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** agent-builder
-**Last updated:** 2026-06-04
+**Last updated:** 2026-06-05
 
 The system's contact surface — everything that calls into the system, everything the system calls out to, and the public boundaries within the system. Each interface is a stable contract: changes here are breaking changes.
 
@@ -70,16 +70,32 @@ Global flags:
 >
 > If a module's public API isn't listed here, it's an implementation detail — callers should not depend on it. Promotion to this list is a deliberate decision (often via ADR).
 
-### Trait / interface: <Name>
+### Interface: `gate.Step`
 
-```rust|python|ts|go
-<paste the canonical signature>
+```go
+type Step interface {
+	Name() string
+	Run(repoPath string) StepResult
+}
 ```
 
-- **Implementors:** who implements this
-- **Consumers:** who calls this
-- **Stability:** how breaking changes are coordinated (semver, ADR, both)
-- **Required behavior:** what an implementation must guarantee beyond the type signature (e.g. "must be Send + Sync", "must not panic", "side-effect-free if input X")
+- **Implementors:** concrete gate checks such as Go build/test/fmt, lint, dep-scan, and code-scanner steps.
+- **Consumers:** `gate.Gate`.
+- **Stability:** governed by ADR 002 and updated with any task that changes gate behavior.
+- **Required behavior:** each Step is blocking. It receives the repo worktree path, returns captured output in its StepResult, and reports pass/fail through `OK`.
+
+### Interface: supervisor gate seam
+
+```go
+type Gate interface {
+	Verify(repoPath string) gate.Verdict
+}
+```
+
+- **Implementors:** `*gate.Gate` and test fakes.
+- **Consumers:** supervisor/agent-loop code that needs the machine-checkable definition of done.
+- **Stability:** governed by ADR 002.
+- **Required behavior:** `Verify` has no skip or bypass parameter. It returns OK only when every configured blocking step passes.
 
 ---
 
@@ -87,4 +103,4 @@ Global flags:
 
 > Plugin slots, hook points, registration mechanisms — anything designed for external code to extend the system without modification. If there are none, say "None — extension is by source modification" so it's an explicit choice.
 
--
+- Gate checks are extended by registering additional `gate.Step` implementations with `gate.New(steps ...Step)`. Registration rejects nil, blank-name, and duplicate-name steps.

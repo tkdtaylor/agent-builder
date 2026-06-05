@@ -1,7 +1,7 @@
 # Architecture — C4 Element Catalog
 
 **Project:** agent-builder
-**Last updated:** 2026-06-04
+**Last updated:** 2026-06-05
 
 The structured catalog of architectural elements that the diagrams in [`../architecture/diagrams.md`](../architecture/diagrams.md) render. Tables here are the **machine-readable spec** for the system's structure — they survive a Mermaid rewrite and are what a drift audit checks the code against.
 
@@ -42,7 +42,7 @@ When the structure changes, both files update in the same commit. The tables her
 
 | Name | Technology | Responsibility | Source path | Depends on |
 |------|------------|----------------|-------------|------------|
-| | | | | |
+| agent-builder CLI | Go | Entrypoint process for the autonomous builder scaffold | `cmd/agent-builder` | |
 
 **Invariants for this table**
 - Every container listed has a corresponding directory or deployable artifact under `src/` (or equivalent). The drift-audit mode of the `architect` agent checks this against the actual repo layout.
@@ -56,7 +56,8 @@ When the structure changes, both files update in the same commit. The tables her
 
 | Container | Component | Source path | Responsibility | Depends on |
 |-----------|-----------|-------------|----------------|------------|
-| | | | | |
+| agent-builder CLI | Supervisor | `internal/supervisor` | Trusted outside-the-box dispatcher and stable seams | Verification Gate model |
+| agent-builder CLI | Verification Gate | `internal/gate` | Runs ordered blocking verification Steps and returns structured Verdicts | |
 
 ---
 
@@ -64,7 +65,7 @@ When the structure changes, both files update in the same commit. The tables her
 
 > Architectural choices that span multiple containers or components and don't naturally fit in any single row above — auth approach, observability strategy, error-handling convention, retry policy, transaction boundaries. Each entry should link to an ADR.
 
--
+- ADR 002: Gate orchestrator shape — ordered Step interface, structured Verdict model, first-failure short-circuit, no skip path.
 
 ---
 

@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-04
+**Last updated:** 2026-06-05
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -39,20 +39,13 @@ C4Context
 C4Container
     title Container view of agent-builder
 
-    Person(user, "User")
+    Person(operator, "Operator", "Starts and observes autonomous builder runs")
 
     System_Boundary(boundary, "agent-builder") {
-        Container(api, "API", "Language / framework", "Handles incoming requests")
-        Container(worker, "Worker", "Language / framework", "Background processing")
-        ContainerDb(db, "Database", "Engine + version", "Persistent state")
+        Container(cli, "agent-builder CLI", "Go", "Entrypoint process for the autonomous builder scaffold")
     }
 
-    System_Ext(extDep, "External Dependency", "Third-party service")
-
-    Rel(user, api, "Calls", "HTTPS / JSON")
-    Rel(api, db, "Reads / writes", "SQL / driver")
-    Rel(api, worker, "Enqueues jobs", "Queue / protocol")
-    Rel(worker, extDep, "Calls", "HTTPS")
+    Rel(operator, cli, "Runs")
 ```
 
 ---
@@ -63,23 +56,21 @@ C4Container
 
 ```mermaid
 C4Component
-    title Component view of <container name>
+    title Component view of agent-builder CLI
 
-    Container_Boundary(boundary, "<container name>") {
-        Component(handler, "Request Handler", "module path", "Entry point")
-        Component(service, "Service Layer", "module path", "Business logic")
-        Component(repo, "Repository", "module path", "Persistence")
+    Container_Boundary(boundary, "agent-builder CLI") {
+        Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
+        Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher and stable seams")
+        Component(gate, "Verification Gate", "internal/gate", "Ordered blocking checks with structured Verdicts")
     }
 
-    ContainerDb(db, "Database", "Engine + version")
-
-    Rel(handler, service, "Invokes")
-    Rel(service, repo, "Calls")
-    Rel(repo, db, "Reads / writes", "SQL")
+    Rel(main, supervisor, "Starts")
+    Rel(supervisor, gate, "Consumes Verdict model / Gate seam")
 ```
 
 **Key contracts**
-- Replace with the load-bearing invariants this picture relies on (e.g. ownership boundaries, lock ordering, single-writer rules). Link the ADRs that established them.
+- ADR 002 fixes the gate shape: ordered Steps, structured Verdict, first-failure short-circuit, and no skip path.
+- The supervisor remains trusted and dumb; the gate contains verification orchestration only, not executor/LLM/web logic.
 
 ---
 

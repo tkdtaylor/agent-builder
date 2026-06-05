@@ -1,7 +1,7 @@
 # Data Model
 
 **Project:** agent-builder
-**Last updated:** 2026-06-04
+**Last updated:** 2026-06-05
 
 What data exists, how it's structured, where it lives, and what relationships hold between entities. Covers persistent storage, in-memory state, and data-on-the-wire formats.
 
@@ -45,13 +45,41 @@ created_at      timestamp     UTC, set by DB default
 
 > Data that exists only during process lifetime. For long-running services this is often as important as persistent state — race conditions and lock orders live here.
 
-### State: <StateName> (e.g. `SessionRegistry`, `ScannerEvaluator::candidates`)
+### State: Verification Gate
 
-- **Shape:** the type signature, including any sync wrappers (`Arc<RwLock<…>>`, `Mutex<…>`)
-- **Owner:** which component constructs and owns it; how it's shared
-- **Lifetime:** when it comes into being, when it's torn down, what survives a panic
-- **Concurrency rules:** lock ordering, single-writer guarantees, what's safe to call from where
-- **Bounds:** is the size bounded? if not, by what?
+- **Shape:** `*gate.Gate` owns an ordered slice of registered `gate.Step` implementations. Each registered step stores the stable step name captured at construction plus the Step implementation.
+- **Owner:** callers construct the gate through `gate.New(steps ...Step)` and pass it to the component that needs verification.
+- **Lifetime:** process-local; no gate state is persisted. Each `Verify(repoPath)` call returns a fresh `Verdict`.
+- **Concurrency rules:** no internal mutation occurs during `Verify` except inside Step implementations; callers choose whether individual Steps are safe to share across goroutines.
+- **Bounds:** bounded by the configured step list.
+
+#### Value: `gate.Verdict`
+
+```
+field       type                notes
+────────────────────────────────────────────────────────────
+OK          bool                true only when every executed step passed
+Results     []gate.StepResult   ordered outcomes for executed steps
+```
+
+- **Identity:** a Verdict is scoped to one `Verify(repoPath)` call.
+- **Lifecycle:** created by `Gate.Verify`; consumed by future CLI, agent loop, log, and escalation renderers.
+- **Relationships:** `Results` preserves execution order and contains no entries for steps not run after a prior blocking failure.
+
+#### Value: `gate.StepResult`
+
+```
+field       type            notes
+────────────────────────────────────────────────────────────
+Name        string          registered Step name
+OK          bool            step pass/fail outcome
+Output      string          captured human-readable stdout/stderr or message
+Duration    time.Duration   elapsed time measured by the gate
+```
+
+- **Identity:** the `Name` is the registered Step name captured by `gate.New`; a Step cannot override it from `Run`.
+- **Lifecycle:** produced by one Step execution and appended to the Verdict before the gate continues or short-circuits.
+- **Relationships:** belongs to exactly one Verdict.
 
 ---
 
@@ -93,4 +121,5 @@ created_at      timestamp     UTC, set by DB default
 >
 > If an invariant is enforced by code (DB constraint, runtime assertion, type system), say so.
 
--
+- A Verdict with `OK == true` contains only passing StepResults.
+- A Verdict with `OK == false` ends at the first failing StepResult; later configured steps do not run and do not appear in Results.
