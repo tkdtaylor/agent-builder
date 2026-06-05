@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** completed (code merged + green; tracker remains 🟡 pending formal spec-verifier pass before ✅)
 
 ## Goal
 Add a fitness check (`make fitness-no-docker`) that greps the repo for `docker`/`docker-compose`/`Dockerfile` dev-environment references and fails on any hit outside a designated product-container directory, enforcing that the substrate is rootless Podman, not Docker.
@@ -22,16 +22,16 @@ Add a fitness check (`make fitness-no-docker`) that greps the repo for `docker`/
 | REQ-003 | A row for F-001 is added to the Rules table in `docs/spec/fitness-functions.md` (structural/security; asserts no Docker dev-env references outside the allowed product-container dir; threshold 0 hits; severity block) | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 001
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 001
 
 ## Acceptance criteria
-- [ ] [REQ-001] `make fitness-no-docker` exits 0 on the current clean tree and prints a pass message
-- [ ] [REQ-001] A `Dockerfile` (or `docker-compose.yml`, or a `docker` reference) added at the repo root causes the target to exit non-zero and report the offending path
-- [ ] [REQ-001] A Docker reference inside the designated product-container path does NOT trip the rule
-- [ ] [REQ-002] `make fitness` invokes `fitness-no-docker` as part of the umbrella run
-- [ ] [REQ-003] The F-001 row exists in `docs/spec/fitness-functions.md` and points to the `make fitness-no-docker` check command
+- [x] [REQ-001] `make fitness-no-docker` exits 0 on the current clean tree and prints a pass message
+- [x] [REQ-001] A `Dockerfile` (or `docker-compose.yml`, or a `docker` reference) added at the repo root causes the target to exit non-zero and report the offending path
+- [x] [REQ-001] A Docker reference inside the designated product-container path does NOT trip the rule
+- [x] [REQ-002] `make fitness` invokes `fitness-no-docker` as part of the umbrella run
+- [x] [REQ-003] The F-001 row exists in `docs/spec/fitness-functions.md` and points to the `make fitness-no-docker` check command
 
 ## Verification plan
 - **Highest level achievable:** L3 — fitness rule run via Makefile target.
@@ -49,3 +49,13 @@ Add a fitness check (`make fitness-no-docker`) that greps the repo for `docker`/
 - The allowed product-container dir is introduced by task 014 (execution-box / containment profile). Reference it as the single exclusion path but do not hard-couple: if the dir does not yet exist, the rule still passes (no hits anywhere). When 014 lands it places its Docker/OCI artifacts under that path.
 - Exclude the grep from matching its own task/spec/ADR documentation files where the words appear as prose, not config — match dev-env config references, not narrative.
 - Per `docs/spec/fitness-functions.md` "How to run", the three sub-changes (target, umbrella prerequisite, Rules row) land together in the implementing commit.
+
+## Verification evidence
+
+- **Positive fitness check:** `make fitness-no-docker` -> `PASS fitness-no-docker: no forbidden dev-environment references found.`
+- **Negative filename checks:** temporary root-level `Dockerfile`, `dockerfile`, `DOCKERFILE`, `docker-compose.yml`, and `Docker-compose.yml` fixtures made `make fitness-no-docker` fail and name the offending path; temporary files removed before commit.
+- **Negative content check:** temporary root-level `tmp-reference.txt` containing `docker run example` made `make fitness-no-docker` fail and name `./tmp-reference.txt`; temporary file removed before commit.
+- **Allowed product-container path:** temporary `containment/tmp-reference.txt` containing `docker run allowed-product-artifact` did not trip `make fitness-no-docker`; temporary file removed before commit.
+- **Umbrella fitness:** `make fitness` includes `fitness-no-docker`; clean tree -> `Fitness checks passed.`; root-level `Dockerfile` fixture fails through the umbrella target before the success message.
+- **Repo checks:** `gofmt -w .` -> no changes; `go test ./...` -> `ok github.com/tkdtaylor/agent-builder/internal/gate`; `go build ./...` -> success; `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.`
+- **Spec-verifier:** pending separate verification commit.

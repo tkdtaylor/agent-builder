@@ -1,7 +1,7 @@
 # agent-builder — Authoritative Spec
 
 **Project:** agent-builder
-**Last updated:** 2026-06-04
+**Last updated:** 2026-06-05
 **Status:** pre-implementation (scaffold). This spec describes the *target* v0; sections fill in as tasks land.
 
 > Authoritative design source: `autonomous-builder.md`. This SPEC is the in-repo snapshot; where they disagree, reconcile in the same change.
@@ -34,10 +34,10 @@ agent-builder is a Go orchestrator that runs an autonomous coding agent unattend
 ## Fitness functions
 
 - **F-003 — supervisor has no LLM/untrusted-content dependency:** implemented by `make fitness-supervisor-isolation`; the supervisor package import graph contains no executor/LLM/web-fetch packages.
+- **F-001 — no Docker dev-environment references:** implemented by `make fitness-no-docker`; working-tree files contain no `docker`/`docker-compose`/`Dockerfile` dev-environment references outside the allowed product-container path.
 
 Candidate rules that are still declarative:
 
-- **F-001 — no Docker:** no `docker`/`docker-compose`/`Dockerfile` dev-env references in repo (substrate is rootless Podman; product container defs live under a named dir, not a dev container).
 - **F-002 — gate is blocking:** the verification path has no `--no-verify`/skip route around `dep-scan`/`code-scanner`.
 
 See [fitness-functions.md](fitness-functions.md) for executable rule definitions and commands.

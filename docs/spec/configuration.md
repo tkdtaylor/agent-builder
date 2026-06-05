@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** agent-builder
-**Last updated:** 2026-06-04
+**Last updated:** 2026-06-05
 
 Every knob the system exposes — env vars, config files, runtime parameters, deployment settings. Each entry is a public contract: changes to defaults or accepted values are observable.
 
@@ -65,8 +65,8 @@ key = "value"
 
 | Secret | Source | Used for |
 |--------|--------|----------|
-| `ANTHROPIC_API_KEY` | `.env` (Docker) or `sbx secret set -g anthropic` (Sandbox) | Claude API access in Docker / Sandbox env |
-| `GIT_TOKEN` | `.env` (Docker) or `sbx secret set -g github` (Sandbox) | Pushing commits from inside Docker / Sandbox |
+| `ANTHROPIC_API_KEY` | Host environment or sandbox secret store | Claude API access in the executor environment |
+| `GIT_TOKEN` | Host environment or sandbox secret store | Pushing commits from the executor environment |
 | | | |
 
 **Rule:** secrets are never pasted into the chat, never logged, and never written into the repo. The `protect-secrets` hook blocks writes to common credential filenames.
@@ -75,7 +75,7 @@ key = "value"
 
 ## Deployment configuration
 
-> If the project has a deployment story (Docker, devcontainer, sandbox), document the runtime contract here: ports exposed, volumes mounted, image tags, resource expectations.
+> If the project has a deployment story (rootless Podman execution box, dev shell, sandbox), document the runtime contract here: ports exposed, volumes mounted, image tags, resource expectations.
 
 | Aspect | Value | Notes |
 |--------|-------|-------|
@@ -94,4 +94,3 @@ key = "value"
 > - "Defaults match production — local dev should look like prod unless explicitly overridden."
 >
 > One paragraph is enough. This is the principle that adjudicates "what should the default be?" arguments.
-

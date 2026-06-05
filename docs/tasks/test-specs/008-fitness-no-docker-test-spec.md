@@ -31,7 +31,7 @@
 
 ### TC-003: exclusion — product-container path is allowed
 - **Requirement:** REQ-001
-- **Input:** create a temporary file containing a Docker/OCI reference under `artifacts/product-containers/execution-box/`; run `make fitness-no-docker`
+- **Input:** create a temporary file containing a Docker/OCI reference under `containment/`; run `make fitness-no-docker`
 - **Expected output:** exit code 0 — the product-container path is excluded; references elsewhere still fail
 - **Cleanup:** remove the temporary allowed-path fixture and any empty temporary directories created for the test
 
@@ -54,5 +54,5 @@ Manual verification evidence to collect before the feature commit:
 - root-level `Dockerfile` negative fixture fails and names the path
 - root-level `docker-compose.yml` negative fixture fails and names the path
 - root-level `docker run` content fixture fails and names the path
-- allowed-path fixture under `artifacts/product-containers/execution-box/` passes
+- allowed-path fixture under `containment/` passes
 - `make fitness` includes the rule and passes on the clean tree
