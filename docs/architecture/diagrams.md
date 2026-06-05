@@ -64,7 +64,7 @@ C4Component
 
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
-        Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher, lifecycle logger, and stable seams")
+        Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher, lifecycle logger, run-record writer, and stable seams")
         Component(agentloop, "Agent Loop", "internal/loop", "Inside-the-box pick-attempt-verify cycle plus bounded retry policy")
         Component(sandbox, "exec-sandbox Run Adapter", "internal/sandbox", "Typed contained-command seam and test fake")
         Component(tasksource, "Task Source", "internal/tasksource", "Read-only roadmap/task parser and next-task selector")
@@ -89,6 +89,7 @@ C4Component
 - ADR 013 fixes the retry escalation policy: non-negative `MaxAttempts`, mandatory stop, status-writer `needs-human` marking, and substitutable escalation hook.
 - ADR 020 fixes the exec-sandbox run adapter seam: command/worktree/typed limits in, result/exit/error out.
 - Task 017 fixes the supervisor dispatch lifecycle: create one box, run one in-box loop, and tear the box down exactly once.
+- Task 019 fixes the run-record seam: command/stdout/stderr events stream to host-side NDJSON and close before box teardown.
 - The supervisor remains trusted and dumb; the gate contains verification orchestration only, not executor/LLM/web logic.
 - The task source is read-only and only selects tasks; the task status writer is the separate constrained mutation component.
 - ADR 014 defines the execution-box profile artifact; supervisor wiring to launch it is deferred to the dispatch task.
@@ -109,6 +110,7 @@ sequenceDiagram
     participant Executor
     participant EscalationHook as Escalation Hook
     participant Gate as Verification Gate
+    participant RunRecord as RunRecord NDJSON
     participant StatusWriter as Task Status Writer
     participant Roadmap as docs/plans/roadmap.md
     participant Tasks as docs/tasks/*.md
@@ -116,8 +118,11 @@ sequenceDiagram
     Supervisor->>Box: Create(Task)
     Box-->>Supervisor: BoxHandle
     Supervisor-->>Supervisor: log box.created
+    Supervisor->>RunRecord: open + write run_started
     Supervisor-->>Supervisor: log loop.started
-    Supervisor->>AgentLoop: RunInside(BoxHandle, Task)
+    Supervisor->>RunRecord: write command
+    Supervisor->>AgentLoop: RunInside(BoxHandle, Task, RunStreams)
+    AgentLoop-->>RunRecord: stream stdout/stderr/commands
     AgentLoop->>TaskSource: Next()
     TaskSource->>Roadmap: read
     TaskSource->>Tasks: read task files
@@ -143,6 +148,7 @@ sequenceDiagram
     else no ready task
         AgentLoop-->>Supervisor: RetryOutcome{idle}
     end
+    Supervisor->>RunRecord: write run_finished + close
     Supervisor->>Box: Teardown(BoxHandle)
     Supervisor-->>Supervisor: log box.torn_down
 ```

@@ -58,7 +58,7 @@ When the structure changes, both files update in the same commit. The tables her
 
 | Container | Component | Source path | Responsibility | Depends on |
 |-----------|-----------|-------------|----------------|------------|
-| agent-builder CLI | Supervisor | `internal/supervisor` | Trusted outside-the-box dispatcher that creates one containment box, starts one in-box loop, logs lifecycle events, and tears down deterministically | Verification Gate model; exec-sandbox Run Adapter |
+| agent-builder CLI | Supervisor | `internal/supervisor` | Trusted outside-the-box dispatcher that creates one containment box, starts one in-box loop, streams run output to a durable run-record when configured, logs lifecycle events, and tears down deterministically | Verification Gate model; exec-sandbox Run Adapter |
 | agent-builder CLI | Agent Loop | `internal/loop` | Drives one inside-the-box pick -> attempt -> verify cycle and applies the bounded retry/escalation policy around that policy-free outcome | Supervisor; Task Source; Task Status Writer; Verification Gate |
 | agent-builder CLI | exec-sandbox Run Adapter | `internal/sandbox` | Typed contained-command run seam plus deterministic fake backend | |
 | agent-builder CLI | Verification Gate | `internal/gate` | Runs ordered blocking verification Steps and returns structured Verdicts | code-scanner |
@@ -77,6 +77,7 @@ When the structure changes, both files update in the same commit. The tables her
 - ADR 014: Rootless Podman execution-box profile — product containment artifact under `containment/execution-box` with read-only rootfs, writable worktree and scratch only, non-root/drop-all-caps execution, no host home or container-engine socket mount, and explicit resource quotas.
 - ADR 020: exec-sandbox run adapter seam — typed command/worktree/limits request, result plus exit code plus error response, fake backend for tests.
 - Task 017: Supervisor dispatch lifecycle — one task per `Run()`, create -> run-inside -> teardown ordering, teardown-on-error, and recovered-panic teardown.
+- Task 019: RunRecord collection — host-side NDJSON run record captures command/stdout/stderr stream events during `RunInside`, writes terminal outcomes, and closes before teardown.
 
 ---
 

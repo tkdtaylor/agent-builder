@@ -137,11 +137,11 @@ needs-human    status-only writer marker for work that requires human attention;
 
 ### State: Supervisor Dispatch
 
-- **Shape:** `*supervisor.Supervisor` stores one configured `supervisor.Task`, one `supervisor.ContainmentBox`, one `supervisor.InBoxLoop`, an optional structured logger, and the pre-existing exec-sandbox Runner seam.
+- **Shape:** `*supervisor.Supervisor` stores one configured `supervisor.Task`, one `supervisor.ContainmentBox`, one `supervisor.InBoxLoop`, an optional structured logger, an optional durable run-record path, and the pre-existing exec-sandbox Runner seam.
 - **Owner:** host-side runtime wiring constructs the supervisor through `supervisor.New(options...)`.
-- **Lifetime:** process-local; each `Run()` call uses the currently configured task and seams for one dispatch lifecycle.
+- **Lifetime:** process-local; each `Run()` call uses the currently configured task and seams for one dispatch lifecycle. When a run-record path is configured, the supervisor opens and closes one host-side record file during that lifecycle.
 - **Concurrency rules:** no internal mutation occurs during `Run`; callers choose whether supplied box, loop, and logger implementations are safe to share across goroutines.
-- **Bounds:** one `Run()` call creates at most one box, starts the loop at most once, and tears down a successfully created box exactly once.
+- **Bounds:** one `Run()` call creates at most one box, starts the loop at most once, writes at most one run-record file, and tears down a successfully created box exactly once.
 
 #### Value: `supervisor.BoxHandle`
 
@@ -155,6 +155,34 @@ Worktree    string    worktree path visible to the in-box loop
 - **Identity:** scoped to one successful `ContainmentBox.Create(task)` call.
 - **Lifecycle:** produced by the containment-box seam, consumed by the in-box loop, then passed back to the box seam for teardown.
 - **Relationships:** belongs to the single task dispatched by the enclosing `Supervisor.Run()` call.
+
+#### Value: `supervisor.RunStreams`
+
+```
+field       type        notes
+────────────────────────────────────────────────────────────
+Stdout      io.Writer   streamed stdout from the in-box loop
+Stderr      io.Writer   streamed stderr from the in-box loop
+Command     io.Writer   streamed command-log lines from the in-box loop
+```
+
+- **Identity:** scoped to one `Supervisor.Run()` call and one run-record file.
+- **Lifecycle:** created by the supervisor after `ContainmentBox.Create`; passed to `InBoxLoop.RunInside`; closed when the run-record writer is finished before teardown.
+- **Relationships:** each writer produces one `RunRecord` event per write. The writers are host-side, so data leaves the ephemeral box during the run instead of being copied back after teardown.
+
+#### Value: `supervisor.RunOutcome`
+
+```
+value         notes
+────────────────────────────────────────────────────────────
+completed     in-box loop returned nil
+failed        in-box loop returned an error or panicked
+timed-out     reserved terminal state for task 018 timeout handling
+```
+
+- **Identity:** the string value is written to the terminal `RunRecord` line.
+- **Lifecycle:** `completed` and `failed` are produced by task 019 run-record collection. `timed-out` is part of the shared vocabulary so task 018 can add timeout production without changing the wire format.
+- **Relationships:** no wall-clock timer, cancellation, or box kill behavior is implied by the `timed-out` vocabulary entry.
 
 ### State: Agent Loop
 
@@ -270,16 +298,34 @@ Terminal       bool                         true when this retry cycle is comple
 
 > Data formats used to exchange information across process boundaries: JSON over HTTP, NDJSON log lines, protobuf messages, CSV exports, etc. Each entry is a stable contract — version it like you would an API.
 
-### Format: <name> (e.g. evaluation NDJSON, scanner result JSON)
+### Format: RunRecord NDJSON
 
-- **Producer:** what writes this
-- **Consumer:** what reads it (including humans / external tools)
-- **Schema:** field-by-field, with types and required/optional markers
-- **Versioning:** how schema changes are signaled (top-level `version` field, separate filename, etc.)
-- **Example:** a real, valid record
+- **Producer:** `internal/supervisor` writes the file on the trusted host side during one `Supervisor.Run()` dispatch lifecycle.
+- **Consumer:** humans, tests, and the future audit-trail block read it after the containment box is torn down.
+- **Encoding:** UTF-8 NDJSON. Each non-empty line is an independent JSON object, not an array or a multi-line JSON document.
+- **Versioning:** required top-level `version` string. Current version is `"1"`.
+- **Common fields:** every event contains `version`, `type`, `run_id`, and `timestamp` (`time.RFC3339Nano`, UTC).
+- **Event types:**
 
 ```
-<paste a representative example>
+type            required event-specific fields
+────────────────────────────────────────────────────────────
+run_started     task_id, repo, spec, box_id, worktree
+command         command
+stdout          data
+stderr          data
+run_finished    outcome; error when outcome is failed or timed-out
+```
+
+- **Outcome values:** `completed`, `failed`, and `timed-out`. Task 019 writes `completed` and `failed`; `timed-out` is reserved for task 018's timeout producer and does not imply timeout behavior here.
+- **Durability rule:** the supervisor writes stream events while `RunInside` is active, writes `run_finished`, closes the file, and only then tears down the created box.
+- **Example:**
+
+```ndjson
+{"box_id":"box-019","repo":"agent-builder","run_id":"019/box-019","spec":"docs/tasks/backlog/019-run-log-collection.md","task_id":"019","timestamp":"2026-06-05T12:00:00Z","type":"run_started","version":"1","worktree":"/work/agent-builder"}
+{"command":"go test ./...","run_id":"019/box-019","timestamp":"2026-06-05T12:00:01Z","type":"command","version":"1"}
+{"data":"ok github.com/tkdtaylor/agent-builder/internal/supervisor\n","run_id":"019/box-019","timestamp":"2026-06-05T12:00:02Z","type":"stdout","version":"1"}
+{"outcome":"completed","run_id":"019/box-019","timestamp":"2026-06-05T12:00:03Z","type":"run_finished","version":"1"}
 ```
 
 ---
@@ -314,3 +360,4 @@ Terminal       bool                         true when this retry cycle is comple
 - Agent-loop `OutcomeFail` never contains retry count, retry decision, or escalation target state.
 - Retry policy `MaxAttempts` is non-negative; negative values fail validation.
 - Retry escalation writes only `needs-human` through the constrained task status-writer seam after exhausted failures.
+- A configured RunRecord is host-side and durable: stream events are written during `RunInside`, the terminal outcome is written, and the file is closed before containment teardown.

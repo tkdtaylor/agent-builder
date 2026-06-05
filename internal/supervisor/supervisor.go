@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 
 	"github.com/tkdtaylor/agent-builder/internal/gate"
@@ -75,7 +76,7 @@ type ContainmentBox interface {
 
 // InBoxLoop is the fakeable seam for one agent-loop run inside a created box.
 type InBoxLoop interface {
-	RunInside(BoxHandle, Task) error
+	RunInside(BoxHandle, Task, RunStreams) error
 }
 
 // Supervisor is the outside-the-box dispatcher.
@@ -89,6 +90,7 @@ type Supervisor struct {
 	loop          InBoxLoop
 	task          Task
 	logger        *slog.Logger
+	runRecordPath string
 }
 
 // Option configures a Supervisor.
@@ -131,6 +133,14 @@ func WithLogger(logger *slog.Logger) Option {
 	}
 }
 
+// WithRunRecordPath configures a durable NDJSON run-record file for streamed
+// in-box stdout, stderr, command events, and the terminal run outcome.
+func WithRunRecordPath(path string) Option {
+	return func(s *Supervisor) {
+		s.runRecordPath = path
+	}
+}
+
 // New returns a Supervisor with default (empty) configuration.
 func New(options ...Option) *Supervisor {
 	s := &Supervisor{
@@ -143,8 +153,9 @@ func New(options ...Option) *Supervisor {
 }
 
 // Run dispatches exactly one configured task through create -> run-inside ->
-// teardown. Retry, escalation, timeout, and run-record policy live in later
-// tasks; this method only guarantees deterministic lifecycle ordering.
+// teardown. Retry, escalation, and timeout policy live in later tasks; this
+// method guarantees deterministic lifecycle ordering and, when configured,
+// streams run output to a durable host-side run-record before teardown.
 func (s *Supervisor) Run() (err error) {
 	if s.box == nil {
 		return ErrNilContainmentBox
@@ -162,11 +173,15 @@ func (s *Supervisor) Run() (err error) {
 	}
 	s.logLifecycle("box.created", handle)
 
+	var record *RunRecordWriter
+
 	defer func() {
 		var panicErr error
 		if recovered := recover(); recovered != nil {
 			panicErr = fmt.Errorf("supervisor: run inside box panic: %v", recovered)
 		}
+
+		recordErr := s.closeRunRecord(record, err, panicErr)
 
 		teardownErr := s.box.Teardown(handle)
 		s.logLifecycle("box.torn_down", handle)
@@ -174,11 +189,29 @@ func (s *Supervisor) Run() (err error) {
 			teardownErr = fmt.Errorf("supervisor: teardown box: %w", teardownErr)
 		}
 
-		err = errors.Join(err, panicErr, teardownErr)
+		err = errors.Join(err, panicErr, recordErr, teardownErr)
 	}()
 
+	record, err = s.openRunRecord(handle)
+	if err != nil {
+		return err
+	}
+	streams := RunStreams{
+		Stdout:  io.Discard,
+		Stderr:  io.Discard,
+		Command: io.Discard,
+	}
+	if record != nil {
+		streams = record.Streams()
+	}
+
 	s.logLifecycle("loop.started", handle)
-	if loopErr := s.loop.RunInside(handle, s.task); loopErr != nil {
+	if record != nil {
+		if commandErr := record.Command("RunInside task " + s.task.ID); commandErr != nil {
+			return fmt.Errorf("supervisor: write run command: %w", commandErr)
+		}
+	}
+	if loopErr := s.loop.RunInside(handle, s.task, streams); loopErr != nil {
 		err = fmt.Errorf("supervisor: run inside box: %w", loopErr)
 	}
 	return err
@@ -194,4 +227,63 @@ func (s *Supervisor) logLifecycle(event string, handle BoxHandle) {
 		"box_id", handle.ID,
 		"worktree", handle.Worktree,
 	)
+}
+
+func (s *Supervisor) openRunRecord(handle BoxHandle) (*RunRecordWriter, error) {
+	if strings.TrimSpace(s.runRecordPath) == "" {
+		return nil, nil
+	}
+
+	file, err := os.Create(s.runRecordPath)
+	if err != nil {
+		return nil, fmt.Errorf("supervisor: create run record: %w", err)
+	}
+
+	record := NewRunRecordWriter(file, RunRecordMetadata{
+		RunID:    runID(s.task, handle),
+		TaskID:   s.task.ID,
+		Repo:     s.task.Repo,
+		Spec:     s.task.Spec,
+		BoxID:    handle.ID,
+		Worktree: handle.Worktree,
+	})
+	if err := record.Start(); err != nil {
+		closeErr := file.Close()
+		return nil, errors.Join(fmt.Errorf("supervisor: start run record: %w", err), closeErr)
+	}
+	return record, nil
+}
+
+func (s *Supervisor) closeRunRecord(record *RunRecordWriter, runErr, panicErr error) error {
+	if record == nil {
+		return nil
+	}
+
+	outcome := RunOutcomeCompleted
+	if runErr != nil || panicErr != nil {
+		outcome = RunOutcomeFailed
+	}
+	finishErr := record.Finish(outcome, errors.Join(runErr, panicErr))
+	if finishErr != nil {
+		finishErr = fmt.Errorf("supervisor: finish run record: %w", finishErr)
+	}
+	closeErr := record.Close()
+	if closeErr != nil {
+		closeErr = fmt.Errorf("supervisor: close run record: %w", closeErr)
+	}
+	return errors.Join(finishErr, closeErr)
+}
+
+func runID(task Task, handle BoxHandle) string {
+	parts := []string{}
+	if strings.TrimSpace(task.ID) != "" {
+		parts = append(parts, task.ID)
+	}
+	if strings.TrimSpace(handle.ID) != "" {
+		parts = append(parts, handle.ID)
+	}
+	if len(parts) == 0 {
+		return "run"
+	}
+	return strings.Join(parts, "/")
 }

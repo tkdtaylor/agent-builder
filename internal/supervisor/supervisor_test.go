@@ -221,7 +221,7 @@ type fakeInBoxLoop struct {
 	callLog    *[]string
 }
 
-func (l *fakeInBoxLoop) RunInside(handle BoxHandle, task Task) error {
+func (l *fakeInBoxLoop) RunInside(handle BoxHandle, task Task, _ RunStreams) error {
 	l.calls++
 	l.handles = append(l.handles, handle)
 	l.tasks = append(l.tasks, task)

@@ -1,6 +1,6 @@
 # Test Spec 019: Run log collection (audit-trail seam)
 
-**Linked task:** [`docs/tasks/backlog/019-run-log-collection.md`](../backlog/019-run-log-collection.md)
+**Linked task:** [`docs/tasks/completed/019-run-log-collection.md`](../completed/019-run-log-collection.md)
 **Written:** 2026-06-04
 **Status:** complete — ready for implementation
 

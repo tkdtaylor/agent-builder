@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 The supervisor streams the box's stdout/stderr plus a command log out to a durable run-record that survives box teardown — the audit-trail seam where the audit-trail block plugs in later.
@@ -27,9 +27,9 @@ The supervisor streams the box's stdout/stderr plus a command log out to a durab
 - [x] Blocking tasks complete: 017
 
 ## Acceptance criteria
-- [ ] [REQ-001] A `RunRecord` is defined as a plain-text / NDJSON wire format; `docs/spec/data-model.md` documents it in the same commit
-- [ ] [REQ-002] The supervisor captures the box's stdout/stderr and a command log during the run, streaming them out (not buffered only in the ephemeral box)
-- [ ] [REQ-003] The run-record file exists and is readable after teardown — it survives the ephemeral box
+- [x] [REQ-001] A `RunRecord` is defined as a plain-text / NDJSON wire format; `docs/spec/data-model.md` documents it in the same commit
+- [x] [REQ-002] The supervisor captures the box's stdout/stderr and a command log during the run, streaming them out (not buffered only in the ephemeral box)
+- [x] [REQ-003] The run-record file exists and is readable after teardown — it survives the ephemeral box
 
 ## Verification plan
 - **Highest level achievable:** L6 — after a fixture run, the log file exists, contains the in-box output, and is readable post-teardown; quote a sample line
