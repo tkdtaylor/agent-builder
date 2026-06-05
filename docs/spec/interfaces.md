@@ -60,7 +60,8 @@ Global flags:
 
 | Dependency | What we call | Library / version | Failure mode |
 |------------|-------------|-------------------|--------------|
-| | | | |
+| Go toolchain | `go build ./...`, `go vet ./...`, `go test ./...` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `go` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
+| gofmt | `gofmt -l .` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `gofmt` fails the Step; non-zero exit fails the Step; non-empty output fails the Step as formatting drift |
 
 ---
 
@@ -79,7 +80,7 @@ type Step interface {
 }
 ```
 
-- **Implementors:** concrete gate checks such as Go build/test/fmt, lint, dep-scan, and code-scanner steps.
+- **Implementors:** `gate.GoBuildStep`, `gate.GoVetStep`, `gate.GoTestStep`, `gate.GoFmtStep`, and future concrete checks such as lint, dep-scan, and code-scanner steps.
 - **Consumers:** `gate.Gate`.
 - **Stability:** governed by ADR 002 and updated with any task that changes gate behavior.
 - **Required behavior:** each Step is blocking. It receives the repo worktree path, returns captured output in its StepResult, and reports pass/fail through `OK`.

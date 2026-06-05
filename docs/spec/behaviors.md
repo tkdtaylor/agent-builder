@@ -1,7 +1,7 @@
 # Behaviors
 
 **Project:** agent-builder
-**Last updated:** 2026-06-04
+**Last updated:** 2026-06-05
 
 What the system does, observably. Each behavior describes a triggering condition, the system's response, and any externally-visible side effects. This is the "you can verify this from outside the process" view.
 
@@ -31,21 +31,21 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 
 ## Core behaviors
 
-> Replace this section with the system's primary behaviors. Order them roughly by how central they are to the system's purpose, not chronologically.
+### B-001: Run the verification gate as an ordered blocking sequence
 
-### B-001: <first behavior title>
+- **Trigger:** A caller invokes the gate with a target repository worktree path.
+- **Response:** The gate runs each registered Step in registration order, records a `StepResult` for each executed Step, and returns a `Verdict`. A passing Verdict contains every configured Step result. A failing Verdict stops at the first failed Step and contains no later Step results.
+- **Side effects:** The gate itself writes no persistent state. Individual Steps may spawn subprocesses or read files inside the supplied worktree.
+- **Failure modes:** If any Step returns `OK == false`, the Verdict returns `OK == false` and exposes the failing Step's captured output.
+- **References:** ADR 002; `docs/tasks/test-specs/002-gate-orchestrator-core-test-spec.md`.
 
-- **Trigger:**
-- **Response:**
-- **Side effects:**
-- **Failure modes:**
+### B-002: Run native Go verification steps against the target worktree
 
-### B-002: <second behavior title>
-
-- **Trigger:**
-- **Response:**
-- **Side effects:**
-- **Failure modes:**
+- **Trigger:** A gate is configured with one or more native Go Steps and invoked with a target repository worktree path.
+- **Response:** The native Steps shell out in the supplied worktree to `go build ./...`, `go vet ./...`, `go test ./...`, and `gofmt -l .`. Each command is blocking and returns a StepResult.
+- **Side effects:** The Steps spawn local `go` or `gofmt` subprocesses with the target worktree as the working directory. `gofmt -l .` lists unformatted files without rewriting them.
+- **Failure modes:** A non-zero subprocess exit fails the Step and surfaces combined stdout/stderr. The gofmt Step also fails when `gofmt -l .` exits zero but prints one or more files. A missing `go` or `gofmt` binary on `PATH` is a hard failure that identifies the missing tool.
+- **References:** `docs/tasks/test-specs/003-gate-go-checks-test-spec.md`.
 
 ---
 
@@ -53,12 +53,12 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 
 > Behaviors specifically for error conditions, recovery, and edge cases. Keep them here rather than scattered through the core list — most readers want core first, edge cases on demand.
 
-### B-NNN: <edge case title>
+### B-003: Native tool absence fails loudly
 
-- **Trigger:**
-- **Response:**
-- **Side effects:**
-- **Failure modes:**
+- **Trigger:** A native Go Step runs while its required executable is absent from `PATH`.
+- **Response:** The Step returns a failed StepResult.
+- **Side effects:** No subprocess is started when executable lookup fails.
+- **Failure modes:** The StepResult output names the missing tool and includes the lookup failure.
 
 ---
 
@@ -72,4 +72,5 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 >
 > Invariants here are stronger than ones in `SPEC.md` "Top-level invariants" — those are about system architecture; these are about observable behavior.
 
--
+- There is no gate skip or bypass input. All configured Steps are blocking.
+- Native Go Steps always run in the caller-supplied worktree, never implicitly in the agent-builder repo.

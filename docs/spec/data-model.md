@@ -80,6 +80,7 @@ Duration    time.Duration   elapsed time measured by the gate
 - **Identity:** the `Name` is the registered Step name captured by `gate.New`; a Step cannot override it from `Run`.
 - **Lifecycle:** produced by one Step execution and appended to the Verdict before the gate continues or short-circuits.
 - **Relationships:** belongs to exactly one Verdict.
+- **Native Go command output:** `Output` stores combined stdout/stderr for native Go subprocess failures. For `gofmt -l .`, non-empty output stores the listed unformatted files and makes the Step fail even when the subprocess exits zero. Missing native tools store a human-readable lookup failure naming the absent executable.
 
 ---
 

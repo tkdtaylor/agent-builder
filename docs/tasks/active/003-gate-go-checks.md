@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** in progress
+**Status:** active (native Go gate steps built + green; pending spec-verifier pass before ✅)
 
 ## Goal
 Implement gate Steps that shell out to `go build ./...`, `go vet ./...`, `go test ./...`, and `gofmt -l .` against the target worktree, each blocking and failing (with captured output) on non-zero exit or non-empty `gofmt -l` output.
@@ -28,10 +28,10 @@ Implement gate Steps that shell out to `go build ./...`, `go vet ./...`, `go tes
 - [x] Blocking tasks complete: 002
 
 ## Acceptance criteria
-- [ ] [REQ-001] Four distinct Steps exist, each invoking its tool in the supplied repoPath
-- [ ] [REQ-002] Non-zero exit fails the step; a non-empty `gofmt -l` listing fails the gofmt step even though the command itself exits zero
-- [ ] [REQ-003] Failing-step output contains the tool's captured stdout+stderr
-- [ ] [REQ-004] Tool-absent produces a failed StepResult identifying the missing tool
+- [x] [REQ-001] Four distinct Steps exist, each invoking its tool in the supplied repoPath
+- [x] [REQ-002] Non-zero exit fails the step; a non-empty `gofmt -l` listing fails the gofmt step even though the command itself exits zero
+- [x] [REQ-003] Failing-step output contains the tool's captured stdout+stderr
+- [x] [REQ-004] Tool-absent produces a failed StepResult identifying the missing tool
 
 ## Verification plan
 - **Highest level achievable:** L5/L6 — run the gate against two fixture repos: one clean, one carrying a failing test plus an unformatted file. Observe the Verdict fails the dirty repo at the expected step and passes the clean repo.
@@ -39,6 +39,11 @@ Implement gate Steps that shell out to `go build ./...`, `go vet ./...`, `go tes
 - **Operator path:** point the assembled gate at a scratch worktree, break a test / leave a file unformatted, observe the failing Verdict and captured output; revert and observe pass.
 - **Cross-module state risk:** none (consumes the 002 Step/Verdict types; adds no new shared types).
 - **Runtime-visible surface:** captured tool output surfaced in StepResult; future log/CLI rendering of the Verdict.
+
+## Verification evidence
+
+- **Level 5 — validation harness:** `go test ./internal/gate/... -run TestGoChecks` → `ok github.com/tkdtaylor/agent-builder/internal/gate`
+- **Repo checks:** `go test ./...` → `ok github.com/tkdtaylor/agent-builder/internal/gate`; `go build ./...` → success; `env PATH=/tmp/agent-builder-tools:$PATH make check` → `All checks passed.`
 
 ## Out of scope
 - golangci-lint step (004)
