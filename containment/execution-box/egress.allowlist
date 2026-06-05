@@ -1,0 +1,13 @@
+# Plain-text execution-box egress allowlist.
+# Format: one exact lowercase-or-mixed-case hostname plus explicit TCP port per
+# non-comment line. Every rule needs an inline justification comment.
+auth.docker.io:443 # OCI registry auth for execution-box base images
+registry-1.docker.io:443 # OCI registry API for execution-box base images
+production.cloudflare.docker.com:443 # Docker registry layer CDN used during image pulls
+proxy.golang.org:443 # Go module registry for build and test dependencies
+sum.golang.org:443 # Go checksum database for module verification
+github.com:443 # Git remotes and approved source research
+api.github.com:443 # GitHub API for branch and PR automation
+raw.githubusercontent.com:443 # Approved source research and raw task references
+api.anthropic.com:443 # Claude provider API endpoint
+generativelanguage.googleapis.com:443 # Gemini provider API endpoint

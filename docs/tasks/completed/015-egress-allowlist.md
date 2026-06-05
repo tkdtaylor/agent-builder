@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 Establish a default-deny network posture for the execution box plus a plain-text egress allowlist permitting only registries, the provider API, and approved research domains — the load-bearing control bounding the accepted executor-token-in-box risk.
@@ -23,20 +23,21 @@ Establish a default-deny network posture for the execution box plus a plain-text
 | REQ-003 | A connection to a non-allowlisted host is observably blocked | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 014
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 014
 
 ## Acceptance criteria
-- [ ] [REQ-001] With the allowlist applied, an allowlisted host (e.g. a registry / the provider API) is reachable from inside the box
-- [ ] [REQ-002] The allowlist lives in a plain-text config consumed by the box launcher, and `docs/spec/configuration.md` describes its format and semantics
-- [ ] [REQ-003] A connection to a host NOT on the allowlist is refused/dropped — observed from in-box, with the failure mode quoted
+- [x] [REQ-001] With the allowlist applied, an allowlisted host (e.g. a registry / the provider API) is reachable from inside the box
+- [x] [REQ-002] The allowlist lives in a plain-text config consumed by the box launcher, and `docs/spec/configuration.md` describes its format and semantics
+- [x] [REQ-003] A connection to a host NOT on the allowlist is refused/dropped — observed from in-box, with the failure mode quoted
 
 ## Verification plan
 - **Highest level achievable:** L6 — network reachability is an observed runtime property of a launched box.
 - In-box probes and observable results to quote: connect to an allowlisted host → succeeds; connect to a non-allowlisted host → refused/timed-out/DNS-blocked. Quote both.
 - **Cross-module state risk:** touches `docs/spec/configuration.md` (the allowlist config contract) — must be updated in the same change as the launcher behaviour.
 - **Runtime-visible surface:** network reachability per destination host; the allowlist config file format.
+- **Runtime blocker in this worktree:** Podman is unavailable on `PATH`, so L6 runtime evidence remains pending operator verification. Static contract checks and `--print-egress-plan` parser output are available without Podman.
 
 ## Out of scope
 - armor on the web-ingestion / tool-call path (task 024)

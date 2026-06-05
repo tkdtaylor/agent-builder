@@ -1,9 +1,15 @@
 FROM docker.io/library/golang:1.26-alpine
 
+RUN apk add --no-cache ca-certificates nftables iproute2 busybox-extras
+
 RUN addgroup -g 1000 agent && adduser -D -u 1000 -G agent agent
 
 COPY probe.sh /usr/local/bin/execution-box-probe
-RUN chmod 0555 /usr/local/bin/execution-box-probe && \
+COPY egress-sidecar.sh /usr/local/bin/execution-box-egress-sidecar
+COPY egress-probe.sh /usr/local/bin/execution-box-egress-probe
+RUN chmod 0555 /usr/local/bin/execution-box-probe \
+        /usr/local/bin/execution-box-egress-sidecar \
+        /usr/local/bin/execution-box-egress-probe && \
     mkdir -p /scratch /work && \
     chown 1000:1000 /scratch /work
 
