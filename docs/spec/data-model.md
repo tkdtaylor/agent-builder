@@ -135,6 +135,27 @@ needs-human    status-only writer marker for work that requires human attention;
 - **Lifecycle:** provided by callers to `StatusWriter.WriteStatus`; persisted only as the task file status marker.
 - **Relationships:** the reader accepts writer-produced markers. `done` is normalized to completed for dependency checks; `needs-human` is non-ready and is skipped by `Next()`.
 
+### State: Supervisor Dispatch
+
+- **Shape:** `*supervisor.Supervisor` stores one configured `supervisor.Task`, one `supervisor.ContainmentBox`, one `supervisor.InBoxLoop`, an optional structured logger, and the pre-existing exec-sandbox Runner seam.
+- **Owner:** host-side runtime wiring constructs the supervisor through `supervisor.New(options...)`.
+- **Lifetime:** process-local; each `Run()` call uses the currently configured task and seams for one dispatch lifecycle.
+- **Concurrency rules:** no internal mutation occurs during `Run`; callers choose whether supplied box, loop, and logger implementations are safe to share across goroutines.
+- **Bounds:** one `Run()` call creates at most one box, starts the loop at most once, and tears down a successfully created box exactly once.
+
+#### Value: `supervisor.BoxHandle`
+
+```
+field       type      notes
+────────────────────────────────────────────────────────────
+ID          string    backend-meaningful created-box identifier
+Worktree    string    worktree path visible to the in-box loop
+```
+
+- **Identity:** scoped to one successful `ContainmentBox.Create(task)` call.
+- **Lifecycle:** produced by the containment-box seam, consumed by the in-box loop, then passed back to the box seam for teardown.
+- **Relationships:** belongs to the single task dispatched by the enclosing `Supervisor.Run()` call.
+
 ### State: Agent Loop
 
 - **Shape:** `*loop.Loop` stores a `loop.TaskSource`, a `supervisor.Executor`, a `supervisor.Gate`, and the target worktree path supplied at construction.

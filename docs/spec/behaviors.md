@@ -103,6 +103,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Missing Podman, failed `podman info`, root invocation, missing worktree, absent quota fields, or any failed in-box probe exits non-zero and prints the failing TC marker. Static tests cover the launcher contract; only a successful rootless Podman probe proves runtime containment.
 - **References:** ADR 014; `docs/tasks/test-specs/014-podman-containment-profile-test-spec.md`.
 
+### B-011: Dispatch one task through a containment lifecycle
+
+- **Trigger:** A caller invokes `Supervisor.Run()` with one configured task, one containment-box seam, and one in-box loop seam.
+- **Response:** The supervisor creates one containment box for the configured task, starts the in-box loop once with the created box handle and task, then tears the box down exactly once.
+- **Side effects:** When a logger is configured, the supervisor emits structured lifecycle log records for `box.created`, `loop.started`, and `box.torn_down` with the task ID, box ID, and worktree path.
+- **Failure modes:** Missing dispatch dependencies fail before box creation. A box-create error is returned without teardown. A loop error is returned after teardown. A loop panic is recovered, converted into an error that includes the panic value, and returned after teardown. Teardown errors are joined with any loop or panic error.
+- **References:** `docs/tasks/test-specs/017-supervisor-dispatch-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -137,3 +145,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - The task status writer has no content-patch or prose-editing API; its only mutation path is task ID plus constrained status marker.
 - The agent loop reports failures without deciding retry count, escalation target, or mandatory stop condition.
 - The execution-box profile exposes no host home mount, no container-engine socket mount, no privileged mode, and no capability add-back by default.
+- One `Supervisor.Run()` call dispatches at most one task and always tears down a successfully created box exactly once.

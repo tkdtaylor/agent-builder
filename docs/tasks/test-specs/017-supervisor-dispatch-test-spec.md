@@ -1,6 +1,6 @@
 # Test Spec 017: Supervisor dispatch-one-task lifecycle
 
-**Linked task:** [`docs/tasks/backlog/017-supervisor-dispatch.md`](../backlog/017-supervisor-dispatch.md)
+**Linked task:** [`docs/tasks/completed/017-supervisor-dispatch.md`](../completed/017-supervisor-dispatch.md)
 **Written:** 2026-06-04
 **Status:** complete
 

@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** completed (code merged + green; pending formal spec-verifier pass before ✅)
 
 ## Goal
 Replace the stubbed `Supervisor.Run()` with the real outside-the-box lifecycle that dispatches exactly one task, creates an ephemeral containment box, runs the agent loop inside it, collects the result, and tears the box down deterministically.
@@ -22,14 +22,14 @@ Replace the stubbed `Supervisor.Run()` with the real outside-the-box lifecycle t
 | REQ-003 | The supervisor adds no executor/LLM/web imports; fitness invariant F-003 (task 007) stays green | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 012, 014
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 012, 014
 
 ## Acceptance criteria
-- [ ] [REQ-001] `Supervisor.Run()` no longer returns `ErrNotImplemented`; one Run creates a box, starts the agent loop inside it, collects the result, and tears the box down — observable as create → run → teardown in logs
-- [ ] [REQ-002] Teardown is invoked even when the in-box loop returns an error or panics (deferred / recover path)
-- [ ] [REQ-003] `make fitness` (F-003 import check) passes — no forbidden executor/LLM/web imports in the supervisor package
+- [x] [REQ-001] `Supervisor.Run()` no longer returns `ErrNotImplemented`; one Run creates a box, starts the agent loop inside it, collects the result, and tears the box down — observable as create → run → teardown in logs
+- [x] [REQ-002] Teardown is invoked even when the in-box loop returns an error or panics (deferred / recover path)
+- [x] [REQ-003] `make fitness` (F-003 import check) passes — no forbidden executor/LLM/web imports in the supervisor package
 
 ## Verification plan
 - **Highest level achievable:** L6 — supervisor binary path exercised via the dispatch test harness; create→run→teardown ordering is observable in logs, and teardown is observed to run even when the loop errors
