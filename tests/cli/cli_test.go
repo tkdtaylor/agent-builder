@@ -156,19 +156,77 @@ func TestUnknownSubcommandExitsUsage(t *testing.T) {
 
 func TestHelpDocumentsSubcommandsAndExitCodes(t *testing.T) {
 	// TC-006
-	for _, args := range [][]string{{"-h"}, {"help"}} {
-		stdout, stderr, code := runCLI(t, cli.Config{Args: args})
-		if code != cli.ExitOK {
-			t.Fatalf("TC-006 %v exit code = %d, want %d", args, code, cli.ExitOK)
-		}
-		for _, want := range []string{"run", "version", "verify <repo>", "0  success", "1  generic error", "2  usage error"} {
-			if !strings.Contains(stdout, want) {
-				t.Fatalf("TC-006 %v stdout = %q, want %q", args, stdout, want)
+	tests := []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "short top-level help",
+			args: []string{"-h"},
+			want: []string{"run", "version", "verify <repo>", "0  success", "1  generic error", "2  usage error"},
+		},
+		{
+			name: "help subcommand",
+			args: []string{"help"},
+			want: []string{"run", "version", "verify <repo>", "0  success", "1  generic error", "2  usage error"},
+		},
+		{
+			name: "run help",
+			args: []string{"run", "-h"},
+			want: []string{"Usage: agent-builder run"},
+		},
+		{
+			name: "version help",
+			args: []string{"version", "-h"},
+			want: []string{"Usage: agent-builder version"},
+		},
+		{
+			name: "verify help",
+			args: []string{"verify", "-h"},
+			want: []string{"Usage: agent-builder verify <repo>"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stdout, stderr, code := runCLI(t, cli.Config{Args: tc.args})
+			if code != cli.ExitOK {
+				t.Fatalf("TC-006 exit code = %d, want %d", code, cli.ExitOK)
 			}
-		}
-		if stderr != "" {
-			t.Fatalf("TC-006 %v stderr = %q, want empty", args, stderr)
-		}
+			for _, want := range tc.want {
+				if !strings.Contains(stdout, want) {
+					t.Fatalf("TC-006 stdout = %q, want %q", stdout, want)
+				}
+			}
+			if stderr != "" {
+				t.Fatalf("TC-006 stderr = %q, want empty", stderr)
+			}
+		})
+	}
+}
+
+func TestSubcommandFlagParseErrorsExitUsage(t *testing.T) {
+	// TC-008
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{name: "run unknown flag", args: []string{"run", "-bogus"}},
+		{name: "version unknown flag", args: []string{"version", "-bogus"}},
+		{name: "verify unknown flag", args: []string{"verify", "-bogus", "repo"}},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, stderr, code := runCLI(t, cli.Config{Args: tc.args})
+			if code != cli.ExitUsage {
+				t.Fatalf("TC-008 exit code = %d, want %d", code, cli.ExitUsage)
+			}
+			if !strings.Contains(stderr, "flag provided but not defined") {
+				t.Fatalf("TC-008 stderr = %q, want flag parse error", stderr)
+			}
+		})
 	}
 }
 
