@@ -25,7 +25,7 @@
 | 011 | Task status writer (status-only) | 011-task-status-writer-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test -count=1 ./internal/tasksource/... ./tests/...` -> `ok github.com/tkdtaylor/agent-builder/tests/tasksource` |
 | 012 | Agent loop state machine | 012-agent-loop-test-spec.md | stub | ❌ | — |
 | 013 | Escalation + retry-N + stop condition | 013-escalation-retry-policy-test-spec.md | stub | ❌ | — |
-| 014 | Podman containment profile | 014-podman-containment-profile-test-spec.md | stub | ❌ | — |
+| 014 | Podman containment profile | 014-podman-containment-profile-test-spec.md | ✅ | ❌ | — |
 | 015 | Default-deny egress allowlist | 015-egress-allowlist-test-spec.md | stub | ❌ | — |
 | 016 | Tiered OCI runtime selection seam | 016-tiered-runtime-seam-test-spec.md | stub | ❌ | — |
 | 017 | Supervisor dispatch-one-task lifecycle | 017-supervisor-dispatch-test-spec.md | stub | ❌ | — |
