@@ -256,6 +256,31 @@ func (l *Loop) RunOnce() (Outcome, error)
 - **Stability:** governed by ADR 012 and `docs/tasks/test-specs/012-agent-loop-test-spec.md`.
 - **Required behavior:** `RunOnce` records explicit state transitions, invokes the Executor only after a task is picked, invokes the Gate only after a successful executor attempt, returns `done` with the Executor branch only when the Gate passes, and returns `fail` without retry or escalation policy decisions when the Executor or Gate fails.
 
+### Interface: `ingestion` boundary
+
+```go
+type Guard interface {
+	DecideContent(context.Context, ContentCandidate) (Decision, error)
+	DecideToolCall(context.Context, ToolCallCandidate) (Decision, error)
+}
+
+func NewContentCandidate(ContentInput) (ContentCandidate, error)
+func NewToolCallCandidate(ToolCallInput) (ToolCallCandidate, error)
+
+func NewBroker(guard Guard, timeout time.Duration) Broker
+
+func (b Broker) ReviewContent(context.Context, ContentCandidate) ContentReview
+func (b Broker) ReviewToolCall(context.Context, ToolCallCandidate) ToolCallReview
+
+func (r ContentReview) Release() (ContentCandidate, bool)
+func (r ToolCallReview) Release() (ToolCallCandidate, bool)
+```
+
+- **Implementors:** `internal/ingestion.Broker`; fake guards in tests; the task 025 armor adapter implements `Guard`.
+- **Consumers:** inside-the-box agent loop and executor-facing harness code when web-ingestion or tool-call events are exposed.
+- **Stability:** governed by ADR 024 and `docs/tasks/test-specs/024-ingestion-tool-call-boundary-test-spec.md`.
+- **Required behavior:** content candidates validate source URI, media type, content bytes, retrieval metadata, provenance, and stable correlation ID before executor context. Tool-call candidates validate tool name, JSON arguments, optional target URI, provenance, and stable correlation ID before execution. The broker invokes the configured guard and releases a candidate only for a valid `allow` decision matching the candidate kind and ID. Guard error, timeout, unavailable guard, malformed result, and explicit `block` or `quarantine` decisions never release the candidate.
+
 ### Interface: `loop.RetryingLoop`
 
 ```go

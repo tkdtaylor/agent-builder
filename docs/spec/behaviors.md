@@ -127,6 +127,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Kill errors are joined with the timeout error and returned, but teardown still runs. A fast in-box loop error before the timeout is recorded as `failed`, not `timed-out`. Non-positive timeout values leave the timeout disabled.
 - **References:** `docs/tasks/test-specs/018-wall-clock-kill-test-spec.md`.
 
+### B-014: Review ingestion and tool-call candidates before release
+
+- **Trigger:** Inside-the-box code presents a content or tool-call candidate to the ingestion broker.
+- **Response:** The broker invokes the configured guard for that candidate type. A valid `allow` decision with the same candidate ID and candidate kind makes the candidate releasable through the review `Release` helper. `block` and `quarantine` decisions preserve the guard reason and do not release the candidate.
+- **Side effects:** The broker writes no persistent state and performs no tool execution or web fetch itself. The configured guard may call an external adapter in later tasks.
+- **Failure modes:** Missing guard, guard error, guard timeout, context cancellation, malformed decision outcome, mismatched candidate ID, or mismatched candidate kind produces a fail-closed `block` decision and does not release candidate data.
+- **References:** ADR 024; `docs/tasks/test-specs/024-ingestion-tool-call-boundary-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -164,3 +172,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - The execution-box profile exposes no host home mount, no container-engine socket mount, no privileged mode, and no capability add-back by default.
 - One `Supervisor.Run()` call dispatches at most one task and always tears down a successfully created box exactly once.
 - A configured supervisor timeout records `timed-out`, distinct from ordinary loop failure, and does not skip teardown.
+- Ingestion candidate review fails closed: only a valid matching `allow` releases content or tool-call data.

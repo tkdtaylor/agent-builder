@@ -277,6 +277,63 @@ Err         error                optional executor error preserved for the polic
 - **Lifecycle:** produced by the loop when attempt or verify does not complete successfully.
 - **Relationships:** retry and escalation policy is intentionally absent; the escalation policy consumer decides next action.
 
+### State: Ingestion Boundary
+
+- **Shape:** `internal/ingestion` owns immutable-by-convention value types for web-content candidates, tool-call candidates, guard decisions, and broker reviews. Constructors copy mutable bytes/JSON before returning candidates.
+- **Owner:** inside-the-box producer code constructs candidates before adding web-ingested content to executor context or before executing a tool call. The broker consumes the candidates and a configured `Guard`.
+- **Lifetime:** process-local; no candidate, decision, or review is persisted by this package. Future run-record/audit integration consumes decision metadata separately.
+- **Concurrency rules:** candidate and decision values are pass-by-value. Callers choose whether the configured `Guard` implementation is safe to share across goroutines.
+- **Bounds:** one broker review evaluates exactly one candidate and returns exactly one decision.
+
+#### Value: `ingestion.ContentCandidate`
+
+```
+field          type                  notes
+────────────────────────────────────────────────────────────
+ID             ingestion.CandidateID stable correlation ID, caller-supplied or deterministically derived
+Content        []byte                attacker-reachable content bytes copied at construction
+SourceURI      string                normalized http/https source URI
+MediaType      string                explicit media type; blank input becomes application/octet-stream
+RetrievedAt    time.Time             retrieval timestamp or zero value when unavailable
+Provenance     ingestion.Provenance  task/executor origin metadata
+```
+
+- **Identity:** `ID` joins the content candidate to its guard decision.
+- **Lifecycle:** produced by `NewContentCandidate`; consumed by `Broker.ReviewContent`.
+- **Relationships:** a valid content candidate must be reviewed before release to executor context.
+
+#### Value: `ingestion.ToolCallCandidate`
+
+```
+field          type                  notes
+────────────────────────────────────────────────────────────
+ID             ingestion.CandidateID stable correlation ID, caller-supplied or deterministically derived
+ToolName       string                non-blank requested tool name
+Arguments      json.RawMessage       compact, valid JSON arguments copied at construction
+TargetURI      string                optional normalized http/https target URI
+Provenance     ingestion.Provenance  task/executor origin metadata
+```
+
+- **Identity:** `ID` joins the tool-call candidate to its guard decision.
+- **Lifecycle:** produced by `NewToolCallCandidate`; consumed by `Broker.ReviewToolCall`.
+- **Relationships:** a valid tool-call candidate must be reviewed before execution.
+
+#### Value: `ingestion.Decision`
+
+```
+field          type                       notes
+────────────────────────────────────────────────────────────
+CandidateID    ingestion.CandidateID      candidate being decided
+Kind           ingestion.CandidateKind    content or tool-call
+Outcome        ingestion.DecisionOutcome  allow, block, or quarantine
+Reason         string                     guard/fail-closed reason
+Metadata       map[string]string          guard-specific decision metadata
+```
+
+- **Identity:** `(CandidateID, Kind)` must match the reviewed candidate for the broker to accept the decision.
+- **Lifecycle:** produced by a `Guard` or by the broker's fail-closed path; consumed by review `Release` helpers and future audit/run-record code.
+- **Relationships:** `allow` is the only outcome that releases candidate data. `block` and `quarantine` preserve decision metadata but do not release candidate data.
+
 ### State: Retry Escalation Policy
 
 - **Shape:** `*loop.RetryingLoop` stores a `loop.TaskSource`, current `supervisor.Executor`, `supervisor.Gate`, target worktree path, `loop.StatusWriter`, and `loop.RetryPolicy`.
@@ -398,6 +455,8 @@ run_finished    outcome; error when outcome is failed or timed-out
 - A task status write changes at most one `**Status:**` line. Missing or duplicate status lines fail instead of guessing which bytes are safe to mutate.
 - Agent-loop `OutcomeDone` is possible only after pick, attempt, verify, and advance states, and only with a passing Gate verdict.
 - Agent-loop `OutcomeFail` never contains retry count, retry decision, or escalation target state.
+- Ingestion broker release is possible only after a valid `allow` decision whose candidate ID and kind match the reviewed candidate.
+- Ingestion guard error, timeout, unavailable guard, malformed decision, explicit `block`, and explicit `quarantine` outcomes do not release candidate data.
 - Retry policy `MaxAttempts` is non-negative; negative values fail validation.
 - Retry escalation writes only `needs-human` through the constrained task status-writer seam after exhausted failures.
 - A configured RunRecord is host-side and durable: stream events are written during `RunInside`, the terminal outcome is written, and the file is closed before containment teardown.

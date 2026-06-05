@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-05
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 Define the repo-owned boundary for attacker-reachable web-ingested content and
