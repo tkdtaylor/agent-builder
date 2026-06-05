@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** in progress
+**Status:** active (golangci-lint gate step built + green; pending spec-verifier pass before ✅)
 
 ## Goal
 Add a blocking gate Step that runs `golangci-lint run` in the target worktree and fails on any finding, capturing the linter output into its StepResult.
@@ -28,10 +28,10 @@ Add a blocking gate Step that runs `golangci-lint run` in the target worktree an
 - [x] Blocking tasks complete: 002
 
 ## Acceptance criteria
-- [ ] [REQ-001] The Step invokes `golangci-lint run` against repoPath
-- [ ] [REQ-002] A known lint violation fails the step; a clean repo passes
-- [ ] [REQ-003] Failing StepResult output contains the linter findings
-- [ ] [REQ-004] Tool-absent produces a failed StepResult naming the missing binary
+- [x] [REQ-001] The Step invokes `golangci-lint run` against repoPath
+- [x] [REQ-002] A known lint violation fails the step; a clean repo passes
+- [x] [REQ-003] Failing StepResult output contains the linter findings
+- [x] [REQ-004] Tool-absent produces a failed StepResult naming the missing binary
 
 ## Verification plan
 - **Highest level achievable:** L5 — fixture repo with a known lint violation makes the Step fail; a clean fixture passes; observed via the harness.
@@ -39,6 +39,11 @@ Add a blocking gate Step that runs `golangci-lint run` in the target worktree an
 - **Operator path:** run the gate against a worktree with a deliberate lint issue and observe the failing Verdict + captured findings.
 - **Cross-module state risk:** none (consumes 002 types).
 - **Runtime-visible surface:** captured linter output in StepResult.
+
+## Verification evidence
+
+- **Level 5 — validation harness:** `go test ./internal/gate/... -run TestGolangciLint -count=1` → `ok github.com/tkdtaylor/agent-builder/internal/gate`
+- **Repo checks:** `go test ./...` → `ok github.com/tkdtaylor/agent-builder/internal/gate`; `go build ./...` → success; `env PATH=/tmp/agent-builder-tools:/snap/go/current/bin:$PATH GOMODCACHE=/tmp/agent-builder-gomodcache GOCACHE=/tmp/agent-builder-gocache GOLANGCI_LINT_CACHE=/tmp/agent-builder-golangci-cache make check` → `All checks passed.`
 
 ## Out of scope
 - Native go checks (003)
