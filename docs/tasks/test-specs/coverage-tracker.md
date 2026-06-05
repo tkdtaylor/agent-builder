@@ -13,6 +13,29 @@
 | Task ID | Feature | Spec file | Tests written | Status | Verified by |
 |---------|---------|-----------|---------------|--------|-------------|
 | 001 | Walking skeleton & project setup | 001-walking-skeleton-test-spec.md | ✅ | 🟡 | — (pending spec-verifier) |
+| 002 | Gate orchestrator core + Verdict model | 002-gate-orchestrator-core-test-spec.md | stub | ❌ | — |
+| 003 | Native Go gate steps (build/vet/test/gofmt) | 003-gate-go-checks-test-spec.md | stub | ❌ | — |
+| 004 | golangci-lint gate step | 004-gate-golangci-lint-test-spec.md | stub | ❌ | — |
+| 005 | dep-scan blocking gate step | 005-gate-dep-scan-test-spec.md | stub | ❌ | — |
+| 006 | code-scanner blocking gate step | 006-gate-code-scanner-test-spec.md | stub | ❌ | — |
+| 007 | Fitness F-003: supervisor isolation | 007-fitness-supervisor-isolation-test-spec.md | stub | ❌ | — |
+| 008 | Fitness F-001: no-docker dev-env refs | 008-fitness-no-docker-test-spec.md | stub | ❌ | — |
+| 009 | Fitness F-002: gate is blocking (no skip) | 009-fitness-gate-blocking-test-spec.md | stub | ❌ | — |
+| 010 | Roadmap task-source reader (read-only) | 010-roadmap-task-source-test-spec.md | stub | ❌ | — |
+| 011 | Task status writer (status-only) | 011-task-status-writer-test-spec.md | stub | ❌ | — |
+| 012 | Agent loop state machine | 012-agent-loop-test-spec.md | stub | ❌ | — |
+| 013 | Escalation + retry-N + stop condition | 013-escalation-retry-policy-test-spec.md | stub | ❌ | — |
+| 014 | Podman containment profile | 014-podman-containment-profile-test-spec.md | stub | ❌ | — |
+| 015 | Default-deny egress allowlist | 015-egress-allowlist-test-spec.md | stub | ❌ | — |
+| 016 | Tiered OCI runtime selection seam | 016-tiered-runtime-seam-test-spec.md | stub | ❌ | — |
+| 017 | Supervisor dispatch-one-task lifecycle | 017-supervisor-dispatch-test-spec.md | stub | ❌ | — |
+| 018 | Wall-clock timeout / runaway kill | 018-wall-clock-kill-test-spec.md | stub | ❌ | — |
+| 019 | Run log collection (audit-trail seam) | 019-run-log-collection-test-spec.md | stub | ❌ | — |
+| 020 | exec-sandbox run() adapter seam | 020-exec-sandbox-adapter-seam-test-spec.md | stub | ❌ | — |
+| 021 | sandbox-runtime backing adapter | 021-sandbox-runtime-adapter-test-spec.md | stub | ❌ | — |
+| 022 | Claude Code CLI executor adapter | 022-claude-cli-executor-test-spec.md | stub | ❌ | — |
+| 023 | CLI subcommand surface (run/version/verify) | 023-cli-subcommands-test-spec.md | stub | ❌ | — |
+| 024 | armor on web-ingestion / tool-call path | 024-armor-ingestion-wiring-test-spec.md | stub | ❌ | — |
 
 ## Status key
 
