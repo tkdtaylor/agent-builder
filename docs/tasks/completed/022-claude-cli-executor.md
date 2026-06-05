@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 A concrete `Executor` that drives the Claude Code CLI as a subprocess: hand it the task + worktree, let its own tool-loop run, and return the produced branch as a `Result`.
@@ -22,14 +22,14 @@ A concrete `Executor` that drives the Claude Code CLI as a subprocess: hand it t
 | REQ-003 | Auth token mounted per the accepted token-in-box risk, independently revocable. Token handling documented in `docs/spec/configuration.md` in the same commit. | must have |
 
 ## Readiness gate
-- [ ] Test spec exists in `docs/tasks/test-specs/`
-- [ ] All acceptance criteria have a linked REQ ID
-- [ ] Blocking tasks complete: 001
+- [x] Test spec exists in `docs/tasks/test-specs/`
+- [x] All acceptance criteria have a linked REQ ID
+- [x] Blocking tasks complete: 001
 
 ## Acceptance criteria
-- [ ] [REQ-001] `Executor.Run(Task)` invokes the Claude Code CLI subprocess against the task's worktree and lets its tool-loop run to completion.
-- [ ] [REQ-002] The branch the CLI produced is captured into `Result.Branch`; `Result.OK` reflects subprocess success.
-- [ ] [REQ-003] The auth token is supplied to the subprocess as an independently-revocable credential; token handling is recorded in `docs/spec/configuration.md`.
+- [x] [REQ-001] `Executor.Run(Task)` invokes the Claude Code CLI subprocess against the task's worktree and lets its tool-loop run to completion.
+- [x] [REQ-002] The branch the CLI produced is captured into `Result.Branch`; `Result.OK` reflects subprocess success.
+- [x] [REQ-003] The auth token is supplied to the subprocess as an independently-revocable credential; token handling is recorded in `docs/spec/configuration.md`.
 
 ## Verification plan
 - **Highest level achievable:** L6 — run the executor against a trivial fixture task; observe a branch produced by the CLI subprocess. Quote the produced branch name.

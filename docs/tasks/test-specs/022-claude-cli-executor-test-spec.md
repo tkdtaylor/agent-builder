@@ -1,6 +1,6 @@
 # Test Spec 022: Claude Code CLI executor adapter
 
-**Linked task:** [`docs/tasks/backlog/022-claude-cli-executor.md`](../backlog/022-claude-cli-executor.md)
+**Linked task:** [`docs/tasks/completed/022-claude-cli-executor.md`](../completed/022-claude-cli-executor.md)
 **Written:** 2026-06-04
 **Status:** complete — implementation must satisfy these cases before the task can move to code-merged
 
@@ -14,7 +14,7 @@
 ## Test cases
 ### TC-001: Run invokes the CLI subprocess against the worktree
 - **Requirement:** REQ-001
-- **Input:** `executor.ClaudeCLI` configured with a fake CLI binary path, a temporary task worktree, and `supervisor.Task{ID:"022", Repo:"agent-builder", Spec:"docs/tasks/backlog/022-claude-cli-executor.md"}`
+- **Input:** `executor.ClaudeCLI` configured with a fake CLI binary path, a temporary task worktree, and `supervisor.Task{ID:"022", Repo:"agent-builder", Spec:"docs/tasks/completed/022-claude-cli-executor.md"}`
 - **Expected output:** the fake CLI receives an argv containing the configured prompt flag/input and runs with its working directory set to the configured worktree. The test must assert the fake observed the worktree path, task ID, repo, and task spec path.
 - **Edge cases:** blank worktree rejected before subprocess start; blank CLI path rejected before subprocess start.
 

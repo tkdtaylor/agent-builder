@@ -65,6 +65,7 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `EXEC_BOX_EGRESS_PROBE_ALLOW_HOST` | `host:port` | `api.github.com:443` | no | Allowlisted probe target expected to connect during `--egress-probe` |
 | `EXEC_BOX_EGRESS_PROBE_DENY_HOST` | `host:port` | `example.com:443` | no | Non-allowlisted probe target expected to be blocked during `--egress-probe` |
 | `EXEC_BOX_EGRESS_PROBE_DENY_IP` | `host:port` IP literal | `1.1.1.1:443` | no | Direct-IP probe target expected to be blocked during `--egress-probe` |
+| `ANTHROPIC_API_KEY` | secret string | none | yes for `executor.ClaudeCLI` | Independently revocable Claude Code CLI credential injected into the subprocess environment. The executor fails before subprocess start when absent. |
 
 **Hook profile env vars** (consumed by `.claude/scripts/`, not the application itself):
 - `CLAUDE_HOOK_PROFILE` — `minimal` / `standard` / `strict` (default `standard`)
@@ -84,6 +85,9 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 |-----------|------|---------|----------|--------|
 | `loop.RetryPolicy.MaxAttempts` | non-negative integer | none | yes | Bounds Executor attempts for one picked task. `0` means mark `needs-human` immediately without running Executor or Gate; positive values permit exactly that many attempts before exhausted failures escalate. |
 | `supervisor.WithRunTimeout` | `time.Duration` | disabled (`0`) | no | Bounds the wall-clock duration of one in-box `Supervisor.Run` loop. Positive values arm a deadline; expiry kills the containment box, tears it down, and records the terminal outcome as `timed-out`. Non-positive values preserve the existing no-timeout dispatch behavior. |
+| `executor.ClaudeCLIConfig.CLIPath` | string | `claude` | no | Path/name of the Claude Code CLI binary to execute. Tests may point this at a fake CLI subprocess. |
+| `executor.ClaudeCLIConfig.Worktree` | path string | none | yes | Target task worktree used as the Claude CLI subprocess working directory. Blank values fail before subprocess start. |
+| `executor.ClaudeCLIConfig.AuthToken` | secret string | none | yes | Explicit token value supplied to the executor. Production callers normally pass `ANTHROPIC_API_KEY` via `NewClaudeCLIFromEnv`; tests can provide a fake token directly. |
 
 ---
 
@@ -93,7 +97,7 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 
 | Secret | Source | Used for |
 |--------|--------|----------|
-| `ANTHROPIC_API_KEY` | Host environment or sandbox secret store | Claude API access in the executor environment |
+| `ANTHROPIC_API_KEY` | Host environment or sandbox secret store | Claude Code CLI executor auth. The value must be independently revocable and is injected only as a subprocess environment variable. The executor does not read arbitrary host-home credential files by default; it runs the CLI with temporary `HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME` directories and does not log token values. |
 | `GIT_TOKEN` | Host environment or sandbox secret store | Pushing commits from the executor environment |
 | | | |
 

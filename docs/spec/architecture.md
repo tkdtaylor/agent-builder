@@ -33,6 +33,7 @@ When the structure changes, both files update in the same commit. The tables her
 | Name | Type | Description | Owner |
 |------|------|-------------|-------|
 | agent-builder | In-scope | | This team |
+| Claude Code CLI | External CLI | Cloud executor harness/model subprocess invoked against a task worktree | Anthropic |
 | code-scanner | External CLI | Malware/backdoor/credential-harvest scanner invoked as a blocking gate step | Tooling environment |
 
 ---
@@ -61,6 +62,7 @@ When the structure changes, both files update in the same commit. The tables her
 |-----------|-----------|-------------|----------------|------------|
 | agent-builder CLI | Supervisor | `internal/supervisor` | Trusted outside-the-box dispatcher that creates one containment box, starts one in-box loop, streams run output to a durable run-record when configured, logs lifecycle events, and tears down deterministically | Verification Gate model; exec-sandbox Run Adapter |
 | agent-builder CLI | Agent Loop | `internal/loop` | Drives one inside-the-box pick -> attempt -> verify cycle and applies the bounded retry/escalation policy around that policy-free outcome | Supervisor; Task Source; Task Status Writer; Verification Gate |
+| agent-builder CLI | Claude CLI Executor | `internal/executor` | Concrete `supervisor.Executor` adapter that invokes Claude Code CLI in a task worktree and captures the produced branch | Supervisor; Claude Code CLI |
 | agent-builder CLI | exec-sandbox Run Adapter | `internal/sandbox` | Typed contained-command run seam plus deterministic fake backend | |
 | agent-builder CLI | Verification Gate | `internal/gate` | Runs ordered blocking verification Steps and returns structured Verdicts | code-scanner |
 | agent-builder CLI | Task Source | `internal/tasksource` | Reads roadmap/task metadata and selects the next ready task without writing task state | Supervisor Task model |

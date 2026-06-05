@@ -107,6 +107,40 @@ Spec        string    path to the task file the executor must satisfy
 - **Lifecycle:** produced by task-source parsing and later consumed by the supervisor/agent loop and executor seam.
 - **Relationships:** embedded in `tasksource.Candidate`.
 
+### State: Claude CLI Executor
+
+- **Shape:** `*executor.ClaudeCLI` stores a Claude CLI executable path, one target worktree path, and one in-memory auth token value supplied at construction time.
+- **Owner:** callers construct it with `executor.NewClaudeCLI` or `executor.NewClaudeCLIFromEnv` and pass it through the `supervisor.Executor` seam.
+- **Lifetime:** process-local; no executor state is persisted. Each `Run(Task)` call creates an executor-owned temporary directory for the branch-output file and temporary CLI home/XDG directories, then removes it before returning.
+- **Concurrency rules:** no internal synchronization is provided. Callers should give each concurrent task attempt its own executor instance or otherwise ensure the configured worktree is not shared unsafely.
+- **Bounds:** one `Run(Task)` call starts at most one Claude CLI subprocess.
+
+#### Value: `executor.ClaudeCLIConfig`
+
+```
+field       type      notes
+────────────────────────────────────────────────────────────
+CLIPath     string    Claude Code CLI path/name; defaults to `claude` when blank
+Worktree    string    target task worktree used as subprocess working directory
+AuthToken   string    secret supplied as `ANTHROPIC_API_KEY` in subprocess env
+```
+
+- **Identity:** configuration is scoped to one executor instance.
+- **Lifecycle:** produced by caller configuration, copied into `*executor.ClaudeCLI`, and not persisted.
+- **Relationships:** `AuthToken` corresponds to the `ANTHROPIC_API_KEY` secret documented in `configuration.md`.
+
+#### Value: `supervisor.Result` from `executor.ClaudeCLI`
+
+```
+field       type      notes
+────────────────────────────────────────────────────────────
+Branch      string    non-blank branch name read from the executor-owned branch-output file
+OK          bool      true only after successful subprocess exit and branch capture
+```
+
+- **Lifecycle:** produced by `(*executor.ClaudeCLI).Run` and consumed by the agent loop.
+- **Relationships:** missing, blank, or unavailable branch output produces `OK == false` plus an error, so the loop treats the attempt as failed before Gate verification.
+
 #### Value: `tasksource.Candidate`
 
 ```

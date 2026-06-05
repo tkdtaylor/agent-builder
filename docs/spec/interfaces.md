@@ -65,6 +65,7 @@ There is no `verify` flag that skips, bypasses, or weakens the Gate. The Gate is
 | Dependency | What we call | Library / version | Failure mode |
 |------------|-------------|-------------------|--------------|
 | Podman | `podman build`, `podman pod create`, `podman create`, `podman inspect`, `podman start`, `podman run`, `podman logs`, `podman pod rm`, and `podman rm` from `containment/execution-box/run.sh` | process `PATH`; rootless Podman for the current non-root user | Missing binary, failed `podman info`, failed image build, absent quota fields, egress sidecar startup failure, or failed in-box probe exits non-zero and names the failing check |
+| Claude Code CLI | `claude -p <prompt>` in the configured task worktree | process `PATH` or `executor.ClaudeCLIConfig.CLIPath`; auth supplied through `ANTHROPIC_API_KEY` | Missing binary, blank config, missing token, subprocess non-zero exit, or missing/blank produced branch file fails the executor attempt |
 | Go toolchain | `go build ./...`, `go vet ./...`, `go test ./...` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `go` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
 | gofmt | `gofmt -l .` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `gofmt` fails the Step; non-zero exit fails the Step; non-empty output fails the Step as formatting drift |
 | golangci-lint | `golangci-lint run` in the target worktree | process `PATH`; version supplied by the runtime environment | Missing `golangci-lint` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
@@ -105,6 +106,37 @@ type Gate interface {
 - **Consumers:** supervisor/agent-loop code that needs the machine-checkable definition of done.
 - **Stability:** governed by ADR 002.
 - **Required behavior:** `Verify` has no skip or bypass parameter. It returns OK only when every configured blocking step passes.
+
+### Interface: `supervisor.Executor`
+
+```go
+type Executor interface {
+	Run(t Task) (Result, error)
+}
+```
+
+- **Implementors:** `*executor.ClaudeCLI` and test fakes.
+- **Consumers:** `loop.Loop` and retry/escalation policy code.
+- **Stability:** governed by `docs/tasks/test-specs/022-claude-cli-executor-test-spec.md` and updated with any task that changes executor inputs, branch output, or auth handling.
+- **Required behavior:** `Run` attempts exactly one task in the configured worktree and returns the produced branch in `Result.Branch`. `Result.OK` is true only when the subprocess exits successfully and reports a non-blank branch. Executor errors fail the attempt before Gate verification; callers decide retry/escalation.
+
+### Concrete executor: `executor.ClaudeCLI`
+
+```go
+type ClaudeCLIConfig struct {
+	CLIPath   string
+	Worktree  string
+	AuthToken string
+}
+
+func NewClaudeCLI(config ClaudeCLIConfig) *ClaudeCLI
+func NewClaudeCLIFromEnv(worktree string) *ClaudeCLI
+func (e *ClaudeCLI) Run(task supervisor.Task) (supervisor.Result, error)
+```
+
+- **Outbound call:** `claude -p <prompt>` with `cmd.Dir` set to `ClaudeCLIConfig.Worktree`.
+- **Branch contract:** the prompt names an executor-owned temp file where the CLI must write the produced branch. The executor trims that file and copies it into `supervisor.Result.Branch`.
+- **Auth contract:** the only default credential source is `ANTHROPIC_API_KEY`; the executor injects it into subprocess env, replaces host `HOME`/XDG dirs with temp dirs, and redacts the token from subprocess failure output.
 
 ### Interface: supervisor dispatch lifecycle seams
 

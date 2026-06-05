@@ -23,9 +23,11 @@ C4Context
 
     Person(user, "User", "The person who interacts with the system")
     System(system, "agent-builder", "What this system does in one line")
+    System_Ext(claudeCLI, "Claude Code CLI", "Cloud executor harness/model subprocess")
     System_Ext(codeScanner, "code-scanner", "Malware/backdoor scanner used as a blocking gate step")
 
     Rel(user, system, "Uses")
+    Rel(system, claudeCLI, "Runs", "process PATH")
     Rel(system, codeScanner, "Runs", "process PATH")
 ```
 
@@ -63,11 +65,13 @@ C4Component
     title Component view of agent-builder CLI
 
     System_Ext(codeScanner, "code-scanner", "Malware/backdoor scanner CLI")
+    System_Ext(claudeCLI, "Claude Code CLI", "Cloud executor harness/model subprocess")
 
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
         Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher, lifecycle logger, run-record writer, and stable seams")
         Component(agentloop, "Agent Loop", "internal/loop", "Inside-the-box pick-attempt-verify cycle plus bounded retry policy")
+        Component(executor, "Claude CLI Executor", "internal/executor", "Concrete supervisor.Executor adapter")
         Component(sandbox, "exec-sandbox Run Adapter", "internal/sandbox", "Typed contained-command seam and test fake")
         Component(tasksource, "Task Source", "internal/tasksource", "Read-only roadmap/task parser and next-task selector")
         Component(statuswriter, "Task Status Writer", "internal/tasksource", "Constrained task status mutation")
@@ -78,6 +82,8 @@ C4Component
     Rel(supervisor, sandbox, "Stores Runner / box seam")
     Rel(supervisor, gate, "Consumes Verdict model / Gate seam")
     Rel(agentloop, supervisor, "Consumes Task / Executor / Gate seams")
+    Rel(executor, supervisor, "Implements Executor seam")
+    Rel(executor, claudeCLI, "Invokes with task prompt")
     Rel(agentloop, tasksource, "Picks next task")
     Rel(agentloop, statuswriter, "Marks needs-human after exhausted retries")
     Rel(agentloop, gate, "Verifies target worktree")
@@ -90,6 +96,7 @@ C4Component
 - ADR 012 fixes the agent loop shape: pick -> attempt -> verify -> advance states, done/idle/fail outcomes, and policy-free fail reporting.
 - ADR 013 fixes the retry escalation policy: non-negative `MaxAttempts`, mandatory stop, status-writer `needs-human` marking, and substitutable escalation hook.
 - ADR 020 fixes the exec-sandbox run adapter seam: command/worktree/typed limits in, result/exit/error out.
+- Task 022 fixes the Claude CLI executor adapter: `claude -p` runs in the task worktree, receives `ANTHROPIC_API_KEY` through env, and reports the produced branch through an executor-owned temp file.
 - Task 017 fixes the supervisor dispatch lifecycle: create one box, run one in-box loop, and tear the box down exactly once.
 - Task 019 fixes the run-record seam: command/stdout/stderr events stream to host-side NDJSON and close before box teardown.
 - The supervisor remains trusted and dumb; the gate contains verification orchestration only, not executor/LLM/web logic.
