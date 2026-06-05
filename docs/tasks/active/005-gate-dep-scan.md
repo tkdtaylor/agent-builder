@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-04
-**Status:** active (dep-scan gate step built + green; pending spec-verifier pass before ✅)
+**Status:** active (verified L5; pending merge)
 
 ## Goal
 Add a blocking gate Step that invokes dep-scan (`gods` for Go modules) as a supply-chain CVE gate, failing on any high-or-above severity finding, with tool-absent treated as a hard failure rather than a silent skip.
@@ -44,6 +44,7 @@ Add a blocking gate Step that invokes dep-scan (`gods` for Go modules) as a supp
 
 - **Level 5 — validation harness:** `go test ./internal/gate/... -run TestDepScan -count=1` → `ok github.com/tkdtaylor/agent-builder/internal/gate`
 - **Repo checks:** `go test ./...` → `ok github.com/tkdtaylor/agent-builder/internal/gate`; `go build ./...` → success; `env PATH=/tmp/agent-builder-tools:/snap/go/current/bin:$PATH GOMODCACHE=/tmp/agent-builder-gomodcache GOCACHE=/tmp/agent-builder-gocache GOLANGCI_LINT_CACHE=/tmp/agent-builder-golangci-cache make check` → `All checks passed.`
+- **Spec-verifier:** read-only worker verifier APPROVE — all TC/REQ assertions satisfied; docs/spec behavior, interface, and data-model updates aligned.
 
 ## Out of scope
 - code-scanner step (006)
