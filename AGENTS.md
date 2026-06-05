@@ -26,6 +26,48 @@ Before changing code or docs:
   as automatically available Codex agents. If a workflow depends on one, mirror
   the intent manually in the current task.
 
+## Codex Short Commands
+
+Use these short phrases as automatic repo-local workflows. The user should not
+need to paste the long Claude agent prompts.
+
+- `work task NNN`, `start task NNN`, `continue task NNN`, or
+  `use task-executor on task NNN`: locate the matching task file under
+  `docs/tasks/{backlog,active,completed}/NNN-*.md` and the paired
+  `docs/tasks/test-specs/NNN-*-test-spec.md`; read
+  `.claude/agents/task-executor.md`; then follow that workflow. Start with
+  `scripts/start-task.sh <NNN> <slug>` unless already in the correct isolated
+  task branch/worktree.
+- `verify task NNN`, `spec verify NNN`, or `use spec-verifier on task NNN`:
+  read `.claude/agents/spec-verifier.md` and perform its assertion-by-assertion
+  gate against the task, test spec, diff, and test output. Do not edit files.
+- `review task NNN`, `review current diff`, or `/code-review`: read
+  `.claude/agents/code-reviewer.md` and respond in code-review mode with
+  findings first.
+- `architect task NNN`, `architecture review`, or `drift audit`: read
+  `.claude/agents/architect.md` and apply that role to the requested scope.
+- `security audit task NNN` or `security review`: read
+  `.claude/agents/security-auditor.md` and apply that role to the requested
+  scope.
+
+When the user explicitly asks to delegate, run parallel agents, or "use" one of
+the named executor/reviewer agents as a subagent, spawn Codex subagents using
+the matching `.claude/agents/*.md` file as the role prompt. Otherwise, execute
+the workflow locally in the current Codex session.
+
+For multiple tasks with dependencies, act as the parent coordinator:
+
+- Parse the task list into dependency levels before spawning agents.
+- Spawn Codex subagents only for tasks whose prerequisites are already complete
+  and whose expected write scopes do not overlap.
+- Give every code-modifying subagent the matching `.claude/agents/task-executor.md`
+  workflow, its task path, its test-spec path, and a fail-fast instruction to
+  prove it is in an isolated branch/worktree before editing.
+- Keep dependent tasks queued until their prerequisite agents finish and their
+  results are reviewed.
+- After parallel code agents finish, audit isolation and integration before
+  starting the next dependency level.
+
 ## Boundaries To Preserve
 
 - Test specs come before implementation.
