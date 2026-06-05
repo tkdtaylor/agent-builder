@@ -39,6 +39,13 @@
 | 025 | armor guard adapter | 025-armor-guard-adapter-test-spec.md | ✅ | ✅ | spec-verifier APPROVE + L5: `go test -count=1 ./internal/armor/... ./tests/armor/...` -> `ok github.com/tkdtaylor/agent-builder/tests/armor`; `env PATH=/tmp/agent-builder-tools:$PATH make check` -> `All checks passed.` |
 | 026 | armor on web-ingestion / tool-call path | 026-armor-ingestion-wiring-test-spec.md | ✅ | 🟡 | L5: `go test -count=1 -v ./tests/executorharness -run TestArmorGuardedHarnessProducerConsumerTraceCoversLiveExecutorPath` -> `TC-005 armor producer-consumer trace:`; pending spec-verifier before ✅ |
 | 027 | Executor ingestion/tool-call harness | 027-executor-ingestion-tool-harness-test-spec.md | ✅ | 🟡 | L5: `go test -count=1 -v ./tests/executorharness -run TestHarnessProducerConsumerTraceCoversLivePath` -> `TC-005 producer-consumer trace:`; pending spec-verifier before ✅ |
+| 028 | Default run wiring | 028-default-run-wiring-test-spec.md | ✅ | ❌ | Not started |
+| 029 | Claude executor ingestion control | 029-claude-ingestion-control-test-spec.md | ✅ | ❌ | Not started |
+| 030 | Runtime isolation evidence | 030-runtime-isolation-evidence-test-spec.md | ✅ | ❌ | Not started |
+| 031 | Verification ledger cleanup | 031-verification-ledger-cleanup-test-spec.md | ✅ | ❌ | Not started |
+| 032 | Phase 0 end-to-end acceptance | 032-phase0-end-to-end-acceptance-test-spec.md | ✅ | ❌ | Not started |
+| 033 | Execution-box Gate toolchain | 033-execution-box-gate-toolchain-test-spec.md | ✅ | ❌ | Not started |
+| 034 | Branch and PR publication | 034-branch-pr-publication-test-spec.md | ✅ | ❌ | Not started |
 
 ## Status key
 
