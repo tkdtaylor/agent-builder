@@ -60,6 +60,7 @@ Global flags:
 
 | Dependency | What we call | Library / version | Failure mode |
 |------------|-------------|-------------------|--------------|
+| Podman | `podman build`, `podman create`, `podman inspect`, `podman start`, `podman run`, and `podman rm` from `containment/execution-box/run.sh` | process `PATH`; rootless Podman for the current non-root user | Missing binary, failed `podman info`, failed image build, absent quota fields, or failed in-box probe exits non-zero and names the failing check |
 | Go toolchain | `go build ./...`, `go vet ./...`, `go test ./...` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `go` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
 | gofmt | `gofmt -l .` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `gofmt` fails the Step; non-zero exit fails the Step; non-empty output fails the Step as formatting drift |
 | golangci-lint | `golangci-lint run` in the target worktree | process `PATH`; version supplied by the runtime environment | Missing `golangci-lint` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
@@ -162,3 +163,15 @@ func (l *Loop) RunOnce() (Outcome, error)
 
 - Gate checks are extended by registering additional `gate.Step` implementations with `gate.New(steps ...Step)`. Registration rejects nil, blank-name, and duplicate-name steps.
 - Task-source input locations are supplied by constructing `tasksource.Source` with a different `fs.FS`, roadmap path, or task directory list.
+
+### Executable artifact: execution-box launcher
+
+```bash
+containment/execution-box/run.sh [--worktree PATH] [--probe] [--name NAME] [--image IMAGE] [-- COMMAND...]
+```
+
+- `--worktree PATH` mounts the supplied repo worktree at `/work`; default is the current directory.
+- `--probe` runs the containment probe and prints `TC-001` through `TC-005` PASS/FAIL output plus host-side quota inspection for `TC-003`.
+- `--name NAME` sets the temporary container-name prefix.
+- `--image IMAGE` overrides the local image tag; `EXEC_BOX_IMAGE` provides the default override.
+- `COMMAND...` runs inside `/work`; when omitted, the launcher starts `/bin/sh`.

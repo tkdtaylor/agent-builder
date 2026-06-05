@@ -43,9 +43,11 @@ C4Container
 
     System_Boundary(boundary, "agent-builder") {
         Container(cli, "agent-builder CLI", "Go", "Entrypoint process for the autonomous builder scaffold")
+        Container(execBox, "execution-box profile", "Rootless Podman / OCI image", "Product containment artifact for one target repo worktree")
     }
 
     Rel(operator, cli, "Runs")
+    Rel(operator, execBox, "Runs probe")
 ```
 
 ---
@@ -82,6 +84,7 @@ C4Component
 - ADR 012 fixes the agent loop shape: pick -> attempt -> verify -> advance states, done/idle/fail outcomes, and policy-free fail reporting.
 - The supervisor remains trusted and dumb; the gate contains verification orchestration only, not executor/LLM/web logic.
 - The task source is read-only and only selects tasks; task status mutation is a separate component.
+- ADR 014 defines the execution-box profile artifact; supervisor wiring to launch it is deferred to the dispatch task.
 
 ---
 

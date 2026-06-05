@@ -13,28 +13,14 @@ Not in this file:
 
 ## Configuration files
 
-### File: <name> (e.g. `config.toml`, `orb.toml`, `app.yaml`)
+### File: `containment/execution-box/Containerfile`
 
-- **Location:** absolute or relative path the system looks for, search order if multiple
-- **Format:** TOML / YAML / JSON / .env
-- **Required vs optional:** what happens if the file is missing
-- **Reload behavior:** loaded once at startup vs. watched for changes
+- **Location:** `containment/execution-box/Containerfile`
+- **Format:** OCI image build file consumed by Podman
+- **Required vs optional:** required for the execution-box launcher
+- **Reload behavior:** read when `containment/execution-box/run.sh` builds the local execution-box image
 
-#### Schema
-
-| Key | Type | Default | Required | Effect |
-|-----|------|---------|----------|--------|
-| `section.key` | string | `"value"` | no | what this changes |
-| | | | | |
-
-#### Example
-
-```toml
-[section]
-key = "value"
-```
-
-> Add one section per config file. For complex schemas, paste the canonical config struct definition (e.g. a Pydantic model, a Rust struct with serde derives) so this stays the source of truth.
+The image supplies the Go toolchain, `/work`, `/scratch`, and the in-box probe binary. Runtime security and quota settings live in the launcher, not in the image file, because they are host/container run arguments.
 
 ---
 
@@ -44,8 +30,13 @@ key = "value"
 
 | Variable | Type | Default | Required | Effect |
 |----------|------|---------|----------|--------|
-| `EXAMPLE_VAR` | string | — | yes | what this controls |
-| | | | | |
+| `EXEC_BOX_IMAGE` | string | `localhost/agent-builder/execution-box:014` | no | Image tag built and run by the execution-box launcher |
+| `EXEC_BOX_CPUS` | number/string accepted by Podman | `2` | no | CPU quota passed as `--cpus` |
+| `EXEC_BOX_MEMORY` | size string | `2g` | no | Memory quota passed as `--memory` |
+| `EXEC_BOX_PIDS_LIMIT` | integer | `256` | no | PID quota passed as `--pids-limit` |
+| `EXEC_BOX_SCRATCH_SIZE` | size string | `512m` | no | Size of tmpfs mounted at `/scratch` |
+| `EXEC_BOX_SHM_SIZE` | size string | `64m` | no | Shared-memory size passed as `--shm-size` |
+| `EXEC_BOX_STORAGE_SIZE` | size string | `4G` | no | Overlay storage size passed as `--storage-opt size=...` |
 
 **Hook profile env vars** (consumed by `.claude/scripts/`, not the application itself):
 - `CLAUDE_HOOK_PROFILE` — `minimal` / `standard` / `strict` (default `standard`)
@@ -79,18 +70,14 @@ key = "value"
 
 | Aspect | Value | Notes |
 |--------|-------|-------|
-| Container image | | |
-| Ports exposed | | |
-| Volumes / mounts | | |
-| Resource floor (CPU / RAM / disk) | | |
+| Container image | `localhost/agent-builder/execution-box:014` by default | Built from `containment/execution-box/Containerfile`; override with `EXEC_BOX_IMAGE` |
+| Ports exposed | none | Task 015 owns egress allowlist behavior; this profile exposes no inbound ports |
+| Volumes / mounts | `/work` bind mount from the supplied worktree; `/scratch` tmpfs | Rootfs is read-only; host home and container-engine sockets are not mounted |
+| Resource floor (CPU / RAM / disk) | `2` CPU / `2g` memory / `4G` overlay storage by default | PID limit `256`, shared memory `64m`, scratch tmpfs `512m` |
+| Runtime user/caps | current non-root host uid/gid through `--userns=keep-id`; `--cap-drop=all` | No default capability add-backs |
 
 ---
 
 ## Defaults policy
 
-> The rule for what constitutes a sensible default. Examples:
->
-> - "Defaults are safe — never start with destructive behavior enabled by default."
-> - "Defaults match production — local dev should look like prod unless explicitly overridden."
->
-> One paragraph is enough. This is the principle that adjudicates "what should the default be?" arguments.
+Defaults are safe and bounded. The execution-box profile starts from read-only, non-root, no-new-privileges, dropped capabilities, no host-home or container-engine socket mounts, and explicit resource quotas; overrides may tune quota sizes but must not weaken those containment guarantees without an ADR.

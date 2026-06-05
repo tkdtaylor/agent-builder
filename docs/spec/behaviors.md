@@ -95,6 +95,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** With no ready task, the loop returns an `idle` outcome after `pick` and calls neither Executor nor Gate. A task-source error is returned before attempt. An Executor error, Executor unsuccessful result, or failing Gate verdict returns a `fail` outcome with diagnostics and no retry count, retry decision, or escalation target.
 - **References:** ADR 012; `docs/tasks/test-specs/012-agent-loop-test-spec.md`.
 
+### B-010: Launch the execution-box containment profile with a probeable contract
+
+- **Trigger:** An operator invokes `containment/execution-box/run.sh` with a target worktree, optionally using `--probe`.
+- **Response:** The launcher refuses root execution, verifies rootless Podman is available for the current user, builds the execution-box image, and starts the worktree inside a container with a read-only root filesystem, a writable `/work` bind, tmpfs `/scratch`, non-root uid/gid, all capabilities dropped, no new privileges, and explicit CPU, memory, PID, shared-memory, tmpfs, and overlay storage limits.
+- **Side effects:** The launcher builds or refreshes the local execution-box image tag, creates a temporary labeled container for probe runs, writes probe files only inside `/work/.execution-box-probe` and `/scratch`, and removes probe containers on exit.
+- **Failure modes:** Missing Podman, failed `podman info`, root invocation, missing worktree, absent quota fields, or any failed in-box probe exits non-zero and prints the failing TC marker. Static tests cover the launcher contract; only a successful rootless Podman probe proves runtime containment.
+- **References:** ADR 014; `docs/tasks/test-specs/014-podman-containment-profile-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -128,3 +136,4 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - Task selection is read-only; writing task status is handled by a separate status-writer component.
 - The task status writer has no content-patch or prose-editing API; its only mutation path is task ID plus constrained status marker.
 - The agent loop reports failures without deciding retry count, escalation target, or mandatory stop condition.
+- The execution-box profile exposes no host home mount, no container-engine socket mount, no privileged mode, and no capability add-back by default.
