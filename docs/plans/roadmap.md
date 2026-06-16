@@ -1,7 +1,7 @@
 # Roadmap
 
 **Project:** agent-builder
-**Last updated:** 2026-06-05
+**Last updated:** 2026-06-16
 
 Derived from `autonomous-builder.md` §2, §8. This roadmap doubles as the agent's own work queue once it runs — but during bootstrap it is built by hand (supervised).
 
@@ -9,7 +9,7 @@ Derived from `autonomous-builder.md` §2, §8. This roadmap doubles as the agent
 
 Goal: a runnable orchestrator that can take one task, route it to one executor, run the verification gate, and branch+PR — all inside rented isolation. This is the minimum to "flip the switch."
 
-Acceptance status: Phase 0 is accepted at fake-provider L5 by the Task 032 end-to-end harness. Real Podman, `runsc`, real `srt`, real Claude, and real PR publication remain pending L6/operator evidence; local evidence still names Podman and `srt` blockers rather than implying live runtime acceptance.
+Acceptance status: Phase 0 is accepted at fake-provider L5 by the Task 032 end-to-end harness. Real Podman, `runsc`, real Claude, and real PR publication remain pending L6/operator evidence; local evidence still names the Podman/`runsc` blockers rather than implying live runtime acceptance. Note: `srt` (`@anthropic-ai/sandbox-runtime`) backed the Phase 0 run path as rented isolation but has been **removed** from the run pipeline in Phase 1 (ADR 021); it is historical for the run backend and is no longer a pending runtime — see the Phase 1 acceptance note below.
 
 | # | Deliverable | Notes |
 |---|-------------|-------|
@@ -23,6 +23,11 @@ Acceptance status: Phase 0 is accepted at fake-provider L5 by the Task 032 end-t
 ## Phase 1 — First block: exec-sandbox v0
 
 The agent's **first real task**. Build exec-sandbox v0 behind the adapter seam, then swap the rented isolation for it. Resolves the chicken-and-egg.
+
+Acceptance status: Phase 1 is accepted at **fake-provider L5** by the Task 037 end-to-end harness. `agent-builder run` now dispatches through the repo-owned rootless **Podman** execution-box containment (`internal/sandbox/podman` behind the `sandbox.Runner` seam) instead of the rented `@anthropic-ai/sandbox-runtime` (`srt`) backend, which is **removed** from the run pipeline (ADR 021). The L5 harness drives the real `agent-builder` binary with a fake Podman launcher (`AGENT_BUILDER_EXEC_BOX_LAUNCHER`), fake Claude executor, a Gate-passing fixture worktree, and fake git/gh publication, asserting the run completes, the run record carries `containment=podman` launcher evidence, and zero `srt`/`sandbox-runtime`/`AGENT_BUILDER_SANDBOX_RUNTIME` references appear anywhere in stdout, stderr, or the run record.
+
+- Harness command: `go test -count=1 -v ./tests/e2e -run TestPhase1EndToEndAcceptance` → `TC-037-01 Phase 1 accepted: task selected, Podman containment used, no srt invocation, run record clean`.
+- Outstanding L6 blockers: live Podman with the `runsc` (gVisor) OCI runtime and a provisioned execution-box Gate-toolchain directory. The live harness `AGENT_BUILDER_LIVE_PODMAN=1 go test -count=1 -v ./tests/e2e -run TestPhase1LivePodman` skips when Podman/`runsc` are unavailable and fails (configuration error) when the Gate-toolchain directory is absent; on the current host Podman is installed but `runsc` and the Gate-toolchain directory are not provisioned, so L6 observation remains pending.
 
 ## Phase 2+ — Remaining blocks (self-leveraging order)
 

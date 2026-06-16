@@ -143,6 +143,11 @@ Fixture task.
 		roadmap := readFile(t, filepath.Join(root, "docs/plans/roadmap.md"))
 		spec := readFile(t, filepath.Join(root, "docs/spec/SPEC.md"))
 
+		// After the Phase 1 Podman swap (ADR 021, task 036), srt is no longer
+		// the run-path runtime — it is removed/historical, not pending L6
+		// evidence. The honest doc state names Podman as the containment
+		// backend and labels acceptance at fake-provider L5. The phrasing must
+		// not regress to implying srt is still a pending runtime blocker.
 		for label, text := range map[string]string{
 			"coverage tracker": tracker,
 			"roadmap":          roadmap,
@@ -151,8 +156,22 @@ Fixture task.
 			if !strings.Contains(text, "fake-provider L5") {
 				t.Fatalf("TC-005 %s does not label fake-provider L5 evidence", label)
 			}
-			if !strings.Contains(text, "Podman") || !strings.Contains(text, "srt") {
-				t.Fatalf("TC-005 %s does not name pending real runtime evidence", label)
+			if !strings.Contains(text, "Podman") {
+				t.Fatalf("TC-005 %s does not name Podman as the containment backend", label)
+			}
+		}
+		// The roadmap and SPEC must frame srt as removed (Phase 1 reality),
+		// not as a pending runtime the run path still depends on.
+		for label, text := range map[string]string{
+			"roadmap": roadmap,
+			"SPEC":    spec,
+		} {
+			if !strings.Contains(text, "srt") {
+				continue
+			}
+			lowered := strings.ToLower(text)
+			if !strings.Contains(lowered, "removed") && !strings.Contains(lowered, "historical") {
+				t.Fatalf("TC-005 %s mentions srt without framing it as removed/historical for the Phase 1 run path", label)
 			}
 		}
 	})
