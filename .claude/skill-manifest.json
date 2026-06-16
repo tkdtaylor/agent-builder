@@ -187,6 +187,26 @@
         "template": "assets/templates/tech/.claude/commands/backlog-autopilot-parallel.md",
         "installed_hash": "32b2deb82257ecea68495d0abd8485096a4b7ef0d2f9a6c954a7fd2cceb705ed",
         "template_hash": "32b2deb82257ecea68495d0abd8485096a4b7ef0d2f9a6c954a7fd2cceb705ed"
+      },
+      ".claude/agents/dependency-auditor.md": {
+        "template": "assets/templates/tech/.claude/agents/dependency-auditor.md",
+        "installed_hash": "2ec6eae018fb268a3a36b36d6d1157c6807bc7df3c4ca88751e9ec37dc3b1a2b",
+        "template_hash": "f7b203d10c37f411acc2a4e0329baf7e7ff8306bb92c14bd6852c1307edda9ba"
+      },
+      ".claude/agents/task-planner.md": {
+        "template": "assets/templates/tech/.claude/agents/task-planner.md",
+        "installed_hash": "f27fb191390366a630742fd1ffaf743eba2188be01e698236d53872d7b106c19",
+        "template_hash": "504f15e11e6f149ef54dcf53d2776def35fb97377bde874d879435c436b0ca13"
+      },
+      ".claude/agents/qa.md": {
+        "template": "assets/templates/tech/.claude/agents/qa.md",
+        "installed_hash": "0d70358ea343dcc6a763a6f63b7a8ac208c755584f45e6681330e9fb2d3c2e5b",
+        "template_hash": "06279d83623af5a03bec945de5ab3da15ceb77d17647b854875c3c7c1747edd9"
+      },
+      ".claude/agents/docs-writer.md": {
+        "template": "assets/templates/tech/.claude/agents/docs-writer.md",
+        "installed_hash": "c547e5a7be366a5e8281e4618b216eee1358dea9e2e5732d88c46eaf365c6b01",
+        "template_hash": "775ed482d1b1d7a5629ddb302ea5d6bb8cfc9c0d91f311e49c0c684bf2133bf4"
       }
     }
   }
