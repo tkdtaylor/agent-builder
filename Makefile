@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation check
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt check
 
 lint:
 	golangci-lint run
@@ -10,7 +10,7 @@ test:
 	go test ./...
 
 # Fitness functions — see docs/spec/fitness-functions.md
-fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation
+fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt
 	@echo "Fitness checks passed."
 
 fitness-no-docker:
@@ -116,6 +116,18 @@ fitness-supervisor-isolation:
 		exit 1; \
 	fi; \
 	echo "PASS fitness-supervisor-isolation: supervisor import graph contains no executor/LLM/web-fetch packages."
+
+# fitness-no-srt covers test-spec TC-036-04: the default run pipeline must not
+# transitively import internal/sandbox/sandboxruntime.
+fitness-no-srt:
+	@deps=$$(go list -deps ./internal/runtime/...) || exit $$?; \
+	forbidden=$$(printf '%s\n' "$$deps" | grep 'sandboxruntime' || true); \
+	if [ -n "$$forbidden" ]; then \
+		echo "FAIL fitness-no-srt: internal/runtime transitively imports sandboxruntime:"; \
+		printf '%s\n' "$$forbidden"; \
+		exit 1; \
+	fi; \
+	echo "PASS fitness-no-srt: internal/runtime does not import sandboxruntime"
 
 check: lint test fitness
 	@echo "All checks passed."

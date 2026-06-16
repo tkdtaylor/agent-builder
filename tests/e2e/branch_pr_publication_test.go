@@ -106,17 +106,17 @@ type publicationFixtureConfig struct {
 }
 
 type publicationFixture struct {
-	taskRoot   string
-	worktree   string
-	shimDir    string
-	claudePath string
-	srtPath    string
-	gitPath    string
-	ghPath     string
-	publishLog string
-	recordPath string
-	gitToken   string
-	ghToken    string
+	taskRoot     string
+	worktree     string
+	shimDir      string
+	claudePath   string
+	launcherPath string
+	gitPath      string
+	ghPath       string
+	publishLog   string
+	recordPath   string
+	gitToken     string
+	ghToken      string
 }
 
 func newPublicationFixture(t *testing.T, config publicationFixtureConfig) publicationFixture {
@@ -163,7 +163,7 @@ func TestValue(t *testing.T) {
 		ghToken:    "gh-token-034",
 	}
 	fixture.claudePath = writeFakeClaude(t, shimDir, config)
-	fixture.srtPath = writeFakeSRT(t, shimDir)
+	fixture.launcherPath = writeFakeLauncher(t, shimDir)
 	fixture.gitPath = writeFakeGit(t, shimDir, publishLog)
 	fixture.ghPath = writeFakeGH(t, shimDir, publishLog, config)
 	writeGateTools(t, shimDir, config.gateFails)
@@ -172,20 +172,20 @@ func TestValue(t *testing.T) {
 
 func (f publicationFixture) env() map[string]string {
 	return map[string]string{
-		"PATH":                          f.shimDir + string(os.PathListSeparator) + os.Getenv("PATH"),
-		runtimewiring.EnvTaskRoot:       f.taskRoot,
-		runtimewiring.EnvWorktree:       f.worktree,
-		runtimewiring.EnvClaudeCLI:      f.claudePath,
-		runtimewiring.EnvSandboxRuntime: f.srtPath,
-		runtimewiring.EnvRunRecord:      f.recordPath,
-		runtimewiring.EnvRunTimeout:     "5s",
-		runtimewiring.EnvMaxAttempts:    "1",
-		runtimewiring.EnvPublishRemote:  "origin",
-		runtimewiring.EnvGitCLI:         f.gitPath,
-		runtimewiring.EnvGitHubCLI:      f.ghPath,
-		runtimewiring.EnvGitToken:       f.gitToken,
-		runtimewiring.EnvGitHubToken:    f.ghToken,
-		"ANTHROPIC_API_KEY":             "anthropic-token-034",
+		"PATH":                           f.shimDir + string(os.PathListSeparator) + os.Getenv("PATH"),
+		runtimewiring.EnvTaskRoot:        f.taskRoot,
+		runtimewiring.EnvWorktree:        f.worktree,
+		runtimewiring.EnvClaudeCLI:       f.claudePath,
+		runtimewiring.EnvExecBoxLauncher: f.launcherPath,
+		runtimewiring.EnvRunRecord:       f.recordPath,
+		runtimewiring.EnvRunTimeout:      "5s",
+		runtimewiring.EnvMaxAttempts:     "1",
+		runtimewiring.EnvPublishRemote:   "origin",
+		runtimewiring.EnvGitCLI:          f.gitPath,
+		runtimewiring.EnvGitHubCLI:       f.ghPath,
+		runtimewiring.EnvGitToken:        f.gitToken,
+		runtimewiring.EnvGitHubToken:     f.ghToken,
+		"ANTHROPIC_API_KEY":              "anthropic-token-034",
 	}
 }
 
@@ -230,19 +230,20 @@ func runAgentBuilder(t *testing.T, binary string, env map[string]string, args ..
 
 func filteredEnv() []string {
 	blocked := map[string]struct{}{
-		runtimewiring.EnvTaskRoot:       {},
-		runtimewiring.EnvWorktree:       {},
-		runtimewiring.EnvClaudeCLI:      {},
-		runtimewiring.EnvSandboxRuntime: {},
-		runtimewiring.EnvRunRecord:      {},
-		runtimewiring.EnvRunTimeout:     {},
-		runtimewiring.EnvMaxAttempts:    {},
-		runtimewiring.EnvPublishRemote:  {},
-		runtimewiring.EnvGitCLI:         {},
-		runtimewiring.EnvGitHubCLI:      {},
-		runtimewiring.EnvGitToken:       {},
-		runtimewiring.EnvGitHubToken:    {},
-		"ANTHROPIC_API_KEY":             {},
+		runtimewiring.EnvTaskRoot:        {},
+		runtimewiring.EnvWorktree:        {},
+		runtimewiring.EnvClaudeCLI:       {},
+		runtimewiring.EnvExecBoxLauncher: {},
+		runtimewiring.EnvSandboxRuntime:  {},
+		runtimewiring.EnvRunRecord:       {},
+		runtimewiring.EnvRunTimeout:      {},
+		runtimewiring.EnvMaxAttempts:     {},
+		runtimewiring.EnvPublishRemote:   {},
+		runtimewiring.EnvGitCLI:          {},
+		runtimewiring.EnvGitHubCLI:       {},
+		runtimewiring.EnvGitToken:        {},
+		runtimewiring.EnvGitHubToken:     {},
+		"ANTHROPIC_API_KEY":              {},
 	}
 	filtered := []string{}
 	for _, entry := range os.Environ() {
@@ -288,10 +289,24 @@ printf '%s\n' > "$branch_file"
 	return path
 }
 
-func writeFakeSRT(t *testing.T, dir string) string {
+// writeFakeLauncher writes a fake Podman execution-box launcher that parses the
+// `--worktree X [--egress-allowlist Y] [--] cmd...` flag shape emitted by
+// internal/sandbox/podman and execs the wrapped command.
+func writeFakeLauncher(t *testing.T, dir string) string {
 	t.Helper()
-	path := filepath.Join(dir, "srt")
-	writeFile(t, path, "#!/bin/sh\nset -eu\nshift 2\nexec \"$@\"\n")
+	path := filepath.Join(dir, "run.sh")
+	writeFile(t, path, `#!/bin/sh
+set -eu
+while [ $# -gt 0 ]; do
+	case "$1" in
+		--worktree) shift 2 ;;
+		--egress-allowlist) shift 2 ;;
+		--) shift; break ;;
+		*) break ;;
+	esac
+done
+exec "$@"
+`)
 	chmodExecutable(t, path)
 	return path
 }

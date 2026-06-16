@@ -81,9 +81,9 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `EXEC_BOX_EGRESS_PROBE_DENY_IP` | `host:port` IP literal | `1.1.1.1:443` | no | Direct-IP probe target expected to be blocked during `--egress-probe` |
 | `ANTHROPIC_API_KEY` | secret string | none | yes for `executor.ClaudeCLI` | Independently revocable Claude Code CLI credential injected into the subprocess environment. The executor fails before subprocess start when absent. |
 | `AGENT_BUILDER_TASK_ROOT` | path | none | yes for `agent-builder run` | Root containing `docs/plans/roadmap.md` and `docs/tasks/{backlog,active,completed}` for task selection and constrained status writes |
-| `AGENT_BUILDER_WORKTREE` | path | none | yes for `agent-builder run` | Target repo worktree passed to the Claude CLI Executor, Gate, and sandbox-runtime containment probe |
+| `AGENT_BUILDER_WORKTREE` | path | none | yes for `agent-builder run` | Target repo worktree passed to the Claude CLI Executor, Gate, and Podman execution-box containment probe |
 | `AGENT_BUILDER_CLAUDE_CLI` | path/name | `claude` | no | Claude Code CLI executable used by default run wiring |
-| `AGENT_BUILDER_SANDBOX_RUNTIME` | path/name | none | yes for `agent-builder run` | `srt` executable used by the default run containment adapter |
+| `AGENT_BUILDER_EXEC_BOX_LAUNCHER` | path/name | `containment/execution-box/run.sh` | no | Podman execution-box launcher invoked by the default run containment adapter (`podman.Runner`). Tests may point this at a fake launcher. |
 | `AGENT_BUILDER_RUN_RECORD` | path | disabled | no | Host-side RunRecord NDJSON path for `agent-builder run`; blank disables record writing without disabling dispatch |
 | `AGENT_BUILDER_RUN_TIMEOUT` | duration string | none | yes for `agent-builder run` | Explicit supervisor wall-clock timeout and sandbox request timeout for one default run |
 | `AGENT_BUILDER_MAX_ATTEMPTS` | non-negative integer | none | yes for `agent-builder run` | Explicit bounded retry attempt count for the selected task |
@@ -92,6 +92,9 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `AGENT_BUILDER_GH_CLI` | path/name | `gh` | no | GitHub CLI executable used to find or create the PR artifact |
 | `AGENT_BUILDER_GIT_TOKEN` | secret string | none | no | Optional token exposed to the publication subprocess as `GIT_TOKEN` and redacted from publisher errors/run records |
 | `AGENT_BUILDER_GITHUB_TOKEN` | secret string | none | no | Optional token exposed to the publication subprocess as `GH_TOKEN` and `GITHUB_TOKEN` and redacted from publisher errors/run records |
+
+**Removed variables** (rejected loudly when set — see ADR 021):
+- `AGENT_BUILDER_SANDBOX_RUNTIME` — the Phase 0 `srt` selector for the rented `@anthropic-ai/sandbox-runtime` backend. Containment now runs through the Podman execution-box launcher (`AGENT_BUILDER_EXEC_BOX_LAUNCHER`). If a non-empty value is present, `agent-builder run` fails with a migration error naming the variable rather than silently ignoring it.
 
 **Hook profile env vars** (consumed by `.claude/scripts/`, not the application itself):
 - `CLAUDE_HOOK_PROFILE` — `minimal` / `standard` / `strict` (default `standard`)
@@ -124,7 +127,6 @@ The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.m
 | `executor.ClaudeCLIConfig.AuthToken` | secret string | none | yes | Explicit token value supplied to the executor. Production callers normally pass `ANTHROPIC_API_KEY` via `NewClaudeCLIFromEnv`; tests can provide a fake token directly. |
 | `executor.ClaudeCLIConfig.IngestionPolicy` | `executor.ClaudeIngestionPolicy` | `disabled` | no | Controls Claude-facing web/tool routes. `disabled` denies those events before executor context/tool execution. `reviewed` delegates to `IngestionHarness`. Unknown policy values fail before subprocess start. |
 | `executor.ClaudeCLIConfig.IngestionHarness` | `*executorharness.Harness` | nil | yes when `IngestionPolicy == reviewed` | Repo-owned harness that releases Claude-facing web content or tool calls only after broker review. Reviewed policy without a harness fails before subprocess start or web/tool handling. |
-| `sandboxruntime.Config.CLIPath` | string | `srt` | no | Path/name of the `@anthropic-ai/sandbox-runtime` CLI. Tests may point this at a fake `srt` subprocess; production defaults to resolving `srt` on `PATH`. |
 | `armor.Config.Command` | argv slice | none | yes when no `armor.Config.Runner` is supplied | External armor-compatible command invoked with JSON stdin/stdout by `armor.ProcessRunner`. Missing or blank command fails closed as a block decision. |
 | `armor.Config.Runner` | `armor.Runner` | process runner from `Command` | no | Fakeable invocation seam for tests or service-backed integrations. When nil, the adapter constructs a process runner from `Command`. |
 | `armor.Config.Timeout` | `time.Duration` | disabled (`0`) | no | Optional per-candidate armor invocation timeout. Positive values cause timed-out invocations to return a fail-closed block decision. |
