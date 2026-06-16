@@ -91,18 +91,21 @@ Always apply **Correctness & Logic**. Then select 2–4 additional perspectives 
 
 ### Findings
 
-#### Critical (must fix before merge)
+#### Blocking (must fix before merge)
 - [CR-001] <file:line> — <finding>
   **Why:** <impact if not fixed>
   **Fix:** <specific remediation>
 
-#### Warning (should fix)
+#### Important (should fix)
 - [CR-002] <file:line> — <finding>
   **Why:** <impact>
   **Fix:** <remediation>
 
-#### Suggestion (consider)
+#### Nit (style or consistency)
 - [CR-003] <file:line> — <finding>
+
+#### Praise (worth noting)
+- [CR-004] <file:line> — <finding>
 
 ### Verdict
 <approve | request changes | needs discussion>
@@ -113,6 +116,7 @@ Always apply **Correctness & Logic**. Then select 2–4 additional perspectives 
 - Read the test spec first so you understand what "done" means
 - Apply perspectives selectively — don't force-fit irrelevant checks
 - Every finding must include a specific file and line reference
+- Frame design concerns as questions when multiple valid approaches exist — invite discussion rather than mandate changes
 - Suggestions must be actionable — "this could be better" is not a finding
 - Don't nitpick style if the project has a formatter configured
 - Don't propose refactors beyond the scope of the change

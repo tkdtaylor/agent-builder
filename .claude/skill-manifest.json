@@ -40,13 +40,13 @@
       },
       ".claude/scripts/pre-compact.py": {
         "template": "assets/templates/common/.claude/scripts/pre-compact.py",
-        "installed_hash": "fd6c77e43ae114a55f99e782d93cd380a2ebcfd1e86b1cf648114b0f569acc21",
-        "template_hash": "fd6c77e43ae114a55f99e782d93cd380a2ebcfd1e86b1cf648114b0f569acc21"
+        "installed_hash": "29e3c1224a6b84d679fb8f736aa7db62f9674108d8c12f6eb2301514cb664447",
+        "template_hash": "29e3c1224a6b84d679fb8f736aa7db62f9674108d8c12f6eb2301514cb664447"
       },
       ".claude/scripts/post-compact.py": {
         "template": "assets/templates/common/.claude/scripts/post-compact.py",
-        "installed_hash": "4865491fe0c0c871281e0c1f577d0db226ce52335dcf5c5592ecc9943a332afe",
-        "template_hash": "4865491fe0c0c871281e0c1f577d0db226ce52335dcf5c5592ecc9943a332afe"
+        "installed_hash": "16634c8cf2ad14d67265cd7c8143980aa63df62472ac5b5eb39ec650da8bf04a",
+        "template_hash": "16634c8cf2ad14d67265cd7c8143980aa63df62472ac5b5eb39ec650da8bf04a"
       },
       ".claude/scripts/periodic-checkpoint.py": {
         "template": "assets/templates/common/.claude/scripts/periodic-checkpoint.py",
@@ -75,8 +75,8 @@
       },
       "scripts/start-task.sh": {
         "template": "assets/templates/common/scripts/start-task.sh",
-        "installed_hash": "b0394f1c62cbd45dc4d4f8655c703dd4272dd25ec05ff7fffa746054b97165a5",
-        "template_hash": "b0394f1c62cbd45dc4d4f8655c703dd4272dd25ec05ff7fffa746054b97165a5"
+        "installed_hash": "d9ad9da0c4ee4c440c28f7254a070da537c20a590e59dd52ef09b29bcc6eec91",
+        "template_hash": "d9ad9da0c4ee4c440c28f7254a070da537c20a590e59dd52ef09b29bcc6eec91"
       },
       "scripts/verify-worktree-isolation.sh": {
         "template": "assets/templates/common/scripts/verify-worktree-isolation.sh",
@@ -85,8 +85,8 @@
       },
       ".claude/settings.json": {
         "template": "assets/templates/tech/.claude/settings.json",
-        "installed_hash": "a464b41499a27bc48616d54a91968b3ee86c4421cbadee4e9b8ad2fcae73171a",
-        "template_hash": "a464b41499a27bc48616d54a91968b3ee86c4421cbadee4e9b8ad2fcae73171a"
+        "installed_hash": "9e34cb86826403bae1ff644093e42bd8f989fb00f9cc0fbf33d5d81e6edb3e82",
+        "template_hash": "9e34cb86826403bae1ff644093e42bd8f989fb00f9cc0fbf33d5d81e6edb3e82"
       },
       ".claude/scripts/config-protection.py": {
         "template": "assets/templates/tech/.claude/scripts/config-protection.py",
@@ -135,8 +135,8 @@
       },
       ".claude/agents/task-executor.md": {
         "template": "assets/templates/tech/.claude/agents/task-executor.md",
-        "installed_hash": "16abc5e4b2646dbab7b4bba21c0ef2d23d960228782f085125b5dcfb94671573",
-        "template_hash": "9e3384b07515586198818563c9bb19d29f0f5e3cface7a8230100762e7b2d52f"
+        "installed_hash": "02f242e97101b4346888ccb5eacd36037de7ab9418617aca5cac426641b7feb5",
+        "template_hash": "9050995faa883c4e15ef0633b54987d2ee13883208675bcd55f439e66e3625a2"
       },
       ".claude/agents/architect.md": {
         "template": "assets/templates/tech/.claude/agents/architect.md",
@@ -145,8 +145,8 @@
       },
       ".claude/agents/code-reviewer.md": {
         "template": "assets/templates/tech/.claude/agents/code-reviewer.md",
-        "installed_hash": "961b7bbc9ab9e3fd1e9acaacc87a23969b61697b7145f128fbaaa620253b14d4",
-        "template_hash": "f9d4e71b99768cd9de2f999a91734fbd7ac784151a85ce849e12e1364386eeec"
+        "installed_hash": "1dd8cb945a24651f4b043564eac1a47ba3e4f40e668e8ae731989d30cc118a1d",
+        "template_hash": "d319bce626fe9b21f6cff46d11fa51f331a1f782e2af29412d74b07d8f92d5a7"
       },
       ".claude/agents/security-auditor.md": {
         "template": "assets/templates/tech/.claude/agents/security-auditor.md",
@@ -157,6 +157,36 @@
         "template": "assets/templates/tech/.claude/agents/spec-verifier.md",
         "installed_hash": "444b8117be45a79f849ec49c105edcc112905d75fc234147c58ca9a5b66ad820",
         "template_hash": "1993b7208dab712614096f4ff4f63325be3f77145a6eb9d4a788eed565ce6bd2"
+      },
+      "scripts/finish-task.sh": {
+        "template": "assets/templates/common/scripts/finish-task.sh",
+        "installed_hash": "80d8c989d816664e16d25b4d8f64a30022a6d5e0b31829e7061d33e565da3055",
+        "template_hash": "80d8c989d816664e16d25b4d8f64a30022a6d5e0b31829e7061d33e565da3055"
+      },
+      ".claude/backlog-playbook.md": {
+        "template": "assets/templates/tech/.claude/backlog-playbook.md",
+        "installed_hash": "40503ee6c37391ce03a82e9430e06a0a86d94d1627191990206f70b9a85d8f42",
+        "template_hash": "40503ee6c37391ce03a82e9430e06a0a86d94d1627191990206f70b9a85d8f42"
+      },
+      ".claude/commands/backlog-run.md": {
+        "template": "assets/templates/tech/.claude/commands/backlog-run.md",
+        "installed_hash": "21d007a7d505725debd3eb732501b63f8ca5ec38020d07b633ea584440f0e026",
+        "template_hash": "21d007a7d505725debd3eb732501b63f8ca5ec38020d07b633ea584440f0e026"
+      },
+      ".claude/commands/backlog-run-parallel.md": {
+        "template": "assets/templates/tech/.claude/commands/backlog-run-parallel.md",
+        "installed_hash": "4d095b6001b9c7ee600675b7a95cc642796663effcf0693d701ac36e4aab1d78",
+        "template_hash": "4d095b6001b9c7ee600675b7a95cc642796663effcf0693d701ac36e4aab1d78"
+      },
+      ".claude/commands/backlog-autopilot.md": {
+        "template": "assets/templates/tech/.claude/commands/backlog-autopilot.md",
+        "installed_hash": "37b03f82bdaa93a47276b2ce67d1a2d9086737c1e8ea77a79cd5cdbeee696633",
+        "template_hash": "37b03f82bdaa93a47276b2ce67d1a2d9086737c1e8ea77a79cd5cdbeee696633"
+      },
+      ".claude/commands/backlog-autopilot-parallel.md": {
+        "template": "assets/templates/tech/.claude/commands/backlog-autopilot-parallel.md",
+        "installed_hash": "32b2deb82257ecea68495d0abd8485096a4b7ef0d2f9a6c954a7fd2cceb705ed",
+        "template_hash": "32b2deb82257ecea68495d0abd8485096a4b7ef0d2f9a6c954a7fd2cceb705ed"
       }
     }
   }
