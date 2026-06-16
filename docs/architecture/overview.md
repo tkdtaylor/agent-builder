@@ -29,7 +29,7 @@ supervisor (host, trusted, dumb)
 - **Executor seam** — `(harness, model) → branch`. Cloud CLIs (Claude Code, Gemini) bundle harness + model; local LLMs supply a harness. Routed by quota + sensitivity + cost. Bootstrap uses a single executor; the router is a deferred v1 feature designed against this seam now.
 - **Verification gate** — the machine-checkable definition of done. Thin: adopts Go tooling + the existing scanners as a blocking step.
 - **Containment** — rootless Podman with a tiered runtime (`runc` → gVisor `runsc` → Kata/Firecracker) and a default-deny egress allowlist. `armor` guards the web-ingestion + tool-call path. This outer box is exec-sandbox v0 Tier 1 minus orchestration.
-- **exec-sandbox adapter** — the `run()` seam; backed by rented `@anthropic-ai/sandbox-runtime` today, by the produced exec-sandbox v0 later.
+- **exec-sandbox adapter** — the `run()` seam; backed by the repo-owned rootless-Podman execution-box (exec-sandbox v0 Tier 1) since the Phase 1 swap (ADR 021). The rented `@anthropic-ai/sandbox-runtime` (`srt`) backend that bootstrapped Phase 0 has been removed from the run pipeline; its adapter package is retained out-of-graph for reference only.
 
 ## Design principles
 

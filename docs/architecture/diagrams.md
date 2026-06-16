@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-05
+**Last updated:** 2026-06-16
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -24,14 +24,14 @@ C4Context
     Person(user, "User", "The person who interacts with the system")
     System(system, "agent-builder", "What this system does in one line")
     System_Ext(claudeCLI, "Claude Code CLI", "Cloud executor harness/model subprocess")
-    System_Ext(sandboxRuntime, "@anthropic-ai/sandbox-runtime", "Rented bootstrap isolation CLI")
+    System_Ext(podman, "rootless Podman", "Execution-box containment substrate, driven by containment/execution-box/run.sh")
     System_Ext(codeScanner, "code-scanner", "Malware/backdoor scanner used as a blocking gate step")
     System_Ext(gitCLI, "git", "Version-control CLI used to push verified branches")
     System_Ext(ghCLI, "GitHub CLI", "CLI used to look up or create PR artifacts")
 
     Rel(user, system, "Uses")
     Rel(system, claudeCLI, "Runs", "process PATH")
-    Rel(system, sandboxRuntime, "Runs", "srt --settings")
+    Rel(system, podman, "Runs", "execution-box/run.sh")
     Rel(system, codeScanner, "Runs", "process PATH")
     Rel(system, gitCLI, "Runs", "git push")
     Rel(system, ghCLI, "Runs", "gh pr")
@@ -72,7 +72,7 @@ C4Component
 
     System_Ext(codeScanner, "code-scanner", "Malware/backdoor scanner CLI")
     System_Ext(claudeCLI, "Claude Code CLI", "Cloud executor harness/model subprocess")
-    System_Ext(sandboxRuntime, "@anthropic-ai/sandbox-runtime", "Rented bootstrap isolation CLI")
+    System_Ext(execBoxLauncher, "execution-box launcher", "containment/execution-box/run.sh — rootless Podman + selectable OCI runtime")
     System_Ext(armorTool, "armor", "External LLM guard process/service")
     System_Ext(gitCLI, "git", "Version-control CLI")
     System_Ext(ghCLI, "GitHub CLI", "PR artifact CLI")
@@ -87,7 +87,7 @@ C4Component
         Component(executorHarness, "Executor Ingestion Harness", "internal/executorharness", "Executor-facing event wrapper that emits broker-reviewed release values")
         Component(executor, "Claude CLI Executor", "internal/executor", "Concrete supervisor.Executor adapter with explicit web/tool policy")
         Component(sandbox, "exec-sandbox Run Adapter", "internal/sandbox", "Typed contained-command seam and test fake")
-        Component(sandboxRuntimeAdapter, "sandbox-runtime Adapter", "internal/sandbox/sandboxruntime", "Concrete srt-backed sandbox.Runner")
+        Component(podmanAdapter, "Podman Adapter", "internal/sandbox/podman", "Concrete Podman-backed sandbox.Runner via the execution-box launcher")
         Component(tasksource, "Task Source", "internal/tasksource", "Read-only roadmap/task parser and next-task selector")
         Component(statuswriter, "Task Status Writer", "internal/tasksource", "Constrained task status mutation")
         Component(gate, "Verification Gate", "internal/gate", "Ordered blocking checks with structured Verdicts")
@@ -98,14 +98,14 @@ C4Component
     Rel(runtime, tasksource, "Selects one ready task")
     Rel(runtime, executor, "Constructs")
     Rel(runtime, gate, "Constructs production Gate")
-    Rel(runtime, sandboxRuntimeAdapter, "Constructs")
+    Rel(runtime, podmanAdapter, "Constructs")
     Rel(runtime, agentloop, "Constructs retrying in-box loop")
     Rel(runtime, statuswriter, "Constructs for escalation")
     Rel(runtime, publisher, "Constructs for post-Gate publication")
     Rel(runtime, supervisor, "Starts configured Run")
     Rel(supervisor, sandbox, "Stores Runner / box seam")
-    Rel(sandboxRuntimeAdapter, sandbox, "Implements Runner seam")
-    Rel(sandboxRuntimeAdapter, sandboxRuntime, "Invokes with generated settings")
+    Rel(podmanAdapter, sandbox, "Implements Runner seam")
+    Rel(podmanAdapter, execBoxLauncher, "Invokes with worktree + typed limits")
     Rel(supervisor, gate, "Consumes Verdict model / Gate seam")
     Rel(agentloop, supervisor, "Consumes Task / Executor / Gate seams")
     Rel(executor, supervisor, "Implements Executor seam")
@@ -130,7 +130,8 @@ C4Component
 - ADR 012 fixes the agent loop shape: pick -> attempt -> verify -> advance states, done/idle/fail outcomes, and policy-free fail reporting.
 - ADR 013 fixes the retry escalation policy: non-negative `MaxAttempts`, mandatory stop, status-writer `needs-human` marking, and substitutable escalation hook.
 - ADR 020 fixes the exec-sandbox run adapter seam: command/worktree/typed limits in, result/exit/error out.
-- Task 021 fixes the sandbox-runtime backing adapter: `internal/sandbox/sandboxruntime` generates per-request settings and invokes `srt --settings` while callers continue to depend on the ADR 020 seam.
+- Task 035 fixes the Podman backing adapter: `internal/sandbox/podman` invokes `containment/execution-box/run.sh` with the worktree and typed limits while callers continue to depend on the ADR 020 seam.
+- ADR 021 removes the rented `@anthropic-ai/sandbox-runtime` (`srt`) backend from the run pipeline: task 036 swaps `internal/runtime` to construct the Podman adapter (launcher path overridable via `AGENT_BUILDER_EXEC_BOX_LAUNCHER`), the `fitness-no-srt` check enforces that `internal/runtime` no longer imports `sandboxruntime`, and task 037 accepts the Phase 1 swap at fake-provider L5. The `internal/sandbox/sandboxruntime` package is retained out-of-graph for reference only — it is no longer part of the run wiring.
 - ADR 024 fixes the ingestion boundary shape: typed web-content and tool-call candidates, guard decisions of allow/block/quarantine, and fail-closed broker release.
 - Task 025 fixes the armor guard adapter shape: external JSON process/service invocation maps allow/findings/failure output to ingestion decisions without vendoring armor source.
 - Task 027 fixes the executor ingestion harness shape: executor-facing web-content and tool-call events become ingestion candidates before continuation or execution, and direct release values cannot be valid without broker review.
