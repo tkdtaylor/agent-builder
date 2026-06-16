@@ -24,6 +24,7 @@ fitness-no-docker:
 			\( -path './.git' -o -path './.claude' -o -path './.codex' -o -path './.agents' -o -path './vendor' -o -path './node_modules' -o -path './containment' \) -prune -o \
 			-type f \
 			! -path './docs/tasks/*' \
+			! -path './docs/plans/*' \
 			! -path './docs/architecture/*.md' \
 			! -path './docs/architecture/decisions/*' \
 			! -path './docs/spec/SPEC.md' \
