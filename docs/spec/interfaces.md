@@ -281,6 +281,7 @@ type Limits struct {
 	WallClockTimeout time.Duration
 	MemoryBytes      int64
 	CPUCount         int
+	PidsLimit        int
 	EgressAllowlist  []string
 }
 
@@ -294,7 +295,7 @@ type Result struct {
 - **Implementors:** in-process `sandbox.FakeRunner` for tests; `sandboxruntime.Runner` for rented `@anthropic-ai/sandbox-runtime`; `podman.Runner` for rootless Podman execution-box.
 - **Consumers:** supervisor construction accepts the interface. Dispatch lifecycle code uses the interface when task execution is implemented.
 - **Stability:** governed by ADR 020 and updated with any task that changes contained-run inputs, outputs, or error semantics.
-- **Required behavior:** `Command` is argv-style and must contain a non-blank executable at index 0. `Worktree` is the target repo worktree path mounted or made available to the backend. `Limits` is a typed struct, not a map, and carries wall-clock, memory, CPU, and egress allowlist values. `Result` captures stdout, stderr, and duration. The integer return is the process exit code. A non-zero exit code is returned with nil error when the backend ran the command; non-nil error means adapter/backend failure or invalid request.
+- **Required behavior:** `Command` is argv-style and must contain a non-blank executable at index 0. `Worktree` is the target repo worktree path mounted or made available to the backend. `Limits` is a typed struct, not a map, and carries wall-clock timeout, memory limit, CPU count, process ID limit, and egress allowlist values. `Result` captures stdout, stderr, and duration. The integer return is the process exit code. A non-zero exit code is returned with nil error when the backend ran the command; non-nil error means adapter/backend failure or invalid request.
 
 ### Concrete backend: `sandboxruntime.Runner`
 
@@ -320,7 +321,7 @@ func (r *Runner) Run(sandbox.Request) (sandbox.Result, int, error)
 ```
 
 - **Outbound call:** `containment/execution-box/run.sh --worktree <path> [--egress-allowlist <tmpfile>] [--] <Command...>` with resource limits passed via environment variables `EXEC_BOX_CPUS`, `EXEC_BOX_MEMORY`, and `EXEC_BOX_PIDS_LIMIT`.
-- **Egress allowlist contract:** each allowlist entry is written to a temporary file in `host:port # comment` format; non-commented entries cause the launcher to reject the allowlist. Zero memory or CPU leave the corresponding env var unset (launcher uses its defaults).
+- **Egress allowlist contract:** each allowlist entry is written to a temporary file in `host:port # comment` format; non-commented entries cause the launcher to reject the allowlist. Zero values for memory, CPU, or process ID leave the corresponding env var unset (launcher uses its defaults).
 - **Failure contract:** invalid command, blank/missing worktree, and wall-clock timeout return non-nil adapter errors. A launcher that exits non-zero returns that exit code with nil adapter error.
 
 ### Interface: `tasksource.Source`

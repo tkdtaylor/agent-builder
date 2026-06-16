@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/tkdtaylor/agent-builder/internal/sandbox"
@@ -91,6 +92,9 @@ func (r *Runner) Run(req sandbox.Request) (sandbox.Result, int, error) {
 		// Convert bytes to human-readable format for Podman.
 		env = append(env, fmt.Sprintf("EXEC_BOX_MEMORY=%s", bytesToMemoryString(req.Limits.MemoryBytes)))
 	}
+	if req.Limits.PidsLimit > 0 {
+		env = append(env, fmt.Sprintf("EXEC_BOX_PIDS_LIMIT=%d", req.Limits.PidsLimit))
+	}
 
 	// Add command separator and the command itself.
 	args = append(args, "--")
@@ -106,6 +110,24 @@ func (r *Runner) Run(req sandbox.Request) (sandbox.Result, int, error) {
 	cmd := exec.CommandContext(ctx, r.launcherPath, args...)
 	cmd.Dir = worktree
 	cmd.Env = env
+
+	// Set up process group so we can kill the entire group on context deadline.
+	// This ensures child processes (e.g., sleep) are killed when the context is cancelled.
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
+
+	// Configure the process to be killed as a group when the context is cancelled.
+	cmd.Cancel = func() error {
+		if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+			return nil
+		}
+		if cmd.Process != nil {
+			// Kill the entire process group (negative PID).
+			return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		}
+		return nil
+	}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

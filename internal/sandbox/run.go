@@ -34,6 +34,7 @@ type Limits struct {
 	WallClockTimeout time.Duration
 	MemoryBytes      int64
 	CPUCount         int
+	PidsLimit        int
 	EgressAllowlist  []string
 }
 

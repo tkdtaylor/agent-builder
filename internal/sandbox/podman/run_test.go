@@ -1,6 +1,7 @@
 package podman
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,6 +42,7 @@ output_file="` + fakeStdout + `"
 	echo "args=$@"
 	echo "env_cpus=${EXEC_BOX_CPUS:-unset}"
 	echo "env_memory=${EXEC_BOX_MEMORY:-unset}"
+	echo "env_pids_limit=${EXEC_BOX_PIDS_LIMIT:-unset}"
 	while [ "$#" -gt 0 ]; do
 		case "$1" in
 			--worktree)
@@ -80,6 +82,7 @@ output_file="` + fakeStdout + `"
 			WallClockTimeout: 5 * time.Second,
 			MemoryBytes:      2 * 1024 * 1024 * 1024, // 2g
 			CPUCount:         2,
+			PidsLimit:        100,
 			EgressAllowlist: []string{
 				"api.github.com:443",
 				"registry.npmjs.org:443",
@@ -116,6 +119,9 @@ output_file="` + fakeStdout + `"
 	if !strings.Contains(outputStr, "env_memory=2g") {
 		t.Errorf("EXEC_BOX_MEMORY environment variable not set correctly: %s", outputStr)
 	}
+	if !strings.Contains(outputStr, "env_pids_limit=100") {
+		t.Errorf("EXEC_BOX_PIDS_LIMIT environment variable not set correctly: %s", outputStr)
+	}
 
 	// Verify the allowlist content.
 	if !strings.Contains(outputStr, "api.github.com:443") {
@@ -123,6 +129,17 @@ output_file="` + fakeStdout + `"
 	}
 	if !strings.Contains(outputStr, "registry.npmjs.org:443") {
 		t.Errorf("allowlist entry 'registry.npmjs.org:443' not found: %s", outputStr)
+	}
+
+	// Verify justification comments are present in the allowlist file.
+	if !strings.Contains(outputStr, "#") {
+		t.Errorf("justification comments not found in allowlist file: %s", outputStr)
+	}
+	if !strings.Contains(outputStr, "api.github.com:443") || !strings.Contains(outputStr, "#") {
+		t.Errorf("allowlist entry 'api.github.com:443' missing justification comment: %s", outputStr)
+	}
+	if !strings.Contains(outputStr, "registry.npmjs.org:443") || !strings.Contains(outputStr, "#") {
+		t.Errorf("allowlist entry 'registry.npmjs.org:443' missing justification comment: %s", outputStr)
 	}
 
 	_ = fakeStderr // unused, but prevent linter error
@@ -231,6 +248,17 @@ echo $((count + 1)) > "$callfile"
 				t.Fatalf("expected error, got nil")
 			}
 
+			// Verify the error wraps the expected sentinel error.
+			if tt.name == "blank worktree" {
+				if !errors.Is(err, ErrInvalidWorktree) {
+					t.Errorf("expected error to wrap ErrInvalidWorktree, got: %v", err)
+				}
+			} else {
+				if !errors.Is(err, sandbox.ErrInvalidCommand) {
+					t.Errorf("expected error to wrap sandbox.ErrInvalidCommand, got: %v", err)
+				}
+			}
+
 			// Verify the launcher was not invoked.
 			callCountPath := filepath.Join(tempDir, "call-count")
 			data, _ := os.ReadFile(callCountPath)
@@ -274,13 +302,23 @@ echo "should not reach here"
 		},
 	}
 
+	start := time.Now()
 	_, exitCode, err := runner.Run(req)
+	elapsed := time.Since(start)
+
 	if err == nil {
 		t.Fatalf("expected timeout error, got nil")
 	}
 	// Exit code should be -1 for timeout.
 	if exitCode != -1 {
 		t.Fatalf("expected exit code -1 for timeout, got %d", exitCode)
+	}
+
+	// Verify the subprocess was actually killed and didn't run to completion.
+	// With proper process group killing, the call should return well under 5 seconds.
+	// Allow some margin (1 second) for system overhead.
+	if elapsed > 1500*time.Millisecond {
+		t.Errorf("timeout test took too long (%v), suggests subprocess was not killed", elapsed)
 	}
 }
 
