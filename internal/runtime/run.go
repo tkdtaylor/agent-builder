@@ -16,41 +16,48 @@ import (
 	agentloop "github.com/tkdtaylor/agent-builder/internal/loop"
 	branchpub "github.com/tkdtaylor/agent-builder/internal/publisher"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox"
-	"github.com/tkdtaylor/agent-builder/internal/sandbox/sandboxruntime"
+	"github.com/tkdtaylor/agent-builder/internal/sandbox/podman"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 	"github.com/tkdtaylor/agent-builder/internal/tasksource"
 )
 
 const (
-	EnvTaskRoot       = "AGENT_BUILDER_TASK_ROOT"
-	EnvWorktree       = "AGENT_BUILDER_WORKTREE"
-	EnvClaudeCLI      = "AGENT_BUILDER_CLAUDE_CLI"
+	EnvTaskRoot        = "AGENT_BUILDER_TASK_ROOT"
+	EnvWorktree        = "AGENT_BUILDER_WORKTREE"
+	EnvClaudeCLI       = "AGENT_BUILDER_CLAUDE_CLI"
+	EnvExecBoxLauncher = "AGENT_BUILDER_EXEC_BOX_LAUNCHER"
+	EnvRunRecord       = "AGENT_BUILDER_RUN_RECORD"
+	EnvRunTimeout      = "AGENT_BUILDER_RUN_TIMEOUT"
+	EnvMaxAttempts     = "AGENT_BUILDER_MAX_ATTEMPTS"
+	EnvPublishRemote   = "AGENT_BUILDER_PUBLISH_REMOTE"
+	EnvGitCLI          = "AGENT_BUILDER_GIT_CLI"
+	EnvGitHubCLI       = "AGENT_BUILDER_GH_CLI"
+	EnvGitToken        = "AGENT_BUILDER_GIT_TOKEN"
+	EnvGitHubToken     = "AGENT_BUILDER_GITHUB_TOKEN"
+
+	// EnvSandboxRuntime is the removed Phase 0 srt selector. It is retained only
+	// to detect and reject a stale value loudly (ADR 021, decision 2).
 	EnvSandboxRuntime = "AGENT_BUILDER_SANDBOX_RUNTIME"
-	EnvRunRecord      = "AGENT_BUILDER_RUN_RECORD"
-	EnvRunTimeout     = "AGENT_BUILDER_RUN_TIMEOUT"
-	EnvMaxAttempts    = "AGENT_BUILDER_MAX_ATTEMPTS"
-	EnvPublishRemote  = "AGENT_BUILDER_PUBLISH_REMOTE"
-	EnvGitCLI         = "AGENT_BUILDER_GIT_CLI"
-	EnvGitHubCLI      = "AGENT_BUILDER_GH_CLI"
-	EnvGitToken       = "AGENT_BUILDER_GIT_TOKEN"
-	EnvGitHubToken    = "AGENT_BUILDER_GITHUB_TOKEN"
+
+	// defaultExecBoxLauncher is the standard Podman execution-box launcher path.
+	defaultExecBoxLauncher = "containment/execution-box/run.sh"
 )
 
 // Config is the explicit runtime configuration used by agent-builder run.
 type Config struct {
-	TaskRoot       string
-	Worktree       string
-	ClaudeCLI      string
-	ClaudeToken    string
-	SandboxRuntime string
-	RunRecordPath  string
-	RunTimeout     time.Duration
-	MaxAttempts    int
-	PublishRemote  string
-	GitCLI         string
-	GitHubCLI      string
-	GitToken       string
-	GitHubToken    string
+	TaskRoot        string
+	Worktree        string
+	ClaudeCLI       string
+	ClaudeToken     string
+	ExecBoxLauncher string
+	RunRecordPath   string
+	RunTimeout      time.Duration
+	MaxAttempts     int
+	PublishRemote   string
+	GitCLI          string
+	GitHubCLI       string
+	GitToken        string
+	GitHubToken     string
 }
 
 // RunFromEnv builds and runs one configured Phase 0 pipeline from environment
@@ -65,21 +72,30 @@ func RunFromEnv(stdout io.Writer) error {
 
 // ConfigFromEnv reads the explicit run configuration contract from getenv.
 func ConfigFromEnv(getenv func(string) string) (Config, error) {
+	// The rented srt selector was removed by ADR 021. A stale non-empty value
+	// must fail loudly rather than be silently ignored (decision 2).
+	if strings.TrimSpace(getenv(EnvSandboxRuntime)) != "" {
+		return Config{}, fmt.Errorf("run config: %s was removed by the Podman containment swap (ADR 021); unset it — containment now runs through %s", EnvSandboxRuntime, defaultExecBoxLauncher)
+	}
+
 	config := Config{
-		TaskRoot:       cleanPath(getenv(EnvTaskRoot)),
-		Worktree:       cleanPath(getenv(EnvWorktree)),
-		ClaudeCLI:      strings.TrimSpace(getenv(EnvClaudeCLI)),
-		ClaudeToken:    getenv(executor.ClaudeCLIAuthEnv),
-		SandboxRuntime: cleanPath(getenv(EnvSandboxRuntime)),
-		RunRecordPath:  cleanPath(getenv(EnvRunRecord)),
-		PublishRemote:  strings.TrimSpace(getenv(EnvPublishRemote)),
-		GitCLI:         strings.TrimSpace(getenv(EnvGitCLI)),
-		GitHubCLI:      strings.TrimSpace(getenv(EnvGitHubCLI)),
-		GitToken:       getenv(EnvGitToken),
-		GitHubToken:    getenv(EnvGitHubToken),
+		TaskRoot:        cleanPath(getenv(EnvTaskRoot)),
+		Worktree:        cleanPath(getenv(EnvWorktree)),
+		ClaudeCLI:       strings.TrimSpace(getenv(EnvClaudeCLI)),
+		ClaudeToken:     getenv(executor.ClaudeCLIAuthEnv),
+		ExecBoxLauncher: cleanPath(getenv(EnvExecBoxLauncher)),
+		RunRecordPath:   cleanPath(getenv(EnvRunRecord)),
+		PublishRemote:   strings.TrimSpace(getenv(EnvPublishRemote)),
+		GitCLI:          strings.TrimSpace(getenv(EnvGitCLI)),
+		GitHubCLI:       strings.TrimSpace(getenv(EnvGitHubCLI)),
+		GitToken:        getenv(EnvGitToken),
+		GitHubToken:     getenv(EnvGitHubToken),
 	}
 	if config.ClaudeCLI == "" {
 		config.ClaudeCLI = "claude"
+	}
+	if config.ExecBoxLauncher == "" {
+		config.ExecBoxLauncher = defaultExecBoxLauncher
 	}
 	if config.GitCLI == "" {
 		config.GitCLI = "git"
@@ -96,9 +112,6 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	}
 	if strings.TrimSpace(config.ClaudeToken) == "" {
 		return Config{}, missingConfig(executor.ClaudeCLIAuthEnv)
-	}
-	if config.SandboxRuntime == "" {
-		return Config{}, missingConfig(EnvSandboxRuntime)
 	}
 	if config.PublishRemote == "" {
 		return Config{}, missingConfig(EnvPublishRemote)
@@ -160,10 +173,11 @@ func Run(config Config, stdout io.Writer) error {
 		Worktree:  config.Worktree,
 		AuthToken: config.ClaudeToken,
 	})
-	runner := sandboxruntime.New(sandboxruntime.Config{CLIPath: config.SandboxRuntime})
+	runner := podman.NewWithLauncher(config.ExecBoxLauncher)
 	box := sandboxBox{
 		runner:   runner,
 		worktree: config.Worktree,
+		launcher: config.ExecBoxLauncher,
 		limits: sandbox.Limits{
 			WallClockTimeout: config.RunTimeout,
 		},
@@ -172,6 +186,7 @@ func Run(config Config, stdout io.Writer) error {
 		executor:     exec,
 		gate:         verifier,
 		worktree:     config.Worktree,
+		launcher:     config.ExecBoxLauncher,
 		statusWriter: tasksource.NewStatusWriter(config.TaskRoot, tasksource.DefaultTaskDirs...),
 		policy:       policy,
 		publisher: branchpub.NewGitHubCLI(branchpub.GitHubCLIConfig{
@@ -242,6 +257,7 @@ func cleanPath(path string) string {
 type sandboxBox struct {
 	runner   sandbox.Runner
 	worktree string
+	launcher string
 	limits   sandbox.Limits
 }
 
@@ -278,6 +294,7 @@ type retryingInBoxLoop struct {
 	executor       supervisor.Executor
 	gate           supervisor.Gate
 	worktree       string
+	launcher       string
 	statusWriter   agentloop.StatusWriter
 	policy         agentloop.RetryPolicy
 	publisher      branchpub.Publisher
@@ -286,6 +303,7 @@ type retryingInBoxLoop struct {
 }
 
 func (l retryingInBoxLoop) RunInside(_ supervisor.BoxHandle, task supervisor.Task, streams supervisor.RunStreams) error {
+	writeCommand(streams, "containment=podman launcher=%s", l.launcher)
 	writeCommand(streams, "pick task %s", task.ID)
 	writeStdout(streams, "task %s selected\n", task.ID)
 

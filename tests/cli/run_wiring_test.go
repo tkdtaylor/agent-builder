@@ -47,8 +47,8 @@ func TestRuntimeRunWiresPhase0Pipeline(t *testing.T) {
 	if got := strings.Count(claudeLog, "task="); got != 1 {
 		t.Fatalf("TC-002 executor attempts = %d, want exactly 1", got)
 	}
-	if srtLog := readRuntimeText(t, fixture.srtLog); !strings.Contains(srtLog, "argv=/bin/true") {
-		t.Fatalf("TC-001 fake sandbox log = %q, want containment probe", srtLog)
+	if launcherLog := readRuntimeText(t, fixture.launcherLog); !strings.Contains(launcherLog, "cmd=/bin/true") {
+		t.Fatalf("TC-001 fake launcher log = %q, want containment probe", launcherLog)
 	}
 	if publishLog := readRuntimeText(t, fixture.publishLog); !strings.Contains(publishLog, "git push origin task/028-default-run-wiring") ||
 		!strings.Contains(publishLog, "gh pr create --head task/028-default-run-wiring --fill") {
@@ -105,7 +105,6 @@ func TestRunConfigFailures(t *testing.T) {
 		{name: "task source", unset: runtimewiring.EnvTaskRoot, wantError: runtimewiring.EnvTaskRoot},
 		{name: "worktree", unset: runtimewiring.EnvWorktree, wantError: runtimewiring.EnvWorktree},
 		{name: "executor token", unset: "ANTHROPIC_API_KEY", wantError: "ANTHROPIC_API_KEY"},
-		{name: "sandbox runtime", unset: runtimewiring.EnvSandboxRuntime, wantError: runtimewiring.EnvSandboxRuntime},
 		{name: "timeout run config", unset: runtimewiring.EnvRunTimeout, wantError: runtimewiring.EnvRunTimeout},
 		{name: "attempt run config", unset: runtimewiring.EnvMaxAttempts, wantError: runtimewiring.EnvMaxAttempts},
 		{name: "publish remote", unset: runtimewiring.EnvPublishRemote, wantError: runtimewiring.EnvPublishRemote},
@@ -150,20 +149,91 @@ func TestRunConfigFailures(t *testing.T) {
 			t.Fatalf("TC-004 missing scanner run record = %q, want failed Gate evidence naming code-scanner", record)
 		}
 	})
+
+	t.Run("stale sandbox runtime var is rejected", func(t *testing.T) {
+		fixture := newRunFixture(t, "ready")
+		env := fixture.env()
+		env[runtimewiring.EnvSandboxRuntime] = "/usr/bin/srt"
+
+		stdout, stderr, code := runBinaryExactEnv(t, binary, env, "run")
+		if code == 0 {
+			t.Fatalf("TC-036-01 stale srt var exit code = 0, want non-zero; stdout=%q stderr=%q", stdout, stderr)
+		}
+		if !strings.Contains(stderr, runtimewiring.EnvSandboxRuntime) || !strings.Contains(stderr, "removed") {
+			t.Fatalf("TC-036-01 stderr = %q, want removed-variable migration error naming %s", stderr, runtimewiring.EnvSandboxRuntime)
+		}
+		if _, err := os.Stat(fixture.claudeLog); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("TC-036-01 stale srt var executor log err = %v, want no executor attempt", err)
+		}
+	})
+}
+
+// TestRuntimeRunWiresPodmanAdapter (TC-036-02) asserts the default run wiring
+// drives the Podman execution-box launcher and emits containment=podman evidence.
+func TestRuntimeRunWiresPodmanAdapter(t *testing.T) {
+	binary := buildBinary(t)
+	fixture := newRunFixture(t, "ready")
+
+	stdout, stderr, code := runBinaryExactEnv(t, binary, fixture.env(), "run")
+	if code != 0 {
+		t.Fatalf("TC-036-02 run exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	launcherLog := readRuntimeText(t, fixture.launcherLog)
+	if !strings.Contains(launcherLog, "cmd=/bin/true") {
+		t.Fatalf("TC-036-02 fake launcher log = %q, want Podman launcher invoked with the /bin/true probe", launcherLog)
+	}
+	if !strings.Contains(launcherLog, "worktree="+fixture.worktree) {
+		t.Fatalf("TC-036-02 fake launcher log = %q, want --worktree passed to the launcher", launcherLog)
+	}
+
+	events := readRunRecordEvents(t, fixture.recordPath)
+	assertRunRecordContains(t, events, "command", "command", "containment=podman")
+	assertRunRecordContains(t, events, "command", "command", "launcher="+fixture.launcherPath)
+	t.Log("TC-036-02 runtime uses Podman adapter; sandboxruntime not imported")
+}
+
+// TestNoSrtInvocation (TC-036-02) asserts the run pipeline never spawns an srt
+// subprocess and the removed AGENT_BUILDER_SANDBOX_RUNTIME var stays absent.
+func TestNoSrtInvocation(t *testing.T) {
+	binary := buildBinary(t)
+	fixture := newRunFixture(t, "ready")
+	env := fixture.env()
+
+	// A fake `srt` on PATH that records any invocation: if the pipeline ever
+	// execs srt, this log appears and the test fails.
+	srtLog := filepath.Join(filepath.Dir(fixture.launcherLog), "srt-invocation.log")
+	srtPath := filepath.Join(fixture.shimDir, "srt")
+	writeFile(t, srtPath, fmt.Sprintf("#!/bin/sh\nprintf 'srt invoked\\n' >> %s\nexit 0\n", shellQuoteForRun(srtLog)))
+	if err := os.Chmod(srtPath, 0o755); err != nil {
+		t.Fatalf("chmod fake srt: %v", err)
+	}
+
+	stdout, stderr, code := runBinaryExactEnv(t, binary, env, "run")
+	if code != 0 {
+		t.Fatalf("TC-036-02 run exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if _, err := os.Stat(srtLog); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("TC-036-02 srt was invoked by the run pipeline (log %s exists), want no srt subprocess", srtLog)
+	}
+	if _, present := env[runtimewiring.EnvSandboxRuntime]; present {
+		t.Fatalf("TC-036-02 fixture env still sets %s, want it absent from the default run contract", runtimewiring.EnvSandboxRuntime)
+	}
+	t.Log("TC-036-02 no srt subprocess; AGENT_BUILDER_SANDBOX_RUNTIME absent from run contract")
 }
 
 type runFixture struct {
-	taskRoot   string
-	worktree   string
-	shimDir    string
-	claudePath string
-	srtPath    string
-	gitPath    string
-	ghPath     string
-	claudeLog  string
-	srtLog     string
-	publishLog string
-	recordPath string
+	taskRoot     string
+	worktree     string
+	shimDir      string
+	claudePath   string
+	launcherPath string
+	gitPath      string
+	ghPath       string
+	claudeLog    string
+	launcherLog  string
+	publishLog   string
+	recordPath   string
 }
 
 func newRunFixture(t *testing.T, status string) runFixture {
@@ -174,7 +244,7 @@ func newRunFixture(t *testing.T, status string) runFixture {
 	worktree := filepath.Join(root, "worktree")
 	shimDir := filepath.Join(root, "bin")
 	claudeLog := filepath.Join(root, "claude.log")
-	srtLog := filepath.Join(root, "srt.log")
+	launcherLog := filepath.Join(root, "launcher.log")
 	publishLog := filepath.Join(root, "publish.log")
 
 	writeFile(t, filepath.Join(taskRoot, "docs/plans/roadmap.md"), "# Roadmap\n")
@@ -197,23 +267,23 @@ func TestValue(t *testing.T) {
 		t.Fatalf("mkdir shim dir: %v", err)
 	}
 	claudePath := writeFakeClaude(t, shimDir, claudeLog)
-	srtPath := writeFakeSRTForRun(t, shimDir, srtLog)
+	launcherPath := writeFakeLauncherForRun(t, shimDir, launcherLog)
 	gitPath := writeFakeGitForRun(t, shimDir, publishLog)
 	ghPath := writeFakeGHForRun(t, shimDir, publishLog)
 	writePassingGateTools(t, shimDir)
 
 	return runFixture{
-		taskRoot:   taskRoot,
-		worktree:   worktree,
-		shimDir:    shimDir,
-		claudePath: claudePath,
-		srtPath:    srtPath,
-		gitPath:    gitPath,
-		ghPath:     ghPath,
-		claudeLog:  claudeLog,
-		srtLog:     srtLog,
-		publishLog: publishLog,
-		recordPath: filepath.Join(root, "run-record.ndjson"),
+		taskRoot:     taskRoot,
+		worktree:     worktree,
+		shimDir:      shimDir,
+		claudePath:   claudePath,
+		launcherPath: launcherPath,
+		gitPath:      gitPath,
+		ghPath:       ghPath,
+		claudeLog:    claudeLog,
+		launcherLog:  launcherLog,
+		publishLog:   publishLog,
+		recordPath:   filepath.Join(root, "run-record.ndjson"),
 	}
 }
 
@@ -223,7 +293,7 @@ func (f runFixture) env() map[string]string {
 		runtimewiring.EnvTaskRoot:         f.taskRoot,
 		runtimewiring.EnvWorktree:         f.worktree,
 		runtimewiring.EnvClaudeCLI:        f.claudePath,
-		runtimewiring.EnvSandboxRuntime:   f.srtPath,
+		runtimewiring.EnvExecBoxLauncher:  f.launcherPath,
 		runtimewiring.EnvRunRecord:        f.recordPath,
 		runtimewiring.EnvRunTimeout:       "5s",
 		runtimewiring.EnvMaxAttempts:      "1",
@@ -315,22 +385,31 @@ printf 'https://github.com/acme/runfixture/pull/28\n'
 	return path
 }
 
-func writeFakeSRTForRun(t *testing.T, dir, logPath string) string {
+// writeFakeLauncherForRun writes a fake Podman execution-box launcher that
+// parses `--worktree X [--egress-allowlist Y] [--] cmd...` (the flag shape
+// emitted by internal/sandbox/podman), records the worktree and command, and
+// execs the command. The default-run containment probe command is /bin/true.
+func writeFakeLauncherForRun(t *testing.T, dir, logPath string) string {
 	t.Helper()
-	path := filepath.Join(dir, "srt")
+	path := filepath.Join(dir, "run.sh")
 	script := fmt.Sprintf(`#!/bin/sh
 set -eu
-if [ "$1" != "--settings" ]; then
-    echo "missing --settings" >&2
-    exit 98
-fi
-shift 2
-printf 'argv=%%s\n' "$*" >> %s
+worktree=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --worktree) worktree=$2; shift 2 ;;
+        --egress-allowlist) shift 2 ;;
+        --) shift; break ;;
+        *) break ;;
+    esac
+done
+printf 'worktree=%%s\n' "$worktree" >> %s
+printf 'cmd=%%s\n' "$*" >> %s
 exec "$@"
-`, shellQuoteForRun(logPath))
+`, shellQuoteForRun(logPath), shellQuoteForRun(logPath))
 	writeFile(t, path, script)
 	if err := os.Chmod(path, 0o755); err != nil {
-		t.Fatalf("chmod fake srt: %v", err)
+		t.Fatalf("chmod fake launcher: %v", err)
 	}
 	return path
 }
@@ -402,19 +481,20 @@ func runBinaryExactEnv(t *testing.T, binary string, env map[string]string, args 
 
 func filteredBaseEnv() []string {
 	blocked := map[string]struct{}{
-		runtimewiring.EnvTaskRoot:       {},
-		runtimewiring.EnvWorktree:       {},
-		runtimewiring.EnvClaudeCLI:      {},
-		runtimewiring.EnvSandboxRuntime: {},
-		runtimewiring.EnvRunRecord:      {},
-		runtimewiring.EnvRunTimeout:     {},
-		runtimewiring.EnvMaxAttempts:    {},
-		runtimewiring.EnvPublishRemote:  {},
-		runtimewiring.EnvGitCLI:         {},
-		runtimewiring.EnvGitHubCLI:      {},
-		runtimewiring.EnvGitToken:       {},
-		runtimewiring.EnvGitHubToken:    {},
-		"ANTHROPIC_API_KEY":             {},
+		runtimewiring.EnvTaskRoot:        {},
+		runtimewiring.EnvWorktree:        {},
+		runtimewiring.EnvClaudeCLI:       {},
+		runtimewiring.EnvExecBoxLauncher: {},
+		runtimewiring.EnvSandboxRuntime:  {},
+		runtimewiring.EnvRunRecord:       {},
+		runtimewiring.EnvRunTimeout:      {},
+		runtimewiring.EnvMaxAttempts:     {},
+		runtimewiring.EnvPublishRemote:   {},
+		runtimewiring.EnvGitCLI:          {},
+		runtimewiring.EnvGitHubCLI:       {},
+		runtimewiring.EnvGitToken:        {},
+		runtimewiring.EnvGitHubToken:     {},
+		"ANTHROPIC_API_KEY":              {},
 	}
 	filtered := []string{}
 	for _, entry := range os.Environ() {
