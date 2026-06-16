@@ -33,6 +33,10 @@ Acceptance status: Phase 1 is accepted at **fake-provider L5** by the Task 037 e
 
 `audit-trail` → `policy-engine` → `vault`. Each removes a specific human checkpoint and improves the agent that builds the next.
 
+**audit-trail v0** (ADR 025, Option B; tasks 038–042) ships a typed `audit.AuditEvent` taxonomy + `audit.Sink` seam, a hash-chained NDJSON `ChainWriter`, an `audit.Verify` tamper-detector, supervisor wiring behind `AGENT_BUILDER_AUDIT_RECORD`, and the F-005 `fitness-audit-isolation` check. v0 captures only the action events the run loop already emits (containment, pick, attempt, verify+verdict, publish, escalate, finish).
+
+> **Deferred — egress-attempt audit events (conditional follow-up).** Per ADR 025 decision 2, capturing egress *attempts* as audit events is **not** in v0 and is **spike-gated**: it becomes a task only if a short spike confirms the execution-box egress proxy already exposes attempts host-side. v0 does not block on a new containment data path. This gap is recorded here intentionally so it is not silently dropped — it is a Phase 2 conditional follow-up, not part of tasks 038–042.
+
 ## Deferred (not bootstrap-critical)
 
 - **Multi-provider router** (Claude + Gemini + local LLMs, quota/sensitivity/cost routing) — design the seam now, build as v1.
