@@ -1105,6 +1105,562 @@ run_tc047_02() {
     [ "$ok" -eq 1 ] && tc_pass "$tc"
 }
 
+# ─── TC-048 helpers ──────────────────────────────────────────────────────────
+#
+# make_fake_cgroup_dir creates a temp directory tree that mimics a cgroup-v2
+# layout.  Pass keywords to control which limit files are present:
+#   "cpu"    — creates cpu.max with a non-max value (200000 100000)
+#   "memory" — creates memory.max with a non-max value (2147483648)
+#   "pids"   — creates pids.max with a non-max value (256)
+# Files not listed are absent (simulating a runtime that doesn't expose them).
+
+make_fake_cgroup_dir() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    for spec in "$@"; do
+        case "$spec" in
+            cpu)
+                printf '200000 100000\n' > "$tmpdir/cpu.max"
+                ;;
+            memory)
+                printf '2147483648\n' > "$tmpdir/memory.max"
+                ;;
+            pids)
+                printf '256\n' > "$tmpdir/pids.max"
+                ;;
+        esac
+    done
+    printf '%s' "$tmpdir"
+}
+
+# run_tc003_block runs only the TC-003 cgroup-detection block from probe.sh
+# in isolation via a minimal wrapper script written to a temp file.
+# Usage: run_tc003_block RUNTIME CGROUP_DIR
+# Sets: _tc3_exit, _tc3_output (combined stdout+stderr)
+run_tc003_block() {
+    local runtime="$1"
+    local cgroup_dir="$2"
+
+    # Write the TC-003-only test script to a temp file to avoid heredoc quoting issues.
+    local script_file
+    script_file="$(mktemp /tmp/tc003_block_XXXXXX.sh)"
+    cat > "$script_file" << 'EOF_TC3_SCRIPT'
+#!/bin/sh
+fail() {
+    printf '%s FAIL: %s\n' "$1" "$2"
+    exit 1
+}
+pass() {
+    printf '%s PASS: %s\n' "$1" "$2"
+}
+
+runtime="${EXEC_BOX_RUNTIME:-unknown}"
+cgroup_root="${EXEC_BOX_CGROUP_ROOT:-/sys/fs/cgroup}"
+pids_limited="unknown"
+memory_limited="unknown"
+cpu_limited="unknown"
+
+if [ -r "$cgroup_root/pids.max" ]; then
+    pids_limit="$(cat "$cgroup_root/pids.max")"
+    [ "$pids_limit" != "max" ] && pids_limited="yes"
+elif [ -r "$cgroup_root/pids/pids.max" ]; then
+    pids_limit="$(cat "$cgroup_root/pids/pids.max")"
+    [ "$pids_limit" != "max" ] && pids_limited="yes"
+fi
+
+if [ -r "$cgroup_root/memory.max" ]; then
+    memory_limit="$(cat "$cgroup_root/memory.max")"
+    [ "$memory_limit" != "max" ] && memory_limited="yes"
+elif [ -r "$cgroup_root/memory/memory.limit_in_bytes" ]; then
+    memory_limit="$(cat "$cgroup_root/memory/memory.limit_in_bytes")"
+    [ "$memory_limit" -gt 0 ] && memory_limited="yes"
+fi
+
+if [ -r "$cgroup_root/cpu.max" ]; then
+    cpu_limit="$(cat "$cgroup_root/cpu.max")"
+    case "$cpu_limit" in
+        max*) ;;
+        *) cpu_limited="yes" ;;
+    esac
+elif [ -r "$cgroup_root/cpu/cpu.cfs_quota_us" ]; then
+    cpu_quota="$(cat "$cgroup_root/cpu/cpu.cfs_quota_us")"
+    [ "$cpu_quota" -gt 0 ] && cpu_limited="yes"
+fi
+
+if [ "$runtime" = "runsc" ]; then
+    if [ "$memory_limited" != "yes" ]; then
+        fail TC-003 "expected memory cgroup limit in-box under runsc, got memory=$memory_limited"
+    fi
+    pass TC-003 "memory cap visible in-box; cpu/pids caps verified host-side under runsc (cpu=$cpu_limited pids=$pids_limited)"
+else
+    if [ "$pids_limited" != "yes" ] || [ "$memory_limited" != "yes" ] || [ "$cpu_limited" != "yes" ]; then
+        fail TC-003 "expected cgroup limits, got cpu=$cpu_limited memory=$memory_limited pids=$pids_limited"
+    fi
+    pass TC-003 'cpu, memory, and pids cgroup limits are visible in-box'
+fi
+EOF_TC3_SCRIPT
+    chmod +x "$script_file"
+
+    _tc3_exit=0
+    _tc3_output="$(
+        EXEC_BOX_RUNTIME="$runtime" \
+        EXEC_BOX_CGROUP_ROOT="$cgroup_dir" \
+        sh "$script_file" 2>&1
+    )" || _tc3_exit=$?
+
+    rm -f "$script_file"
+}
+
+# make_probe_stub_dir_caps creates a stub podman dir where:
+#   inspect (TC-003 HOST format) returns the given NanoCpus value
+#   inspect (TC-016 format) returns the given oci_runtime
+#   start exits with the given exit code
+# Usage: make_probe_stub_dir_caps [nanocpus=N] [pids=N] [start_exit=N] [oci_runtime=NAME]
+make_probe_stub_dir_caps() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+
+    local nanocpus=2000000000
+    local pids=256
+    local start_exit=0
+    local oci_runtime="runsc"
+
+    for spec in "$@"; do
+        case "$spec" in
+            nanocpus=*) nanocpus="${spec#nanocpus=}" ;;
+            pids=*)     pids="${spec#pids=}" ;;
+            start_exit=*) start_exit="${spec#start_exit=}" ;;
+            oci_runtime=*) oci_runtime="${spec#oci_runtime=}" ;;
+        esac
+    done
+
+    cat > "$tmpdir/podman" <<PODMAN_CAPS_STUB
+#!/bin/bash
+STUB_NANOCPUS=${nanocpus}
+STUB_PIDS=${pids}
+STUB_START_EXIT=${start_exit}
+STUB_OCI_RUNTIME="${oci_runtime}"
+
+subcommand="\$1"
+shift || true
+
+case "\$subcommand" in
+    info)
+        if [ "\${1:-}" = "--format" ]; then
+            fmt="\$2"
+            case "\$fmt" in
+                '{{json .Host.OCIRuntimes}}')
+                    printf '{"runsc":"/usr/bin/runsc","runc":"/usr/bin/runc"}\n'
+                    ;;
+                '{{.Store.GraphDriverName}}')
+                    printf 'overlay\n'
+                    ;;
+                '{{.Store.GraphRoot}}')
+                    printf '/tmp/containers/storage\n'
+                    ;;
+                *)
+                    printf 'true\n'
+                    ;;
+            esac
+        else
+            printf 'true\n'
+        fi
+        exit 0
+        ;;
+    build)
+        exit 0
+        ;;
+    create)
+        if [ -n "\${STUB_ARGV_FILE:-}" ]; then
+            printf '%s\n' "\$*" > "\$STUB_ARGV_FILE"
+        fi
+        printf 'stub-container-caps-id\n'
+        exit 0
+        ;;
+    inspect)
+        fmt="\${2:-}"
+        case "\$fmt" in
+            '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}} {{.HostConfig.ShmSize}}')
+                # Return configurable NanoCpus and PidsLimit; Memory/ShmSize always valid
+                printf '%s 2147483648 %s 67108864\n' "\$STUB_NANOCPUS" "\$STUB_PIDS"
+                ;;
+            '{{.OCIRuntime}}')
+                printf '%s\n' "\$STUB_OCI_RUNTIME"
+                ;;
+            *)
+                printf '%s\n' "\$STUB_OCI_RUNTIME"
+                ;;
+        esac
+        exit 0
+        ;;
+    start)
+        if [ \$STUB_START_EXIT -eq 125 ]; then
+            printf 'Error: stub podman start failed with exit 125 (simulated launch failure)\n' >&2
+            exit 125
+        elif [ \$STUB_START_EXIT -ne 0 ]; then
+            # Simulate an in-box probe failure (non-125 exit from the container itself)
+            printf 'TC-003 FAIL: expected cgroup limits, got cpu=unknown memory=unknown pids=unknown\n' >&2
+            exit \$STUB_START_EXIT
+        fi
+        exit 0
+        ;;
+    rm)
+        exit 0
+        ;;
+    pod)
+        exit 0
+        ;;
+    run)
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+PODMAN_CAPS_STUB
+    chmod +x "$tmpdir/podman"
+
+    printf '#!/bin/sh\nexit 0\n' > "$tmpdir/runsc"
+    chmod +x "$tmpdir/runsc"
+
+    printf '%s' "$tmpdir"
+}
+
+# run_probe_with_caps invokes run.sh --probe using make_probe_stub_dir_caps stubs.
+# Usage: run_probe_with_caps STUB_DIR WORKTREE ALLOWLIST GATE_TOOLS RUNTIME [extra_env...]
+# Sets: _rpc_exit, _rpc_combined (stdout+stderr merged)
+run_probe_with_caps() {
+    local stub_dir="$1" worktree="$2" allowlist="$3" gate_tools="$4" runtime="$5"
+    shift 5
+
+    local stdout_file stderr_file
+    stdout_file="$(mktemp)"
+    stderr_file="$(mktemp)"
+
+    _rpc_exit=0
+    env PATH="$stub_dir:$PATH" \
+        EXEC_BOX_EGRESS_ALLOWLIST="$allowlist" \
+        EXEC_BOX_STORAGE_QUOTA_SUPPORTED=0 \
+        EXEC_BOX_STORAGE_SIZE="" \
+        "$@" \
+        bash "$RUN_SH" \
+            --probe \
+            --worktree "$worktree" \
+            --gate-tools "$gate_tools" \
+            --image "stub-image:test" \
+            --runtime "$runtime" \
+        > "$stdout_file" 2> "$stderr_file" \
+    || _rpc_exit=$?
+
+    _rpc_combined="$(cat "$stdout_file" "$stderr_file")"
+    rm -f "$stdout_file" "$stderr_file"
+}
+
+# ─── TC-048-01: runc in-box TC-003 unchanged (all three caps asserted in-box) ─
+# REQ-048-01
+#
+# Part A: runc + all three cgroup files present → TC-003 PASS (all-three message)
+# Part B: runc + cpu missing → TC-003 FAIL + non-zero exit
+# Part C: runc + pids missing → TC-003 FAIL + non-zero exit
+
+run_tc048_01() {
+    local tc="TC-048-01"
+    local ok=1
+
+    # Part A: runc + all three → PASS
+    local cgroup_dir
+    cgroup_dir="$(make_fake_cgroup_dir cpu memory pids)"
+
+    run_tc003_block "runc" "$cgroup_dir"
+    rm -rf "$cgroup_dir"
+
+    if [ "$_tc3_exit" -ne 0 ]; then
+        tc_fail "${tc}a" "runc + all-three caps: expected TC-003 PASS (exit 0), got exit $_tc3_exit; output: $_tc3_output"
+        ok=0
+    fi
+    if ! printf '%s' "$_tc3_output" | grep -q 'TC-003 PASS'; then
+        tc_fail "${tc}a" "runc + all-three: expected 'TC-003 PASS' in output; got: $_tc3_output"
+        ok=0
+    fi
+    # The runc PASS message must say "cpu, memory, and pids" (not the runsc shape)
+    if ! printf '%s' "$_tc3_output" | grep -q 'cpu, memory, and pids'; then
+        tc_fail "${tc}a" "runc PASS line must mention 'cpu, memory, and pids'; got: $_tc3_output"
+        ok=0
+    fi
+
+    # Part B: runc + cpu missing → FAIL
+    cgroup_dir="$(make_fake_cgroup_dir memory pids)"
+
+    run_tc003_block "runc" "$cgroup_dir"
+    rm -rf "$cgroup_dir"
+
+    if [ "$_tc3_exit" -eq 0 ]; then
+        tc_fail "${tc}b" "runc + cpu missing: expected non-zero exit (TC-003 FAIL), got exit 0; output: $_tc3_output"
+        ok=0
+    fi
+    if ! printf '%s' "$_tc3_output" | grep -q 'TC-003 FAIL'; then
+        tc_fail "${tc}b" "runc + cpu missing: expected 'TC-003 FAIL' in output; got: $_tc3_output"
+        ok=0
+    fi
+
+    # Part C: runc + pids missing → FAIL
+    cgroup_dir="$(make_fake_cgroup_dir cpu memory)"
+
+    run_tc003_block "runc" "$cgroup_dir"
+    rm -rf "$cgroup_dir"
+
+    if [ "$_tc3_exit" -eq 0 ]; then
+        tc_fail "${tc}c" "runc + pids missing: expected non-zero exit (TC-003 FAIL), got exit 0; output: $_tc3_output"
+        ok=0
+    fi
+    if ! printf '%s' "$_tc3_output" | grep -q 'TC-003 FAIL'; then
+        tc_fail "${tc}c" "runc + pids missing: expected 'TC-003 FAIL' in output; got: $_tc3_output"
+        ok=0
+    fi
+
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
+# ─── TC-048-02: runsc memory in-box + cpu/pids deferred (PASS when memory present) ─
+# REQ-048-02
+#
+# runsc + memory present, cpu/pids absent (gVisor shape) → TC-003 PASS.
+# The PASS line must name the runsc host-side-authoritative shape.
+# cpu=unknown/pids=unknown must NOT fail the probe under runsc.
+
+run_tc048_02() {
+    local tc="TC-048-02"
+    local ok=1
+
+    # runsc shape: only memory visible, cpu and pids absent
+    local cgroup_dir
+    cgroup_dir="$(make_fake_cgroup_dir memory)"
+
+    run_tc003_block "runsc" "$cgroup_dir"
+    rm -rf "$cgroup_dir"
+
+    if [ "$_tc3_exit" -ne 0 ]; then
+        tc_fail "${tc}a" "runsc + memory-only: expected TC-003 PASS (exit 0), got exit $_tc3_exit; output: $_tc3_output"
+        ok=0
+    fi
+    if ! printf '%s' "$_tc3_output" | grep -q 'TC-003 PASS'; then
+        tc_fail "${tc}a" "runsc + memory-only: expected 'TC-003 PASS' in output; got: $_tc3_output"
+        ok=0
+    fi
+    # PASS line must name the runsc deferral shape (host-side cpu/pids)
+    if ! printf '%s' "$_tc3_output" | grep -qE 'host.side|runsc'; then
+        tc_fail "${tc}a" "runsc PASS line must mention 'host-side' or 'runsc'; got: $_tc3_output"
+        ok=0
+    fi
+    # Must NOT say 'cpu, memory, and pids cgroup limits are visible in-box' (that's runc shape)
+    if printf '%s' "$_tc3_output" | grep -q 'cpu, memory, and pids cgroup limits are visible in-box'; then
+        tc_fail "${tc}a" "runsc must NOT emit runc all-three PASS line; got: $_tc3_output"
+        ok=0
+    fi
+
+    # Part B: runsc + memory missing → FAIL (memory is the one required in-box check)
+    cgroup_dir="$(make_fake_cgroup_dir)"  # no files at all
+
+    run_tc003_block "runsc" "$cgroup_dir"
+    rm -rf "$cgroup_dir"
+
+    if [ "$_tc3_exit" -eq 0 ]; then
+        tc_fail "${tc}b" "runsc + memory missing: expected non-zero exit (TC-003 FAIL), got exit 0; output: $_tc3_output"
+        ok=0
+    fi
+    if ! printf '%s' "$_tc3_output" | grep -q 'TC-003 FAIL'; then
+        tc_fail "${tc}b" "runsc + memory missing: expected 'TC-003 FAIL' in output; got: $_tc3_output"
+        ok=0
+    fi
+
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
+# ─── TC-048-03 (CRITICAL negative): runsc + host-side cpu/pids absent → probe FAILS ─
+# REQ-048-03
+#
+# This is the CRITICAL negative test: proves the runsc branch does NOT relax into
+# an always-pass.  We drive run.sh --probe with a stub podman that returns
+# NanoCpus=0 in the host-side inspect.  The host-side TC-003 die-on-zero must
+# fire and exit --probe non-zero.
+
+run_tc048_03() {
+    local tc="TC-048-03"
+    local ok=1
+
+    local stub_dir worktree allowlist gate_tools
+    # NanoCpus=0 → the host-side TC-003 die fires ("NanoCpus is 0")
+    stub_dir="$(make_probe_stub_dir_caps nanocpus=0 oci_runtime=runsc)"
+    worktree="$(make_fake_worktree)"
+    allowlist="$(make_fake_allowlist)"
+    gate_tools="$(make_fake_gate_tools)"
+
+    run_probe_with_caps "$stub_dir" "$worktree" "$allowlist" "$gate_tools" "runsc"
+
+    # Must exit non-zero (host-side TC-003 die fired)
+    if [ "$_rpc_exit" -eq 0 ]; then
+        tc_fail "$tc" "runsc + NanoCpus=0: expected non-zero exit from host-side TC-003 die, got exit 0; output: $_rpc_combined"
+        ok=0
+    fi
+    # Must contain TC-003 FAIL referencing NanoCpus
+    if ! printf '%s' "$_rpc_combined" | grep -qiE 'TC-003 FAIL.*NanoCpus|NanoCpus.*0|cpu.*quota.*not set'; then
+        tc_fail "$tc" "runsc + NanoCpus=0: expected TC-003 FAIL mentioning NanoCpus in output; got: $_rpc_combined"
+        ok=0
+    fi
+
+    cleanup_stub_dir "$stub_dir"
+    rm -rf "$worktree" "$allowlist" "$gate_tools"
+
+    # Part B: PidsLimit=-1 → host-side TC-003 die fires
+    stub_dir="$(make_probe_stub_dir_caps pids=-1 oci_runtime=runsc)"
+    worktree="$(make_fake_worktree)"
+    allowlist="$(make_fake_allowlist)"
+    gate_tools="$(make_fake_gate_tools)"
+
+    run_probe_with_caps "$stub_dir" "$worktree" "$allowlist" "$gate_tools" "runsc"
+
+    if [ "$_rpc_exit" -eq 0 ]; then
+        tc_fail "${tc}b" "runsc + PidsLimit=-1: expected non-zero exit from host-side TC-003 die, got exit 0; output: $_rpc_combined"
+        ok=0
+    fi
+    if ! printf '%s' "$_rpc_combined" | grep -qiE 'TC-003 FAIL.*PidsLimit|PidsLimit.*-1|no PID limit'; then
+        tc_fail "${tc}b" "runsc + PidsLimit=-1: expected TC-003 FAIL mentioning PidsLimit; got: $_rpc_combined"
+        ok=0
+    fi
+
+    cleanup_stub_dir "$stub_dir"
+    rm -rf "$worktree" "$allowlist" "$gate_tools"
+
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
+# ─── TC-048-04: unknown/future runtime defaults to STRICT (fail-closed allowlist) ─
+# REQ-048-04
+#
+# A runtime that is neither "runc" nor "runsc" (e.g. "kata") with only memory
+# visible in-box → strict path → TC-003 FAIL + non-zero.
+# This proves the allowlist: only "runsc" takes the relaxed path.
+
+run_tc048_04() {
+    local tc="TC-048-04"
+    local ok=1
+
+    # Part A: kata + only memory → strict path → FAIL
+    local cgroup_dir
+    cgroup_dir="$(make_fake_cgroup_dir memory)"
+
+    run_tc003_block "kata" "$cgroup_dir"
+    rm -rf "$cgroup_dir"
+
+    if [ "$_tc3_exit" -eq 0 ]; then
+        tc_fail "${tc}a" "kata + memory-only: expected non-zero exit (strict path), got exit 0; output: $_tc3_output"
+        ok=0
+    fi
+    if ! printf '%s' "$_tc3_output" | grep -q 'TC-003 FAIL'; then
+        tc_fail "${tc}a" "kata + memory-only: expected 'TC-003 FAIL' (strict); got: $_tc3_output"
+        ok=0
+    fi
+
+    # Part B: unknown + memory only → strict path → FAIL
+    cgroup_dir="$(make_fake_cgroup_dir memory)"
+
+    run_tc003_block "unknown" "$cgroup_dir"
+    rm -rf "$cgroup_dir"
+
+    if [ "$_tc3_exit" -eq 0 ]; then
+        tc_fail "${tc}b" "unknown runtime + memory-only: expected non-zero exit (strict path), got exit 0; output: $_tc3_output"
+        ok=0
+    fi
+    if ! printf '%s' "$_tc3_output" | grep -q 'TC-003 FAIL'; then
+        tc_fail "${tc}b" "unknown runtime + memory-only: expected 'TC-003 FAIL' (strict); got: $_tc3_output"
+        ok=0
+    fi
+
+    # Part C: kata + all three → strict path → PASS (strict allows all three present)
+    cgroup_dir="$(make_fake_cgroup_dir cpu memory pids)"
+
+    run_tc003_block "kata" "$cgroup_dir"
+    rm -rf "$cgroup_dir"
+
+    if [ "$_tc3_exit" -ne 0 ]; then
+        tc_fail "${tc}c" "kata + all-three: expected TC-003 PASS (strict all-three present), got exit $_tc3_exit; output: $_tc3_output"
+        ok=0
+    fi
+    if ! printf '%s' "$_tc3_output" | grep -q 'TC-003 PASS'; then
+        tc_fail "${tc}c" "kata + all-three: expected 'TC-003 PASS'; got: $_tc3_output"
+        ok=0
+    fi
+
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
+# ─── TC-048-05: probe-path launch guard: exit 125 vs in-box non-zero ──────────
+# REQ-048-05
+#
+# Part A: podman start exits 125 (launch failure) →
+#         run.sh dies with "container did not start" named error, non-zero exit.
+# Part B: podman start exits 1 (in-box probe failure) →
+#         run.sh reports as a probe failure ("probe failed: in-box probe"), non-zero,
+#         NO "container did not start" mislabel.
+
+run_tc048_05() {
+    local tc="TC-048-05"
+    local ok=1
+
+    local worktree allowlist gate_tools
+
+    # Part A: podman start exits 125 → "container did not start" named error
+    local stub_a
+    stub_a="$(make_probe_stub_dir_caps start_exit=125 oci_runtime=runsc)"
+    worktree="$(make_fake_worktree)"
+    allowlist="$(make_fake_allowlist)"
+    gate_tools="$(make_fake_gate_tools)"
+
+    run_probe_with_caps "$stub_a" "$worktree" "$allowlist" "$gate_tools" "runsc"
+
+    if [ "$_rpc_exit" -eq 0 ]; then
+        tc_fail "${tc}a" "start exit 125: expected non-zero exit; got exit 0; output: $_rpc_combined"
+        ok=0
+    fi
+    if ! printf '%s' "$_rpc_combined" | grep -qiE 'container did not start|did not start'; then
+        tc_fail "${tc}a" "start exit 125: expected 'container did not start' named error; got: $_rpc_combined"
+        ok=0
+    fi
+
+    cleanup_stub_dir "$stub_a"
+    rm -rf "$worktree" "$allowlist" "$gate_tools"
+
+    # Part B: podman start exits 1 (in-box probe failure) →
+    # must report as "probe failed: in-box probe" (or similar), NOT "container did not start"
+    local stub_b
+    stub_b="$(make_probe_stub_dir_caps start_exit=1 oci_runtime=runsc)"
+    worktree="$(make_fake_worktree)"
+    allowlist="$(make_fake_allowlist)"
+    gate_tools="$(make_fake_gate_tools)"
+
+    run_probe_with_caps "$stub_b" "$worktree" "$allowlist" "$gate_tools" "runsc"
+
+    if [ "$_rpc_exit" -eq 0 ]; then
+        tc_fail "${tc}b" "start exit 1: expected non-zero exit (probe failure); got exit 0; output: $_rpc_combined"
+        ok=0
+    fi
+    # Must NOT emit "container did not start" (not a launch failure)
+    if printf '%s' "$_rpc_combined" | grep -qiE 'container did not start'; then
+        tc_fail "${tc}b" "start exit 1: must NOT emit 'container did not start' (mislabel); got: $_rpc_combined"
+        ok=0
+    fi
+    # Must emit some probe failure message
+    if ! printf '%s' "$_rpc_combined" | grep -qiE 'probe failed|in-box probe'; then
+        tc_fail "${tc}b" "start exit 1: expected 'probe failed'/'in-box probe' error message; got: $_rpc_combined"
+        ok=0
+    fi
+
+    cleanup_stub_dir "$stub_b"
+    rm -rf "$worktree" "$allowlist" "$gate_tools"
+
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 printf '\n=== storage-quota test harness ===\n\n'
@@ -1128,6 +1684,11 @@ run_tc047_02
 #   bash containment/execution-box/run.sh --worktree . --runtime runc --probe
 # Expected: TC-016 HOST: workload=agent runtime=runc + exit 0.
 # This test case requires a live podman 5.x environment and is not automated here.
+run_tc048_01
+run_tc048_02
+run_tc048_03
+run_tc048_04
+run_tc048_05
 
 printf '\n=== Results: %d passed, %d failed ===\n' "$PASS_COUNT" "$FAIL_COUNT"
 
