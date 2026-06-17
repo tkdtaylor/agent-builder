@@ -73,11 +73,11 @@ The skip-shape assertions (TC-053-02 and TC-053-03) are the in-repo L5 evidence:
   - A missing remote must produce a `t.Skipf`, not a `t.Fatalf` (it is a missing-prereq SKIP, not a config error).
   - A failed `gh auth status` must produce a `t.Skipf` (unauthenticated is a prereq SKIP, not a test failure).
 
-### TC-053-04: existing `TestBranchPRPublication` and `TestPublisherFailureDoesNotMarkDone` still pass (regression guard)
+### TC-053-04: existing `tests/publisher` fake tests still pass (regression guard)
 
 - **Requirement:** REQ-053-04
 - **Mechanism:** after adding `tests/publisher/live_publish_test.go`, run `go test ./tests/publisher`. The existing fake tests must still pass unchanged.
-- **Expected output:** `TestBranchPRPublication` PASS; `TestPublisherFailureDoesNotMarkDone` PASS; exit 0. The new live test SKIP (since `AGENT_BUILDER_LIVE_PUBLISH` is unset in CI).
+- **Expected output:** `TestBranchPRPublication` PASS; `TestPublisherFailureRedactsSecrets` PASS; exit 0. The new live test SKIP (since `AGENT_BUILDER_LIVE_PUBLISH` is unset in CI). (Note: the e2e publisher regression `TestPublisherFailureDoesNotMarkDone` lives in `tests/e2e/`, not `tests/publisher/`; it is covered by `make check`, which runs both packages.)
 - **Edge cases:**
   - Confirm the new file is in the same package `publisher_test` and does not introduce any compilation error, name collision, or unused import.
 
