@@ -350,7 +350,6 @@ PODMAN_STUB
             --worktree "$worktree" \
             --gate-tools "$gate_tools" \
             --image "stub-image:test" \
-            --runtime "runsc" \
         > /dev/null 2>&1 || true
 
     # Check that the mode file was written and contains 777

@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-16
+**Last updated:** 2026-06-17
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -148,6 +148,7 @@ C4Component
 - ADR 014 defines the execution-box profile artifact; supervisor wiring to launch it is deferred to the dispatch task.
 - ADR 015 defines the execution-box egress sidecar and allowlist contract; it changes the execution-box runtime topology without changing the agent-builder CLI component graph.
 - ADR 016 defines the execution-box runtime tier seam; workload containers run with Podman `--runtime` selected by workload default (`agent` -> `runsc`, `dev` -> `runc`) or explicit override, without changing the CLI component graph.
+- ADR 030 refines the runtime tier seam for the rootless egress path: the egress workload runtime resolves to `runc` (overriding the agent-tier `runsc` default) because the workload joins the pod's `--userns=keep-id` and gVisor's gofer cannot enter that pre-existing userns; non-networked paths keep the selected runtime unchanged; explicit `--runtime runsc` with egress fails loudly. The egress allowlist entries move to `podman pod create` (not the workload member). This changes the execution-box egress pod topology but not the agent-builder CLI component graph.
 - Task 033 defines the execution-box Gate toolchain contract; workload containers prepend a read-only mounted scanner/linter artifact directory to `PATH`, and the containment probe reports Gate tool path/version evidence.
 
 ---

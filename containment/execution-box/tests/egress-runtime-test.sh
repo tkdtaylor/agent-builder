@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
-# Test harness for TC-049: egress pod --userns/--pod conflict (rootless podman).
+# Test harness for TC-051: egress path runs under runc; explicit runsc fails loud; --add-host on pod.
 #
-# Verifies REQ-049-01 through REQ-049-04:
-#   TC-049-01  podman pod create has --userns=keep-id; sidecar run -d and egress
-#              workload run --pod do NOT have --userns.
-#   TC-049-02  non-pod --probe path still carries --userns=keep-id on the container.
-#   TC-049-03  pod members (sidecar + egress workload) still carry --user <uid>:<gid>.
+# Verifies REQ-051-01 through REQ-051-05:
+#   TC-051-01  default (no --runtime) + --egress-probe → workload argv has
+#              --runtime runc AND --label agent-builder.runtime=runc (silent resolve from runsc)
+#   TC-051-02  --runtime runsc --egress-probe → dies with ADR 030 message, non-zero,
+#              no workload podman run issued
+#   TC-051-03  --runtime runc --egress-probe → workload argv has --runtime runc; no die
+#   TC-051-04  --add-host H:IP entries appear on podman pod create argv and NOT on
+#              egress workload podman run argv
+#   TC-051-05  plain --probe (non-pod) → container still uses runsc; egress runc override
+#              does NOT leak to non-egress paths
 #
-# TC-049-04 (L6, real host) is documented here but not automated; it requires a
+# TC-051-06 (L6, real host) is documented but not automated; it requires a
 # live rootless podman 5.x environment.
 #
-# Usage: bash containment/execution-box/tests/userns-pod-test.sh
+# Usage: bash containment/execution-box/tests/egress-runtime-test.sh
 # Exit 0 on all pass; non-zero on any failure.
 
 set -euo pipefail
@@ -88,14 +93,14 @@ make_fake_allowlist() {
     printf '%s' "$tmpfile"
 }
 
-make_fake_probe_allowlist() {
+make_allowlist_with_entry() {
     local tmpfile
     tmpfile="$(mktemp)"
     printf 'api.github.com:443 # GitHub API\n' > "$tmpfile"
     printf '%s' "$tmpfile"
 }
 
-# ─── per-subcommand-recording egress stub ────────────────────────────────────
+# ─── egress stub: per-subcommand argv recording ─────────────────────────────
 #
 # make_argv_egress_stub_dir creates a stub podman that writes per-subcommand
 # argv to separate files when the environment variables are set:
@@ -113,7 +118,7 @@ make_argv_egress_stub_dir() {
 
     cat > "$tmpdir/podman" <<'PODMAN_ARGV_STUB'
 #!/bin/bash
-# Stub podman — per-subcommand argv recording for TC-049.
+# Stub podman — per-subcommand argv recording for TC-051.
 
 subcommand="$1"
 shift || true
@@ -190,7 +195,7 @@ case "$subcommand" in
         exit 0
         ;;
     create)
-        printf 'stub-container-id-049\n'
+        printf 'stub-container-id-051\n'
         exit 0
         ;;
     inspect)
@@ -201,10 +206,10 @@ case "$subcommand" in
                 printf '200000000 2147483648 256 67108864\n'
                 ;;
             '{{.OCIRuntime}}')
-                printf 'runsc\n'
+                printf 'runc\n'
                 ;;
             *)
-                printf 'runsc\n'
+                printf 'runc\n'
                 ;;
         esac
         exit 0
@@ -226,10 +231,11 @@ PODMAN_ARGV_STUB
     printf '%s' "$tmpdir"
 }
 
-# ─── probe-path stub (for TC-049-02: non-pod --probe) ────────────────────────
+# ─── probe-path stub (for TC-051-05: non-pod --probe) ────────────────────────
 #
 # make_probe_stub_dir creates a stub with argv recording for podman create,
-# plus all the usual TC-003/TC-016 inspect responses.
+# plus all the usual TC-003/TC-016 inspect responses. The non-pod path should
+# keep the agent-tier runsc default unchanged.
 
 make_probe_stub_dir() {
     local tmpdir
@@ -237,7 +243,7 @@ make_probe_stub_dir() {
 
     cat > "$tmpdir/podman" <<'PODMAN_PROBE_STUB'
 #!/bin/bash
-# Stub podman for --probe path (TC-049-02).
+# Stub podman for --probe path (TC-051-05).
 
 subcommand="$1"
 shift || true
@@ -273,7 +279,7 @@ case "$subcommand" in
         if [ -n "${STUB_PROBE_CREATE_ARGV_FILE:-}" ]; then
             printf '%s\n' "$*" > "$STUB_PROBE_CREATE_ARGV_FILE"
         fi
-        printf 'stub-container-probe-id\n'
+        printf 'stub-container-probe-id-051\n'
         exit 0
         ;;
     inspect)
@@ -318,47 +324,56 @@ PODMAN_PROBE_STUB
 
 # ─── runner helpers ───────────────────────────────────────────────────────────
 
-# run_egress_probe_argv STUB_DIR WORKTREE GATE_TOOLS
+# run_egress_probe_argv STUB_DIR WORKTREE GATE_TOOLS RUNTIME ALLOWLIST
 #   Runs run.sh --egress-probe with per-subcommand argv capture.
+#   RUNTIME can be empty (default) or "runsc" or "runc".
 #   The caller must export STUB_POD_CREATE_ARGV_FILE, STUB_SIDECAR_RUN_ARGV_FILE,
 #   STUB_WORKLOAD_RUN_ARGV_FILE before calling.
 #   Sets: _rep_exit, _rep_stdout, _rep_stderr
 run_egress_probe_argv() {
-    local stub_dir="$1" worktree="$2" gate_tools="$3"
+    local stub_dir="$1" worktree="$2" gate_tools="$3" runtime="$4" allowlist="$5"
 
-    local stdout_file stderr_file empty_allowlist
+    local stdout_file stderr_file
     stdout_file="$(mktemp)"
     stderr_file="$(mktemp)"
-    empty_allowlist="$(make_fake_allowlist)"
 
     _rep_exit=0
+
+    local cmd_args=(
+        --egress-probe
+        --worktree "$worktree"
+        --gate-tools "$gate_tools"
+        --image "stub-image:test"
+        --egress-allowlist "$allowlist"
+    )
+
+    if [ -n "$runtime" ]; then
+        cmd_args+=(--runtime "$runtime")
+    fi
+
     env PATH="$stub_dir:$PATH" \
-        EXEC_BOX_EGRESS_ALLOWLIST="$empty_allowlist" \
         EXEC_BOX_STORAGE_QUOTA_SUPPORTED=0 \
         EXEC_BOX_STORAGE_SIZE="" \
         STUB_POD_CREATE_ARGV_FILE="${STUB_POD_CREATE_ARGV_FILE:-}" \
         STUB_SIDECAR_RUN_ARGV_FILE="${STUB_SIDECAR_RUN_ARGV_FILE:-}" \
         STUB_WORKLOAD_RUN_ARGV_FILE="${STUB_WORKLOAD_RUN_ARGV_FILE:-}" \
         bash "$RUN_SH" \
-            --egress-probe \
-            --worktree "$worktree" \
-            --gate-tools "$gate_tools" \
-            --image "stub-image:test" \
+            "${cmd_args[@]}" \
         > "$stdout_file" 2> "$stderr_file" \
         || _rep_exit=$?
 
     _rep_stdout="$(cat "$stdout_file")"
     _rep_stderr="$(cat "$stderr_file")"
 
-    rm -f "$stdout_file" "$stderr_file" "$empty_allowlist"
+    rm -f "$stdout_file" "$stderr_file"
 }
 
-# run_probe_argv STUB_DIR WORKTREE GATE_TOOLS ALLOWLIST
-#   Runs run.sh --probe with argv capture for podman create.
+# run_probe_argv STUB_DIR WORKTREE GATE_TOOLS
+#   Runs run.sh --probe (non-pod) with argv capture for podman create.
 #   The caller must export STUB_PROBE_CREATE_ARGV_FILE before calling.
 #   Sets: _rpa_exit, _rpa_stdout, _rpa_stderr
 run_probe_argv() {
-    local stub_dir="$1" worktree="$2" gate_tools="$3" allowlist="$4"
+    local stub_dir="$1" worktree="$2" gate_tools="$3"
 
     local stdout_file stderr_file
     stdout_file="$(mktemp)"
@@ -366,7 +381,6 @@ run_probe_argv() {
 
     _rpa_exit=0
     env PATH="$stub_dir:$PATH" \
-        EXEC_BOX_EGRESS_ALLOWLIST="$allowlist" \
         EXEC_BOX_STORAGE_QUOTA_SUPPORTED=0 \
         EXEC_BOX_STORAGE_SIZE="" \
         STUB_PROBE_CREATE_ARGV_FILE="${STUB_PROBE_CREATE_ARGV_FILE:-}" \
@@ -384,31 +398,26 @@ run_probe_argv() {
     rm -f "$stdout_file" "$stderr_file"
 }
 
-# ─── TC-049-01: pod create owns userns; pod members do NOT set --userns ──────
-# REQ-049-01, REQ-049-02, REQ-049-03
+# ─── TC-051-01: default (no --runtime) + --egress-probe: workload runs runc ───
+# REQ-051-01
 
-run_tc049_01() {
-    local tc="TC-049-01"
+run_tc051_01() {
+    local tc="TC-051-01"
     local ok=1
 
-    local stub_dir worktree gate_tools
-    local pod_argv_file sidecar_argv_file workload_argv_file
+    local stub_dir worktree gate_tools allowlist
+    local workload_argv_file
     stub_dir="$(make_argv_egress_stub_dir)"
     worktree="$(make_fake_worktree)"
     gate_tools="$(make_fake_gate_tools)"
-    pod_argv_file="$(mktemp)"
-    sidecar_argv_file="$(mktemp)"
+    allowlist="$(make_allowlist_with_entry)"
     workload_argv_file="$(mktemp)"
 
     local _rep_exit _rep_stdout _rep_stderr
-    STUB_POD_CREATE_ARGV_FILE="$pod_argv_file" \
-    STUB_SIDECAR_RUN_ARGV_FILE="$sidecar_argv_file" \
     STUB_WORKLOAD_RUN_ARGV_FILE="$workload_argv_file" \
-    run_egress_probe_argv "$stub_dir" "$worktree" "$gate_tools"
+    run_egress_probe_argv "$stub_dir" "$worktree" "$gate_tools" "" "$allowlist"
 
-    local pod_argv sidecar_argv workload_argv
-    pod_argv="$(cat "$pod_argv_file" 2>/dev/null || true)"
-    sidecar_argv="$(cat "$sidecar_argv_file" 2>/dev/null || true)"
+    local workload_argv
     workload_argv="$(cat "$workload_argv_file" 2>/dev/null || true)"
 
     if [ "$_rep_exit" -ne 0 ]; then
@@ -416,62 +425,184 @@ run_tc049_01() {
         ok=0
     fi
 
-    # REQ-049-01: pod create must have --userns=keep-id
-    if ! assert_contains "${tc}/pod-create-has-userns" "$pod_argv" "--userns=keep-id"; then
+    # REQ-051-01: workload must have --runtime runc (not runsc)
+    if ! assert_contains "${tc}/workload-has-runtime-runc" "$workload_argv" "--runtime runc"; then
         ok=0
     fi
 
-    # REQ-049-02: sidecar run -d must NOT have --userns
-    if ! assert_not_contains "${tc}/sidecar-no-userns" "$sidecar_argv" "--userns"; then
+    # REQ-051-01: workload must have --label agent-builder.runtime=runc
+    if ! assert_contains "${tc}/workload-has-label-runc" "$workload_argv" "--label agent-builder.runtime=runc"; then
         ok=0
     fi
 
-    # REQ-049-02: sidecar still has its security posture args
-    if ! assert_contains "${tc}/sidecar-has-cap-net-admin" "$sidecar_argv" "--cap-add=NET_ADMIN"; then
-        ok=0
-    fi
-    if ! assert_contains "${tc}/sidecar-has-read-only" "$sidecar_argv" "--read-only"; then
-        ok=0
-    fi
-    if ! assert_contains "${tc}/sidecar-has-cap-drop" "$sidecar_argv" "--cap-drop=all"; then
-        ok=0
-    fi
-    if ! assert_contains "${tc}/sidecar-has-no-new-privs" "$sidecar_argv" "--security-opt=no-new-privileges"; then
+    # Ensure it does NOT have --runtime runsc
+    if ! assert_not_contains "${tc}/workload-not-runsc" "$workload_argv" "--runtime runsc"; then
         ok=0
     fi
 
-    # REQ-049-03: egress workload run --pod must NOT have --userns
-    if ! assert_not_contains "${tc}/workload-no-userns" "$workload_argv" "--userns"; then
+    # REQ-051-01: the stale agent-builder.runtime=runsc label from common_args must NOT
+    # survive onto the egress workload (only the substituted runc label is correct — a
+    # contradictory runtime label would mislead audit). Guards the two-element --label fix.
+    if ! assert_not_contains "${tc}/workload-no-stale-runsc-label" "$workload_argv" "agent-builder.runtime=runsc"; then
         ok=0
     fi
 
-    # REQ-049-03: egress workload must have --pod
-    if ! assert_contains "${tc}/workload-has-pod" "$workload_argv" "--pod"; then
-        ok=0
-    fi
-
-    rm -rf "$stub_dir" "$worktree" "$gate_tools" "$pod_argv_file" "$sidecar_argv_file" "$workload_argv_file"
+    rm -rf "$stub_dir" "$worktree" "$gate_tools" "$allowlist" "$workload_argv_file"
 
     [ "$ok" -eq 1 ] && tc_pass "$tc"
 }
 
-# ─── TC-049-02: non-pod --probe path keeps --userns=keep-id on the container ─
-# REQ-049-03 (non-pod paths unchanged)
+# ─── TC-051-02: explicit --runtime runsc + --egress-probe: die loudly ────────
+# REQ-051-02
 
-run_tc049_02() {
-    local tc="TC-049-02"
+run_tc051_02() {
+    local tc="TC-051-02"
     local ok=1
 
-    local stub_dir worktree gate_tools allowlist probe_argv_file
+    local stub_dir worktree gate_tools allowlist
+    local workload_argv_file
+    stub_dir="$(make_argv_egress_stub_dir)"
+    worktree="$(make_fake_worktree)"
+    gate_tools="$(make_fake_gate_tools)"
+    allowlist="$(make_allowlist_with_entry)"
+    workload_argv_file="$(mktemp)"
+
+    local _rep_exit _rep_stdout _rep_stderr
+    STUB_WORKLOAD_RUN_ARGV_FILE="$workload_argv_file" \
+    run_egress_probe_argv "$stub_dir" "$worktree" "$gate_tools" "runsc" "$allowlist"
+
+    local workload_argv
+    workload_argv="$(cat "$workload_argv_file" 2>/dev/null || true)"
+
+    # REQ-051-02: must exit non-zero
+    if [ "$_rep_exit" -eq 0 ]; then
+        tc_fail "${tc}" "expected non-zero exit; got $_rep_exit"
+        ok=0
+    fi
+
+    # REQ-051-02: stderr must mention ADR 030
+    if ! assert_contains "${tc}/stderr-names-adr030" "$_rep_stderr" "ADR 030"; then
+        ok=0
+    fi
+
+    # REQ-051-02: stderr must mention the rootless-pod-userns limitation or gVisor
+    if ! printf '%s' "$_rep_stderr" | grep -qiE "(gvisor|gofer|userns|user namespace)"; then
+        tc_fail "${tc}/stderr-mentions-limitation" "stderr should mention gVisor/gofer/userns limitation; got: $_rep_stderr"
+        ok=0
+    fi
+
+    # REQ-051-02: NO workload podman run should have been issued
+    if [ -s "$workload_argv_file" ]; then
+        tc_fail "${tc}/no-workload-run" "workload argv file should be empty (no run issued); got: $workload_argv"
+        ok=0
+    fi
+
+    rm -rf "$stub_dir" "$worktree" "$gate_tools" "$allowlist" "$workload_argv_file"
+
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
+# ─── TC-051-03: explicit --runtime runc + --egress-probe: runs runc, no die ───
+# REQ-051-03
+
+run_tc051_03() {
+    local tc="TC-051-03"
+    local ok=1
+
+    local stub_dir worktree gate_tools allowlist
+    local workload_argv_file
+    stub_dir="$(make_argv_egress_stub_dir)"
+    worktree="$(make_fake_worktree)"
+    gate_tools="$(make_fake_gate_tools)"
+    allowlist="$(make_allowlist_with_entry)"
+    workload_argv_file="$(mktemp)"
+
+    local _rep_exit _rep_stdout _rep_stderr
+    STUB_WORKLOAD_RUN_ARGV_FILE="$workload_argv_file" \
+    run_egress_probe_argv "$stub_dir" "$worktree" "$gate_tools" "runc" "$allowlist"
+
+    local workload_argv
+    workload_argv="$(cat "$workload_argv_file" 2>/dev/null || true)"
+
+    # REQ-051-03: must exit 0
+    if [ "$_rep_exit" -ne 0 ]; then
+        tc_fail "${tc}" "expected exit 0; got $_rep_exit; stderr: $_rep_stderr"
+        ok=0
+    fi
+
+    # REQ-051-03: workload must have --runtime runc
+    if ! assert_contains "${tc}/workload-has-runtime-runc" "$workload_argv" "--runtime runc"; then
+        ok=0
+    fi
+
+    rm -rf "$stub_dir" "$worktree" "$gate_tools" "$allowlist" "$workload_argv_file"
+
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
+# ─── TC-051-04: --add-host on pod create, not on workload member ─────────────
+# REQ-051-04
+
+run_tc051_04() {
+    local tc="TC-051-04"
+    local ok=1
+
+    local stub_dir worktree gate_tools allowlist
+    local pod_argv_file workload_argv_file
+    stub_dir="$(make_argv_egress_stub_dir)"
+    worktree="$(make_fake_worktree)"
+    gate_tools="$(make_fake_gate_tools)"
+    allowlist="$(make_allowlist_with_entry)"
+    pod_argv_file="$(mktemp)"
+    workload_argv_file="$(mktemp)"
+
+    local _rep_exit _rep_stdout _rep_stderr
+    STUB_POD_CREATE_ARGV_FILE="$pod_argv_file" \
+    STUB_WORKLOAD_RUN_ARGV_FILE="$workload_argv_file" \
+    run_egress_probe_argv "$stub_dir" "$worktree" "$gate_tools" "" "$allowlist"
+
+    local pod_argv workload_argv
+    pod_argv="$(cat "$pod_argv_file" 2>/dev/null || true)"
+    workload_argv="$(cat "$workload_argv_file" 2>/dev/null || true)"
+
+    if [ "$_rep_exit" -ne 0 ]; then
+        tc_fail "${tc}" "expected exit 0; got $_rep_exit; stderr: $_rep_stderr"
+        ok=0
+    fi
+
+    # REQ-051-04: pod create argv must have at least one --add-host entry
+    if ! printf '%s' "$pod_argv" | grep -q -- '--add-host'; then
+        tc_fail "${tc}/pod-has-add-host" "pod create argv should contain '--add-host'; got: $pod_argv"
+        ok=0
+    fi
+
+    # REQ-051-04: workload argv must NOT have --add-host
+    if ! assert_not_contains "${tc}/workload-no-add-host" "$workload_argv" "--add-host"; then
+        ok=0
+    fi
+
+    rm -rf "$stub_dir" "$worktree" "$gate_tools" "$allowlist" "$pod_argv_file" "$workload_argv_file"
+
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
+# ─── TC-051-05: non-pod --probe keeps the agent default (runsc) unchanged ────
+# REQ-051-05 (regression: egress runc override does NOT leak to non-pod paths)
+
+run_tc051_05() {
+    local tc="TC-051-05"
+    local ok=1
+
+    local stub_dir worktree gate_tools
+    local probe_argv_file
     stub_dir="$(make_probe_stub_dir)"
     worktree="$(make_fake_worktree)"
     gate_tools="$(make_fake_gate_tools)"
-    allowlist="$(make_fake_probe_allowlist)"
     probe_argv_file="$(mktemp)"
 
     local _rpa_exit _rpa_stdout _rpa_stderr
     STUB_PROBE_CREATE_ARGV_FILE="$probe_argv_file" \
-    run_probe_argv "$stub_dir" "$worktree" "$gate_tools" "$allowlist"
+    run_probe_argv "$stub_dir" "$worktree" "$gate_tools"
 
     local probe_argv
     probe_argv="$(cat "$probe_argv_file" 2>/dev/null || true)"
@@ -481,80 +612,36 @@ run_tc049_02() {
         ok=0
     fi
 
-    # Non-pod --probe path: podman create must still have --userns=keep-id
-    if ! assert_contains "${tc}/probe-create-has-userns" "$probe_argv" "--userns=keep-id"; then
+    # REQ-051-05: non-pod --probe container create must still have --runtime runsc
+    # (the agent-tier default, unchanged by egress runc override)
+    if ! assert_contains "${tc}/probe-create-has-runsc" "$probe_argv" "--runtime runsc"; then
         ok=0
     fi
 
-    rm -rf "$stub_dir" "$worktree" "$gate_tools" "$allowlist" "$probe_argv_file"
-
-    [ "$ok" -eq 1 ] && tc_pass "$tc"
-}
-
-# ─── TC-049-03: pod members still carry --user <uid>:<gid> ───────────────────
-# REQ-049-04 (keep-id uid mapping preserved on pod members)
-
-run_tc049_03() {
-    local tc="TC-049-03"
-    local ok=1
-
-    local stub_dir worktree gate_tools
-    local pod_argv_file sidecar_argv_file workload_argv_file
-    stub_dir="$(make_argv_egress_stub_dir)"
-    worktree="$(make_fake_worktree)"
-    gate_tools="$(make_fake_gate_tools)"
-    pod_argv_file="$(mktemp)"
-    sidecar_argv_file="$(mktemp)"
-    workload_argv_file="$(mktemp)"
-
-    local _rep_exit _rep_stdout _rep_stderr
-    STUB_POD_CREATE_ARGV_FILE="$pod_argv_file" \
-    STUB_SIDECAR_RUN_ARGV_FILE="$sidecar_argv_file" \
-    STUB_WORKLOAD_RUN_ARGV_FILE="$workload_argv_file" \
-    run_egress_probe_argv "$stub_dir" "$worktree" "$gate_tools"
-
-    local sidecar_argv workload_argv
-    sidecar_argv="$(cat "$sidecar_argv_file" 2>/dev/null || true)"
-    workload_argv="$(cat "$workload_argv_file" 2>/dev/null || true)"
-
-    if [ "$_rep_exit" -ne 0 ]; then
-        tc_fail "${tc}" "expected exit 0; got $_rep_exit; stderr: $_rep_stderr"
-        ok=0
-    fi
-
-    # Sidecar must have --user 0:0 (explicitly set on the sidecar run).
-    if ! assert_contains "${tc}/sidecar-has-user" "$sidecar_argv" "--user 0:0"; then
-        ok=0
-    fi
-
-    # Workload must have --user <uid>:<gid> (carried from common_args).
-    # We accept any --user N:N pattern (the real uid:gid on this host).
-    if ! printf '%s' "$workload_argv" | grep -qE -- '--user [0-9]+:[0-9]+'; then
-        tc_fail "${tc}/workload-has-user" "workload argv must contain '--user <uid>:<gid>'; got: $workload_argv"
-        ok=0
-    fi
-
-    rm -rf "$stub_dir" "$worktree" "$gate_tools" "$pod_argv_file" "$sidecar_argv_file" "$workload_argv_file"
+    rm -rf "$stub_dir" "$worktree" "$gate_tools" "$probe_argv_file"
 
     [ "$ok" -eq 1 ] && tc_pass "$tc"
 }
 
 # ─── main ─────────────────────────────────────────────────────────────────────
 
-printf '\n=== userns-pod test harness (TC-049) ===\n\n'
+printf '\n=== egress-runtime test harness (TC-051) ===\n\n'
 
 if [ ! -f "$RUN_SH" ]; then
     printf 'ERROR: %s not found\n' "$RUN_SH" >&2
     exit 1
 fi
 
-run_tc049_01
-run_tc049_02
-run_tc049_03
+run_tc051_01
+run_tc051_02
+run_tc051_03
+run_tc051_04
+run_tc051_05
 
-# TC-049-04 (L6, real host): verified by operator via:
+# TC-051-06 (L6, real host): verified by operator via:
 #   bash containment/execution-box/run.sh --worktree . --egress-probe; echo "exit=$?"
-# Expected: gets PAST pod create + sidecar run -d without "--userns and --pod cannot be set together".
+# Expected: default → TC-003 PASS + TC-004 PASS + exit 0
+#           --runtime runsc --egress-probe → ADR 030 die + non-zero exit
 # This test case requires a live rootless podman 5.x environment and is not automated here.
 
 printf '\n=== Results: %d passed, %d failed ===\n' "$PASS_COUNT" "$FAIL_COUNT"
