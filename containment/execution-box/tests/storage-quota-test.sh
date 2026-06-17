@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Test harness for containment/execution-box/run.sh — storage quota + fail-loud behavior.
-# Covers TC-045-01 through TC-045-04 (REQ-045-01 through REQ-045-06).
+# Test harness for containment/execution-box/run.sh — storage quota + fail-loud behavior,
+# and TC-016 runtime inspect portability (TC-047).
+# Covers TC-045-01 through TC-045-04 (REQ-045-01 through REQ-045-06) and
+# TC-047-01 through TC-047-02 (REQ-047-01 through REQ-047-02).
 #
 # Uses stub binaries on a temp PATH and the EXEC_BOX_STORAGE_QUOTA_SUPPORTED env override.
 # No live Podman, real XFS, or real container required.
@@ -89,11 +91,13 @@ make_box_stub_dir() {
 
     local create_exit=0
     local start_exit=0
+    local oci_runtime="runsc"
 
     for spec in "$@"; do
         case "$spec" in
             podman_create_exit=*)  create_exit="${spec#podman_create_exit=}" ;;
             podman_start_exit=*)   start_exit="${spec#podman_start_exit=}" ;;
+            oci_runtime=*)         oci_runtime="${spec#oci_runtime=}" ;;
             storage_opt_null)      : ;;  # accepted for compat, no longer used
             storage_opt_set)       : ;;  # accepted for compat, no longer used
         esac
@@ -102,11 +106,13 @@ make_box_stub_dir() {
     # Write stub podman binary.
     cat > "$tmpdir/podman" <<PODMAN_STUB
 #!/bin/bash
-# Stub podman for TC-045 tests.
+# Stub podman for TC-045/TC-047 tests.
 # Subcommands handled: info, build, create, inspect, start, run, rm, pod.
 
 STUB_CREATE_EXIT=${create_exit}
 STUB_START_EXIT=${start_exit}
+# TC-047: the runtime name returned by .OCIRuntime (top-level field, podman 5.x)
+STUB_OCI_RUNTIME="${oci_runtime}"
 
 subcommand="\$1"
 shift || true
@@ -157,18 +163,19 @@ case "\$subcommand" in
         # Return fake inspect output for the probe's TC-003 and TC-016 checks.
         # run.sh calls inspect with two different --format arguments:
         #  1. TC-003: NanoCpus Memory PidsLimit ShmSize  (StorageOpt removed — not portably exposed)
-        #  2. TC-016: Runtime
+        #  2. TC-016: .OCIRuntime (top-level field, portably set by podman 5.x)
         fmt="\${2:-}"
         case "\$fmt" in
             '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}} {{.HostConfig.ShmSize}}')
                 # NanoCpus=200000000 (2 CPUs), Memory=2147483648 (2g), PidsLimit=256, ShmSize=67108864 (64m)
                 printf '200000000 2147483648 256 67108864\n'
                 ;;
-            '{{.HostConfig.Runtime}}')
-                printf 'runsc\n'
+            '{{.OCIRuntime}}')
+                # TC-047: return the configured runtime name (replaces .HostConfig.Runtime)
+                printf '%s\n' "\$STUB_OCI_RUNTIME"
                 ;;
             *)
-                printf 'runsc\n'
+                printf '%s\n' "\$STUB_OCI_RUNTIME"
                 ;;
         esac
         exit 0
@@ -981,6 +988,123 @@ run_tc045_02c() {
     [ "$ok" -eq 1 ] && tc_pass "$tc"
 }
 
+# ─── TC-047-01: runtime check reads .OCIRuntime and PASSES when it matches ────
+# REQ-047-01
+#
+# Stub .OCIRuntime = runc, requested --runtime runc.
+# Assert: run.sh template references .OCIRuntime (not .HostConfig.Runtime),
+# TC-016 HOST: ...runtime=runc is printed, no TC-016 FAIL, exit 0.
+
+run_tc047_01() {
+    local tc="TC-047-01"
+    local ok=1
+
+    # Verify the fix is in place: run.sh must reference .OCIRuntime, not .HostConfig.Runtime
+    if grep -qF '.HostConfig.Runtime' "$RUN_SH"; then
+        tc_fail "$tc" "run.sh still references .HostConfig.Runtime — must be changed to .OCIRuntime"
+        ok=0
+    fi
+    if ! grep -qF '.OCIRuntime' "$RUN_SH"; then
+        tc_fail "$tc" "run.sh does not reference .OCIRuntime — template fix not applied"
+        ok=0
+    fi
+
+    local stub_dir worktree allowlist gate_tools
+    # oci_runtime=runc matches --runtime runc → should pass
+    stub_dir="$(make_box_stub_dir oci_runtime=runc)"
+    worktree="$(make_fake_worktree)"
+    allowlist="$(make_fake_allowlist)"
+    gate_tools="$(make_fake_gate_tools)"
+
+    local combined exit_code
+    combined="$(
+        env PATH="$stub_dir:$PATH" \
+            EXEC_BOX_EGRESS_ALLOWLIST="$allowlist" \
+            EXEC_BOX_STORAGE_QUOTA_SUPPORTED=0 \
+            EXEC_BOX_STORAGE_SIZE="" \
+            bash "$RUN_SH" \
+                --probe \
+                --worktree "$worktree" \
+                --gate-tools "$gate_tools" \
+                --image "stub-image:test" \
+                --runtime "runc" \
+            2>&1
+    )" && exit_code=$? || exit_code=$?
+
+    # Must exit 0
+    if [ "$exit_code" -ne 0 ]; then
+        tc_fail "$tc" "expected exit 0 with matching .OCIRuntime=runc --runtime runc; got $exit_code; output: $combined"
+        ok=0
+    fi
+
+    # TC-016 HOST: line must appear with runtime=runc
+    if ! printf '%s' "$combined" | grep -q 'TC-016 HOST:.*runtime=runc'; then
+        tc_fail "$tc" "expected 'TC-016 HOST: ...runtime=runc' in output; got: $combined"
+        ok=0
+    fi
+
+    # TC-016 FAIL must NOT appear
+    if printf '%s' "$combined" | grep -q 'TC-016 FAIL'; then
+        tc_fail "$tc" "TC-016 FAIL must NOT appear when .OCIRuntime matches requested runtime; got: $combined"
+        ok=0
+    fi
+
+    cleanup_stub_dir "$stub_dir"
+    rm -rf "$worktree" "$allowlist" "$gate_tools"
+
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
+# ─── TC-047-02: runtime mismatch still FAILS loudly ──────────────────────────
+# REQ-047-02
+#
+# Stub .OCIRuntime = runc but requested --runtime runsc → mismatch.
+# Assert: TC-016 FAIL is printed, exit non-zero.
+
+run_tc047_02() {
+    local tc="TC-047-02"
+    local ok=1
+
+    local stub_dir worktree allowlist gate_tools
+    # .OCIRuntime returns runc but we request runsc — deliberate mismatch
+    stub_dir="$(make_box_stub_dir oci_runtime=runc)"
+    worktree="$(make_fake_worktree)"
+    allowlist="$(make_fake_allowlist)"
+    gate_tools="$(make_fake_gate_tools)"
+
+    local combined exit_code
+    combined="$(
+        env PATH="$stub_dir:$PATH" \
+            EXEC_BOX_EGRESS_ALLOWLIST="$allowlist" \
+            EXEC_BOX_STORAGE_QUOTA_SUPPORTED=0 \
+            EXEC_BOX_STORAGE_SIZE="" \
+            bash "$RUN_SH" \
+                --probe \
+                --worktree "$worktree" \
+                --gate-tools "$gate_tools" \
+                --image "stub-image:test" \
+                --runtime "runsc" \
+            2>&1
+    )" && exit_code=$? || exit_code=$?
+
+    # Must exit non-zero
+    if [ "$exit_code" -eq 0 ]; then
+        tc_fail "$tc" "expected non-zero exit when .OCIRuntime=runc but --runtime=runsc (mismatch); got exit 0; output: $combined"
+        ok=0
+    fi
+
+    # TC-016 FAIL must appear
+    if ! printf '%s' "$combined" | grep -q 'TC-016 FAIL'; then
+        tc_fail "$tc" "expected 'TC-016 FAIL' in output on runtime mismatch; got: $combined"
+        ok=0
+    fi
+
+    cleanup_stub_dir "$stub_dir"
+    rm -rf "$worktree" "$allowlist" "$gate_tools"
+
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 printf '\n=== storage-quota test harness ===\n\n'
@@ -998,6 +1122,12 @@ run_tc045_03b
 run_tc045_03c
 run_tc045_03d
 run_tc045_02c
+run_tc047_01
+run_tc047_02
+# TC-047-03 (L6, real host): verified by operator via:
+#   bash containment/execution-box/run.sh --worktree . --runtime runc --probe
+# Expected: TC-016 HOST: workload=agent runtime=runc + exit 0.
+# This test case requires a live podman 5.x environment and is not automated here.
 
 printf '\n=== Results: %d passed, %d failed ===\n' "$PASS_COUNT" "$FAIL_COUNT"
 

@@ -565,7 +565,7 @@ if [ "$probe" = true ]; then
         # Quota not enforced on this host (non-XFS or operator opt-out) — graceful degrade.
         printf 'TC-003 PASS: host inspect shows explicit cpu/memory/pids/shm limits (storage quota not enforced on this host)\n'
     fi
-    runtime_inspect="$(podman inspect --format '{{.HostConfig.Runtime}}' "$cid")"
+    runtime_inspect="$(podman inspect --format '{{.OCIRuntime}}' "$cid")"
     printf 'TC-016 HOST: workload=%s runtime=%s\n' "$workload" "$runtime_inspect"
     [ "$runtime_inspect" = "$runtime" ] || die "TC-016 FAIL: host inspect runtime=$runtime_inspect expected $runtime"
     podman start --attach "$cid" || die "podman start failed: container did not run (exit $?)"

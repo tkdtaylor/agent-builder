@@ -72,7 +72,7 @@ func TestExecutionBoxRuntimeLauncherContract_TC001_TC002_TC003_TC004(t *testing.
 	// TC-001: selected OCI runtime is passed to Podman and inspected for probes.
 	assertContains(t, run, `--runtime "$runtime"`)
 	assertContains(t, run, `--label "agent-builder.runtime=$runtime"`)
-	assertContains(t, run, `runtime_inspect="$(podman inspect --format '{{.HostConfig.Runtime}}' "$cid")"`)
+	assertContains(t, run, `runtime_inspect="$(podman inspect --format '{{.OCIRuntime}}' "$cid")"`)
 	assertContains(t, run, "TC-016 HOST: workload=%s runtime=%s")
 	assertContains(t, run, "TC-016 FAIL: host inspect runtime=")
 
