@@ -16,7 +16,7 @@ Ubuntu 26.04 LTS, x86_64, kernel 7.0.0-22-generic. Verified present and working 
 | Tool | Version | Path | Notes |
 |------|---------|------|-------|
 | Podman | 5.7.0 | `/usr/bin/podman` | rootless `true` ✓ |
-| `runsc` (gVisor) | release-20260601.0, spec 1.2.1 | `/usr/local/bin/runsc` | installed, **but not yet registered in Podman** → step 1a |
+| `runsc` (gVisor) | release-20260601.0, spec 1.2.1 | `/usr/local/bin/runsc` | installed; needs a **rootless cgroup wrapper** + registration → step 1a (done & verified 2026-06-16: `4.19.0-gvisor`) |
 | `srt` | `@anthropic-ai/sandbox-runtime` 0.0.54 | `~/.nvm/versions/node/v24.14.0/bin/srt` | via **nvm** (node v24.14.0), **not** snap → snap-confine blocker does **not** apply. ⚠ only on `PATH` when nvm's node is active → see the gotcha below |
 | `claude` | 2.1.150 | `~/.local/bin/claude` | confirm it is still logged in (`claude` → check account) |
 | `gh` | 2.46.0 | `/usr/bin/gh` | authenticated as `tkdtaylor` ✓ (`gh auth status`) |
@@ -41,7 +41,25 @@ Three concrete steps. Each ends with a verification command and its expected out
 
 **What:** the `runsc` binary is installed but Podman's default runtime is still `runc`; `--runtime runsc` fails until it's registered in your **rootless user** config `~/.config/containers/containers.conf`.
 
-**First, find out whether that file already exists** (on this host, as of 2026-06-16, it does **not**):
+> **This host needs a cgroup wrapper (verified 2026-06-16).** Registering the bare `/usr/local/bin/runsc` and running `podman --runtime runsc …` fails rootless with:
+> `OCI runtime error: runsc: creating container: systemd error: Access denied as the requested operation requires interactive authentication`.
+> That's runsc trying to create a **systemd cgroup scope**, which a rootless user session can't do without polkit. The fix is a one-line wrapper that runs runsc with `-ignore-cgroups` ("don't configure cgroups"), and registering *that* wrapper as `runsc`. Both substeps below were run and verified on this host (`uname -r` → `4.19.0-gvisor`).
+
+**Step 1 — create the cgroup wrapper** (`~/.local/bin` is already on PATH). Copy-paste:
+
+```bash
+mkdir -p ~/.local/bin
+cat > ~/.local/bin/runsc-rootless <<'EOF'
+#!/bin/sh
+# runsc wrapper for rootless Podman: skip cgroup configuration so runsc does not
+# try to create a systemd scope (denied without polkit in a rootless session).
+exec /usr/local/bin/runsc -ignore-cgroups "$@"
+EOF
+chmod +x ~/.local/bin/runsc-rootless
+~/.local/bin/runsc-rootless --version    # expect: runsc version release-20260601.0
+```
+
+**Step 2 — register the wrapper as the `runsc` runtime.** First find out whether the config file already exists:
 
 ```bash
 ls -l ~/.config/containers/containers.conf 2>/dev/null \
@@ -49,44 +67,47 @@ ls -l ~/.config/containers/containers.conf 2>/dev/null \
   || echo ">>> MISSING — use the CREATE path below"
 ```
 
-**CREATE path** (file does not exist — this is the current state on this host). Copy-paste this whole block; it makes the directory and writes the file:
+**CREATE path** (file does not exist). Copy-paste this whole block; it makes the directory and writes the file:
 
 ```bash
 mkdir -p ~/.config/containers
 cat >> ~/.config/containers/containers.conf <<'EOF'
 
 [engine.runtimes]
-runsc = ["/usr/local/bin/runsc"]
+runsc = ["$HOME/.local/bin/runsc-rootless"]
 EOF
 ```
 
-**EDIT path** (file already exists — it drifted since this was written). Open it and add the runsc line; if an `[engine.runtimes]` section already exists, add the `runsc = …` line *under* it rather than creating a second section:
+**EDIT path** (file already exists — e.g. you previously registered the bare `/usr/local/bin/runsc`). Open it and point the `runsc =` line at the wrapper; if an `[engine.runtimes]` section already exists, edit the line under it rather than adding a second section:
 
 ```bash
 ${EDITOR:-nano} ~/.config/containers/containers.conf   # opens nano (or your $EDITOR)
 # ensure these two lines are present, together:
 #   [engine.runtimes]
-#   runsc = ["/usr/local/bin/runsc"]
+#   runsc = ["$HOME/.local/bin/runsc-rootless"]
 ```
 
-**Confirm the file now has the entry** (either path):
+> One-liner to repoint an existing bare-runsc registration without opening an editor:
+> ```bash
+> sed -i 's#^runsc = .*#runsc = ["$HOME/.local/bin/runsc-rootless"]#' ~/.config/containers/containers.conf
+> ```
+
+**Confirm the registration** (either path):
 
 ```bash
 grep -A1 '\[engine.runtimes\]' ~/.config/containers/containers.conf
 # expect:
 #   [engine.runtimes]
-#   runsc = ["/usr/local/bin/runsc"]
+#   runsc = ["$HOME/.local/bin/runsc-rootless"]
 ```
 
-**Verify** Podman resolves the runtime and a container boots under gVisor:
+**Verify** a container boots under gVisor via the registered name (this is what the 016/032 probes use):
 
 ```bash
 podman --runtime runsc run --rm docker.io/library/alpine uname -r
-# expect: a gVisor kernel string (e.g. "4.4.0") — NOT the host's "7.0.0-22-generic".
-#         The differing kernel version is the proof you're inside gVisor, not on the host.
+# expect: a kernel string ending in "-gvisor" (verified here: 4.19.0-gvisor) —
+#         NOT the host's "7.0.0-22-generic". The -gvisor suffix proves you're in the sandbox.
 ```
-
-> **Rootless gVisor caveat.** If the run fails on cgroup delegation, add `ignore-cgroups` per the gVisor + Podman rootless guide (gvisor.dev/docs/user_guide/quick_start/podman) — via a `--runtime-flag` or a runsc wrapper. This is the only step that may need a host-specific tweak; everything else is registration-only.
 
 ### 1b. Populate the execution-box Gate-toolchain directory
 
