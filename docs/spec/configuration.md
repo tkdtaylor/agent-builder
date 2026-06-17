@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** agent-builder
-**Last updated:** 2026-06-05
+**Last updated:** 2026-06-17 (task 045 — host-portable disk quota)
 
 Every knob the system exposes — env vars, config files, runtime parameters, deployment settings. Each entry is a public contract: changes to defaults or accepted values are observable.
 
@@ -74,7 +74,8 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `EXEC_BOX_PIDS_LIMIT` | integer | `256` | no | PID quota passed as `--pids-limit` |
 | `EXEC_BOX_SCRATCH_SIZE` | size string | `512m` | no | Size of tmpfs mounted at `/scratch` |
 | `EXEC_BOX_SHM_SIZE` | size string | `64m` | no | Shared-memory size passed as `--shm-size` |
-| `EXEC_BOX_STORAGE_SIZE` | size string | `4G` | no | Overlay storage size passed as `--storage-opt size=...` |
+| `EXEC_BOX_STORAGE_SIZE` | size string | `4G` | no | Per-container writable-layer disk quota passed as `--storage-opt size=...` when the host backing filesystem supports overlay size enforcement (XFS). On non-XFS hosts the flag is omitted and a `WARNING` is emitted to stderr naming the degraded control. An empty string disables the quota without a warning (operator opt-out). Detection may be overridden for tests via `EXEC_BOX_STORAGE_QUOTA_SUPPORTED=0|1`. |
+| `EXEC_BOX_STORAGE_QUOTA_SUPPORTED` | `0` or `1` | unset (auto-detect) | no | Testability seam: when set to `1`, forces the enforcement path (`--storage-opt size=...` is applied); when set to `0`, forces the graceful-degrade path (flag omitted, WARNING emitted if `EXEC_BOX_STORAGE_SIZE` is non-empty). When unset, the launcher detects enforceability via `podman info` and `stat`. Never set in production. |
 | `EXEC_BOX_EGRESS_ALLOWLIST` | path | `containment/execution-box/egress.allowlist` | no | Plain-text egress allowlist consumed by the execution-box launcher |
 | `EXEC_BOX_EGRESS_PROBE_ALLOW_HOST` | `host:port` | `api.github.com:443` | no | Allowlisted probe target expected to connect during `--egress-probe` |
 | `EXEC_BOX_EGRESS_PROBE_DENY_HOST` | `host:port` | `example.com:443` | no | Non-allowlisted probe target expected to be blocked during `--egress-probe` |
@@ -169,7 +170,7 @@ The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.m
 | Container image | `localhost/agent-builder/execution-box:033` by default | Built from `containment/execution-box/Containerfile`; override with `EXEC_BOX_IMAGE` |
 | Ports exposed | none | The profile exposes no inbound ports and defaults outbound egress to deny |
 | Volumes / mounts | `/work` bind mount from the supplied worktree; `/scratch` tmpfs; `/opt/agent-builder/gate-tools` read-only bind mount from `EXEC_BOX_GATE_TOOLS` / `--gate-tools` | Rootfs is read-only; host home and container-engine sockets are not mounted |
-| Resource floor (CPU / RAM / disk) | `2` CPU / `2g` memory / `4G` overlay storage by default | PID limit `256`, shared memory `64m`, scratch tmpfs `512m` |
+| Resource floor (CPU / RAM / disk) | `2` CPU / `2g` memory / `4G` overlay storage quota (when host supports overlay size enforcement; otherwise no writable-layer disk quota) by default | PID limit `256`, shared memory `64m`, scratch tmpfs `512m` |
 | OCI runtime tier | `agent` workload -> `runsc`; `dev` workload -> `runc`; explicit `--runtime` wins | Passed to rootless Podman as `--runtime`; accepted values are `runc`, `runsc`, and future `kata` |
 | Runtime user/caps | workload: current non-root host uid/gid through `--userns=keep-id`; `--cap-drop=all`; egress sidecar: rootless namespace with `CAP_NET_ADMIN` only | Network administration is isolated to the trusted sidecar; no workload capability add-backs |
 | Egress | default-deny; exact host:port allowlist only | Sidecar installs nftables rules before workload start; workload DNS is disabled except launcher-provided host records for allowlisted destinations |
@@ -181,3 +182,5 @@ The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.m
 ## Defaults policy
 
 Defaults are safe and bounded. The execution-box profile starts from read-only, non-root, no-new-privileges, dropped workload capabilities, no host-home or container-engine socket mounts, explicit resource quotas, default-deny egress, and the agent workload mapped to `runsc`. Overrides may tune quota sizes, choose a different allowlist file, or select `runc`/`kata` explicitly, but must not weaken the underlying containment guarantees without an ADR.
+
+**Graceful degrade exception (ADR 027):** the per-container writable-layer disk quota (`EXEC_BOX_STORAGE_SIZE` / `--storage-opt size=...`) is applied only when the host's rootless overlay container store is backed by an XFS filesystem with project quotas. On non-XFS hosts (ext4 and others) the quota flag is omitted and a `WARNING` is emitted to stderr naming the degraded control. This is an ADR-justified exception: the disk quota is a secondary anti-DoS bound on the ephemeral writable overlay, not a load-bearing trust-boundary control. The load-bearing controls — egress allowlist, read-only rootfs, `--cap-drop=all`, `--security-opt=no-new-privileges`, gVisor (`runsc`), and the CPU/memory/PID/tmpfs caps — are unaffected. An operator restores full enforcement by moving the rootless container store to an XFS volume; no code change is required.
