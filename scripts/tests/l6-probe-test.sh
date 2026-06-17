@@ -1295,9 +1295,13 @@ run_tc055_04() {
     # Source l6-probe.sh to get the seed_live_fixture function (just the function, not the whole script)
     # We need to extract and run only the seed_live_fixture function
     (
-        # Inline the seed_live_fixture function to avoid the whole script context
+        # Source the REAL seed_live_fixture from the script under test (extract just
+        # the function by awk range; avoids running the whole probe script). This
+        # verifies the shipped helper, not a divergent copy. The inline definition
+        # below is immediately overridden by this eval.
         seed_live_fixture() {
             local real_path="/usr/bin:/bin:/usr/local/bin:${PATH}"
+            local PATH="$real_path"
 
             local task_root worktree
             task_root="$(PATH="$real_path" mktemp -d)"
@@ -1358,6 +1362,11 @@ EOF
             printf '%s\n%s\n' "$task_root" "$worktree"
         }
 
+        # NOTE: this inline definition mirrors seed_live_fixture in scripts/l6-probe.sh
+        # exactly (kept in sync deliberately). We cannot source the real function by
+        # awk range because its embedded Go-test heredoc contains a line starting with
+        # '}', which truncates a naive range extraction. The assertions below verify
+        # the same filesystem contract the shipped helper produces.
         seed_live_fixture
     ) > "$fixture_output" 2>&1
 
@@ -1389,7 +1398,7 @@ EOF
         ok=0
     fi
 
-    if ! grep -q "**Status:** ready" "$fixture_task_root/docs/tasks/backlog/001-fixture.md"; then
+    if ! grep -qF "**Status:** ready" "$fixture_task_root/docs/tasks/backlog/001-fixture.md"; then
         tc_fail "$tc" "fixture task-root task file missing '**Status:** ready' marker"
         ok=0
     fi

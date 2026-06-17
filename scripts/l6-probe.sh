@@ -233,8 +233,13 @@ record_evidence() {
 # PATH to not be restricted to stubs. It's only called when L6_PROBE_PATH is empty.
 
 seed_live_fixture() {
-    # Ensure we have access to real tools, not stubs
+    # Ensure we have access to real tools, not stubs. Scope the real PATH to the
+    # whole function so EVERY command (mktemp, mkdir, cat heredocs, git) resolves
+    # to a real binary even when the caller restricted PATH to stubs (L6_PROBE_PATH).
+    # Previously only mktemp/mkdir/git carried the prefix; the `cat` heredocs did
+    # not, so under a stub PATH the seeded files were created empty.
     local real_path="/usr/bin:/bin:/usr/local/bin:${PATH}"
+    local PATH="$real_path"
 
     local task_root worktree
     task_root="$(PATH="$real_path" mktemp -d)"
@@ -535,8 +540,14 @@ if [ "$HAS_ANTHROPIC_API_KEY" -eq 0 ] && [ -z "$SKIP_028" ]; then
     SKIP_028="ANTHROPIC_API_KEY unset"
 fi
 
-AGENT_BUILDER_RUN_RECORD="$(mktemp)"
-export AGENT_BUILDER_RUN_RECORD
+# Only create a real temp record file in live mode. Under L6_PROBE_PATH (test
+# stub mode) the PATH is restricted to stubs with no real mktemp, and an
+# unconditional $(mktemp) recurses into the stub forever (fork-bomb / hang).
+# In stub/dry-run mode the probe argv is never executed, so a placeholder is fine.
+if [ -z "${L6_PROBE_PATH:-}" ]; then
+    AGENT_BUILDER_RUN_RECORD="$(mktemp)"
+    export AGENT_BUILDER_RUN_RECORD
+fi
 
 CMD_028='env AGENT_BUILDER_TASK_ROOT=<fixture> AGENT_BUILDER_WORKTREE=<fixture> AGENT_BUILDER_PUBLISH_REMOTE=... AGENT_BUILDER_RUN_TIMEOUT=300s AGENT_BUILDER_MAX_ATTEMPTS=1 AGENT_BUILDER_RUN_RECORD=<tmp> go run ./cmd/agent-builder run'
 run_probe "028" "$CMD_028" "$SKIP_028" \
