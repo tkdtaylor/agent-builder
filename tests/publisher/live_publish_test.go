@@ -68,12 +68,24 @@ func TestLiveBranchPRPublication_TC034(t *testing.T) {
 		t.Fatalf("failed to add remote %q to temp repo: %v", remote, err)
 	}
 
+	// Fetch the remote default branch so the working branch can descend from it.
+	// This is required for `gh pr create --fill`, which computes the PR title/body
+	// from the commit range <remote>/main...<branch>; a branch off a bare `git init`
+	// root shares no ancestor with <remote>/main and fails with
+	// "ambiguous argument '<remote>/main...<branch>': unknown revision".
+	// The fetch MUST be full (no --depth): a shallow fetch makes the pushed branch
+	// fail with "failed to push some refs" across the shallow boundary.
+	if out, err := exec.Command("git", "-C", tmpRepo, "fetch", remote, "main").CombinedOutput(); err != nil {
+		t.Fatalf("failed to fetch %s/main into temp repo: %v\n%s", remote, err, out)
+	}
+
 	// Create unique branch name: task/034-live-<unix-timestamp>-<pid>.
 	branchName := fmt.Sprintf("task/034-live-%d-%d", time.Now().Unix(), os.Getpid())
 
-	// Create a branch and commit a file.
-	if err := exec.Command("git", "-C", tmpRepo, "checkout", "-b", branchName).Run(); err != nil {
-		t.Fatalf("failed to create branch %q: %v", branchName, err)
+	// Create the branch off the fetched remote default branch (FETCH_HEAD) so it
+	// descends from <remote>/main with shared history.
+	if err := exec.Command("git", "-C", tmpRepo, "checkout", "-b", branchName, "FETCH_HEAD").Run(); err != nil {
+		t.Fatalf("failed to create branch %q off %s/main: %v", branchName, remote, err)
 	}
 
 	testFile := filepath.Join(tmpRepo, "live-test.txt")
