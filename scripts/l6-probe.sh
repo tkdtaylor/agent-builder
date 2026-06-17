@@ -321,7 +321,15 @@ fi
 command -v runsc > /dev/null 2>&1 && HAS_RUNSC=1 || true
 command -v srt   > /dev/null 2>&1 && HAS_SRT=1   || true
 command -v claude > /dev/null 2>&1 && HAS_CLAUDE=1 || true
-[ -n "${ANTHROPIC_API_KEY:-}" ] && [ -n "$(printf '%s' "${ANTHROPIC_API_KEY}" | tr -d ' ')" ] && HAS_ANTHROPIC_API_KEY=1 || true
+
+# ANTHROPIC_API_KEY detection using only bash built-ins (no tr/sed/awk/grep)
+# to work even when PATH is restricted to stub binaries in test mode
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    _key="${ANTHROPIC_API_KEY}"
+    _key="${_key// /}"  # Remove all spaces using parameter expansion
+    [ -n "$_key" ] && HAS_ANTHROPIC_API_KEY=1 || true
+fi
+
 command -v gh    > /dev/null 2>&1 && HAS_GH=1    || true
 
 if command -v git > /dev/null 2>&1; then

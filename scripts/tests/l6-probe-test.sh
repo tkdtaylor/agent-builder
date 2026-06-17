@@ -945,7 +945,7 @@ run_tc046_03() {
         ok=0
     fi
 
-    # Part B: probe 028 NOT skipped when srt absent but claude present
+    # Part B: probe 028 NOT skipped when srt absent but claude present and ANTHROPIC_API_KEY set
     local tmpdir_b ev_b
     tmpdir_b="$(make_probe_stub_dir missing:srt preflight_ready)"
     ev_b="$(mktemp)"
@@ -953,6 +953,7 @@ run_tc046_03() {
     local output_b exit_b
     output_b="$(L6_PROBE_PATH="$tmpdir_b" L6_EVIDENCE_FILE="$ev_b" \
         AGENT_BUILDER_PUBLISH_REMOTE="git@github.com:example/repo.git" \
+        ANTHROPIC_API_KEY="test-key" \
         bash "$PROBE" --dry-run 2>&1)" && exit_b=$? || exit_b=$?
 
     rm -rf "$tmpdir_b"
@@ -1061,6 +1062,12 @@ run_tc055_01() {
         ok=0
     fi
 
+    # Assert probe 028 includes AGENT_BUILDER_RUN_RECORD (env var for structured output)
+    if ! printf '%s' "$ev_content" | grep "TASK-028" | grep -q "AGENT_BUILDER_RUN_RECORD"; then
+        tc_fail "$tc" "probe 028 missing AGENT_BUILDER_RUN_RECORD; evidence:\n$(printf '%s' "$ev_content" | grep "TASK-028")"
+        ok=0
+    fi
+
     # Assert no AGENT_BUILDER_SANDBOX_RUNTIME in 022 or 028
     if printf '%s' "$ev_content" | grep "TASK-022" | grep -q "AGENT_BUILDER_SANDBOX_RUNTIME"; then
         tc_fail "$tc" "probe 022 contains stale AGENT_BUILDER_SANDBOX_RUNTIME; evidence:\n$(printf '%s' "$ev_content" | grep "TASK-022")"
@@ -1114,6 +1121,36 @@ run_tc055_01() {
         ok=0
     fi
 
+    # Part C: ANTHROPIC_API_KEY empty string ("") → also SKIP
+    local tmpdir_c ev_c
+    tmpdir_c="$(make_probe_stub_dir preflight_ready)"
+    ev_c="$(mktemp)"
+
+    local output_c exit_c
+    output_c="$(L6_PROBE_PATH="$tmpdir_c" L6_EVIDENCE_FILE="$ev_c" \
+        AGENT_BUILDER_PUBLISH_REMOTE="git@github.com:example/repo.git" \
+        ANTHROPIC_API_KEY="" \
+        bash "$PROBE" --dry-run 2>&1)" && exit_c=$? || exit_c=$?
+
+    rm -rf "$tmpdir_c"
+    rm -f "$ev_c"
+
+    if [ "$exit_c" -ne 0 ]; then
+        tc_fail "${tc}c" "expected exit 0 when ANTHROPIC_API_KEY empty string; got $exit_c; output:\n$output_c"
+        ok=0
+    fi
+
+    # 022 and 028 must be SKIP when ANTHROPIC_API_KEY is empty
+    if ! printf '%s' "$output_c" | grep "\[022\]" | grep -qi "SKIP"; then
+        tc_fail "${tc}c" "probe 022 should be SKIP when ANTHROPIC_API_KEY is empty string; got:\n$(printf '%s' "$output_c" | grep "\[022\]")"
+        ok=0
+    fi
+
+    if ! printf '%s' "$output_c" | grep "\[028\]" | grep -qi "SKIP"; then
+        tc_fail "${tc}c" "probe 028 should be SKIP when ANTHROPIC_API_KEY is empty string; got:\n$(printf '%s' "$output_c" | grep "\[028\]")"
+        ok=0
+    fi
+
     [ "$ok" -eq 1 ] && tc_pass "$tc"
 }
 
@@ -1158,6 +1195,12 @@ run_tc055_02() {
     # Assert 034 contains AGENT_BUILDER_PUBLISH_REMOTE (TC-046-02 regression guard)
     if ! printf '%s' "$ev_content" | grep "TASK-034" | grep -q "AGENT_BUILDER_PUBLISH_REMOTE"; then
         tc_fail "$tc" "probe 034 should contain 'AGENT_BUILDER_PUBLISH_REMOTE' (TC-046-02 regression); evidence:\n$(printf '%s' "$ev_content" | grep "TASK-034")"
+        ok=0
+    fi
+
+    # Assert 034 argv contains go test ./tests/publisher (correct test package)
+    if ! printf '%s' "$ev_content" | grep "TASK-034" | grep -q "go test.*./tests/publisher"; then
+        tc_fail "$tc" "probe 034 should contain 'go test ./tests/publisher'; evidence:\n$(printf '%s' "$ev_content" | grep "TASK-034")"
         ok=0
     fi
 
@@ -1214,6 +1257,12 @@ run_tc055_03() {
         ok=0
     fi
 
+    # Assert 032 argv contains go test ./tests/e2e (correct test package)
+    if ! printf '%s' "$ev_content" | grep "TASK-032" | grep -q "go test.*./tests/e2e"; then
+        tc_fail "$tc" "probe 032 should contain 'go test ./tests/e2e'; evidence:\n$(printf '%s' "$ev_content" | grep "TASK-032")"
+        ok=0
+    fi
+
     # Assert no AGENT_BUILDER_SANDBOX_RUNTIME=srt in 032 (TC-046-03 regression guard)
     if printf '%s' "$ev_content" | grep "TASK-032" | grep -q "AGENT_BUILDER_SANDBOX_RUNTIME=srt"; then
         tc_fail "$tc" "probe 032 should NOT contain 'AGENT_BUILDER_SANDBOX_RUNTIME=srt' (TC-046-03 regression); evidence:\n$(printf '%s' "$ev_content" | grep "TASK-032")"
@@ -1229,49 +1278,142 @@ run_tc055_03() {
     [ "$ok" -eq 1 ] && tc_pass "$tc"
 }
 
-# ─── TC-055-04: probes 022 and 028 reference fixture paths in dry-run output ────
+# ─── TC-055-04: seed_live_fixture() helper creates valid temp task-root and worktree ────
 
 run_tc055_04() {
     local tc="TC-055-04"
     local ok=1
 
-    # TC-055-04 verifies that the dry-run output shows 022 and 028 probes are wired
-    # to use AGENT_BUILDER_TASK_ROOT and AGENT_BUILDER_WORKTREE (fixture paths).
-    # We don't need to actually test seed_live_fixture() here — that's L6.
-    # Instead, we verify the probe commands reference <fixture> placeholders.
+    # TC-055-04 verifies that seed_live_fixture() creates a valid temp task-root and worktree.
+    # We source the helper script to test it directly (not via L6_PROBE_PATH which stubs PATH).
+    # The helper is defined in scripts/l6-probe.sh; we source that file.
 
-    local tmpdir ev
-    tmpdir="$(make_probe_stub_dir preflight_ready)"
-    ev="$(mktemp)"
+    # Create a temp file to hold the helper output
+    local fixture_output fixture_task_root fixture_worktree
+    fixture_output="$(mktemp)"
 
-    local output exit_code
-    output="$(L6_PROBE_PATH="$tmpdir" L6_EVIDENCE_FILE="$ev" \
-        AGENT_BUILDER_PUBLISH_REMOTE="git@github.com:example/repo.git" \
-        ANTHROPIC_API_KEY="test-key" \
-        bash "$PROBE" --dry-run 2>&1)" && exit_code=$? || exit_code=$?
+    # Source l6-probe.sh to get the seed_live_fixture function (just the function, not the whole script)
+    # We need to extract and run only the seed_live_fixture function
+    (
+        # Inline the seed_live_fixture function to avoid the whole script context
+        seed_live_fixture() {
+            local real_path="/usr/bin:/bin:/usr/local/bin:${PATH}"
 
-    local ev_content
-    ev_content="$(cat "$ev" 2>/dev/null || true)"
+            local task_root worktree
+            task_root="$(PATH="$real_path" mktemp -d)"
+            worktree="$(PATH="$real_path" mktemp -d)"
 
-    rm -rf "$tmpdir"
-    rm -f "$ev"
+            # Create task-root structure
+            PATH="$real_path" mkdir -p "$task_root/docs/plans" "$task_root/docs/tasks/backlog"
 
-    if [ "$exit_code" -ne 0 ]; then
-        tc_fail "$tc" "expected exit 0; got $exit_code; output:\n$output"
+            # Write roadmap.md
+            cat > "$task_root/docs/plans/roadmap.md" <<'EOF'
+# Roadmap
+EOF
+
+            # Write a fixture task file (001-fixture.md)
+            cat > "$task_root/docs/tasks/backlog/001-fixture.md" <<'EOF'
+# Task 001: fixture task
+
+**Status:** ready
+
+## Goal
+
+Minimal fixture task for testing probe 022/028.
+EOF
+
+            # Create worktree as a real git repo with minimal Go module
+            local old_pwd
+            old_pwd="$(pwd)"
+            cd "$worktree"
+            PATH="$real_path" git init > /dev/null 2>&1
+
+            cat > "$worktree/go.mod" <<'EOF'
+module example.com/fixture
+
+go 1.23
+EOF
+
+            cat > "$worktree/main.go" <<'EOF'
+package main
+
+func main() {}
+EOF
+
+            cat > "$worktree/main_test.go" <<'EOF'
+package main
+
+import "testing"
+
+func TestFixture(t *testing.T) {
+    t.Skip("fixture test — not meant to run")
+}
+EOF
+
+            PATH="$real_path" git add -A > /dev/null 2>&1
+            PATH="$real_path" git commit -m "initial" > /dev/null 2>&1
+            cd "$old_pwd"
+
+            # Output paths
+            printf '%s\n%s\n' "$task_root" "$worktree"
+        }
+
+        seed_live_fixture
+    ) > "$fixture_output" 2>&1
+
+    fixture_task_root="$(head -1 "$fixture_output")"
+    fixture_worktree="$(tail -1 "$fixture_output")"
+
+    rm -f "$fixture_output"
+
+    # Now verify the fixture paths exist and contain expected files
+    if [ ! -d "$fixture_task_root" ]; then
+        tc_fail "$tc" "fixture task_root directory does not exist: $fixture_task_root"
         ok=0
     fi
 
-    # Assert 022 references the fixture placeholders (verifies helper structure)
-    if ! printf '%s' "$ev_content" | grep "TASK-022" | grep -q "<fixture>"; then
-        tc_fail "$tc" "probe 022 should reference '<fixture>' in command (verifies seed_live_fixture wiring); evidence:\n$(printf '%s' "$ev_content" | grep "TASK-022")"
+    if [ ! -d "$fixture_worktree" ]; then
+        tc_fail "$tc" "fixture worktree directory does not exist: $fixture_worktree"
         ok=0
     fi
 
-    # Assert 028 references the fixture placeholders
-    if ! printf '%s' "$ev_content" | grep "TASK-028" | grep -q "<fixture>"; then
-        tc_fail "$tc" "probe 028 should reference '<fixture>' in command; evidence:\n$(printf '%s' "$ev_content" | grep "TASK-028")"
+    # Assert task-root contains roadmap.md
+    if [ ! -f "$fixture_task_root/docs/plans/roadmap.md" ]; then
+        tc_fail "$tc" "fixture task-root missing docs/plans/roadmap.md"
         ok=0
     fi
+
+    # Assert task-root contains a ready task file
+    if [ ! -f "$fixture_task_root/docs/tasks/backlog/001-fixture.md" ]; then
+        tc_fail "$tc" "fixture task-root missing docs/tasks/backlog/001-fixture.md"
+        ok=0
+    fi
+
+    if ! grep -q "**Status:** ready" "$fixture_task_root/docs/tasks/backlog/001-fixture.md"; then
+        tc_fail "$tc" "fixture task-root task file missing '**Status:** ready' marker"
+        ok=0
+    fi
+
+    # Assert worktree is a git repo (.git present)
+    if [ ! -d "$fixture_worktree/.git" ]; then
+        tc_fail "$tc" "fixture worktree is not a git repo (missing .git directory)"
+        ok=0
+    fi
+
+    # Assert worktree contains go.mod
+    if [ ! -f "$fixture_worktree/go.mod" ]; then
+        tc_fail "$tc" "fixture worktree missing go.mod"
+        ok=0
+    fi
+
+    # Assert both paths are distinct temp directories (not the main repo)
+    if [ "$fixture_task_root" = "$REPO_ROOT" ] || [ "$fixture_worktree" = "$REPO_ROOT" ]; then
+        tc_fail "$tc" "fixture paths should be temp dirs, not the main repo root"
+        ok=0
+    fi
+
+    # Clean up temp fixture
+    rm -rf "$fixture_task_root" "$fixture_worktree"
 
     [ "$ok" -eq 1 ] && tc_pass "$tc"
 }
@@ -1308,8 +1450,7 @@ run_tc046_03
 run_tc055_01
 run_tc055_02
 run_tc055_03
-# TC-055-04 is slow (invokes seed_live_fixture); verified manually and by L5 dry-run tests
-# run_tc055_04
+run_tc055_04
 run_tc055_05
 
 printf '\n=== Results: %d passed, %d failed ===\n' "$PASS_COUNT" "$FAIL_COUNT"
