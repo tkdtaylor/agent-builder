@@ -29,7 +29,7 @@ Ubuntu 26.04 LTS, x86_64, kernel 7.0.0-22-generic. Verified present and working 
 > command -v srt    # expect: $HOME/.nvm/versions/node/v24.14.0/bin/srt
 > ```
 
-**Provisioning status on this host (2026-06-16):** step 1a (runsc cgroup wrapper + registration) ✅ done & verified, step 1b (gate-tools populated) ✅ done & verified. **Remaining: step 1c (configure a git remote), and exporting `srt` onto PATH** (the nvm gotcha above). Re-confirm with `make l6-preflight` (Section 2) before trusting this snapshot.
+**Provisioning status on this host (2026-06-16):** steps 1a (runsc cgroup wrapper + registration), 1b (gate-tools populated), and 1c (`l6` sandbox remote) are all ✅ done & verified. With `srt` exported onto PATH, `make l6-preflight` reports **READY** (all 10 rows PASS — confirmed 2026-06-16). **The only thing you must do each new shell is the srt PATH export** (the nvm gotcha above); then you're clear to run Section 3's probes.
 
 ---
 
@@ -146,34 +146,41 @@ containment/execution-box/run.sh --print-toolchain-plan
 
 ### 1c. Configure a git remote for PR publication
 
-**What:** the publication probes (tasks 028, 032, 034) open a **real PR**, so they need a remote. **Check the current state first** (on this host: no remote — the project is private-for-now):
+**What:** the publication probes (tasks 028, 032, 034) open a **real PR**, so they need a remote whose **default branch exists** — the publisher runs `git push <remote> <branch>` then `gh pr create --head <branch> --fill`, and `gh pr create` targets the repo's default branch as the PR base. An *empty* repo has no default branch and PR creation fails, so the remote must have `main` pushed. **Done & verified on this host on 2026-06-16** using the dedicated-sandbox option below.
+
+> **This host already has it.** `git remote -v` now shows the `l6` remote pointing at the private `tkdtaylor/agent-builder-l6-sandbox` repo (default branch `main` pushed). You do **not** need to redo 1c. The commands below are recorded for a fresh host / re-provision.
+
+**Check the current state first:**
 
 ```bash
 git remote -v
-# this host today: prints nothing (no remote configured)
+# this host today: shows l6 -> https://github.com/tkdtaylor/agent-builder-l6-sandbox.git (fetch & push)
 ```
 
-If it already prints a remote you trust for throwaway L6 PRs, skip to verify. Otherwise **pick one** (operator decision):
+If it already shows a remote you trust for throwaway L6 PRs, skip to verify. Otherwise **pick one** (operator decision):
 
-- **Dedicated sandbox repo (recommended)** — keeps real PR noise out of project history. `gh` is already authenticated as `tkdtaylor`, so this is copy-paste:
+- **Dedicated sandbox repo (recommended)** — keeps real PR noise out of project history. `gh` is authenticated as `tkdtaylor`. This one command creates the **private** repo, wires the remote `l6`, **and pushes `main` as the PR base** in a single step:
   ```bash
-  gh repo create tkdtaylor/agent-builder-l6-sandbox --private
-  git remote add l6 git@github.com:tkdtaylor/agent-builder-l6-sandbox.git
+  gh auth setup-git   # configure git to use gh's token for github.com https pushes (once per host)
+  gh repo create tkdtaylor/agent-builder-l6-sandbox --private --source=. --remote=l6 --push
   # then pass AGENT_BUILDER_PUBLISH_REMOTE=l6 to the publication probes (tasks 028/032/034)
   ```
 - **A private origin for this repo** — if you want the L6 PRs against the real project:
   ```bash
-  gh repo create tkdtaylor/agent-builder --private --source=. --remote=origin
+  gh auth setup-git
+  gh repo create tkdtaylor/agent-builder --private --source=. --remote=origin --push
   # then pass AGENT_BUILDER_PUBLISH_REMOTE=origin
   ```
 
-**Verify:**
+**Verify** the remote exists *and* the repo has a default branch (both are required for PR creation):
 
 ```bash
 git remote -v
-# expect: at least one remote with a fetch (and push) URL, e.g.
-#   l6   git@github.com:tkdtaylor/agent-builder-l6-sandbox.git (fetch)
-#   l6   git@github.com:tkdtaylor/agent-builder-l6-sandbox.git (push)
+# expect: l6   https://github.com/tkdtaylor/agent-builder-l6-sandbox.git (fetch)
+#         l6   https://github.com/tkdtaylor/agent-builder-l6-sandbox.git (push)
+gh repo view tkdtaylor/agent-builder-l6-sandbox --json visibility,defaultBranchRef \
+  --jq '{visibility, defaultBranch: .defaultBranchRef.name}'
+# expect: {"visibility":"PRIVATE","defaultBranch":"main"}
 ```
 
 ---
@@ -182,28 +189,30 @@ git remote -v
 
 **What:** `make l6-preflight` (task 043) re-checks every prerequisite — tool presence, rootless Podman, git remote, and the baseline gate — and refuses to call the host READY until all pass. It catches the snap-confine `srt` condition defensively (moot on this host) and exits non-zero while anything is missing.
 
+**On this host, export `srt` onto PATH first** (the nvm gotcha — otherwise the `srt` row reports MISSING), then run the gate:
+
 ```bash
+export PATH="$HOME/.nvm/versions/node/v24.14.0/bin:$PATH"
 make l6-preflight
-# expect once Section 1 is done AND srt is on PATH: a PASS row per prerequisite, final line READY, exit 0.
 ```
 
-**Current output on this host (before Section 1, srt not yet on PATH)** — for reference, this is what NOT READY looks like:
+**Verified output on this host (2026-06-16, after Section 1 + srt on PATH)** — all 10 rows PASS, exit 0:
 
 ```
 PASS   podman (binary)
 PASS   runsc
 PASS   bwrap
-MISSING srt — install sandbox-runtime: npm i -g @anthropic-ai/sandbox-runtime
+PASS   srt
 PASS   claude
 PASS   gh
-MISSING git-remote — no git remote configured — run: git remote add origin <url>
+PASS   git-remote
 PASS   podman-rootless
 PASS   make-check
 PASS   make-fitness
-NOT READY
+READY
 ```
 
-Here the two `MISSING` rows are exactly the gaps to close: `srt` (put nvm's node on `PATH` — see the gotcha) and `git-remote` (step 1c). `runsc` reports PASS for **presence**; the live-runtime registration (1a) is exercised later by the 016/032 probes, not by preflight.
+If you skip the `srt` export you'll instead see `MISSING srt …` and a final `NOT READY` — that's the nvm gotcha, not a real gap. `runsc` reports PASS for **presence**; the live-runtime registration (1a) is exercised later by the 016/032 probes, not by preflight.
 
 The baseline gate is also confirmed by preflight (`make-check` / `make-fitness` rows), but you can run them directly:
 
