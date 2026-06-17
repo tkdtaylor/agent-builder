@@ -183,6 +183,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Blank branch, blank remote, git push failure, GitHub CLI failure, auth failure, or PR creation failure returns a non-success run outcome. Configured git/GitHub token values are redacted from publisher errors, CLI stderr, and RunRecord events.
 - **References:** `docs/tasks/test-specs/034-branch-pr-publication-test-spec.md`.
 
+### B-021: Verify audit chain integrity via the block's own verifier
+
+- **Trigger:** A caller invokes `audit.VerifyChain(binPath, logfile)` after a run has produced an audit-trail chain via `audit.BlockSink`.
+- **Response:** The helper invokes `audit-trail verify -logfile <path>` via `os/exec`, parses the block's JSON verdict `{ "valid": bool, "tamper_detected_at": <int|null>, "message": string }`, and returns a typed `audit.VerifyResult`. A `Valid == true` result passes the gate. A `Valid == false` result is a **block-severity** gate failure; `IsTampered()` returns true and `TamperedAt` names the sequence number the block localized.
+- **Side effects:** One `audit-trail verify` subprocess is started and exits before `VerifyChain` returns. The on-disk logfile is read by the block subprocess; agent-builder does not read or mutate the logfile directly.
+- **Failure modes:** A missing or non-executable `binPath`, a logfile the block cannot read, or unparseable block output returns a non-nil error wrapping `audit.ErrVerifierUnavailable`. This is distinct from a clean `Valid == false` result: `ErrVerifierUnavailable` means the verifier could not produce a verdict at all; `Valid == false` means the verifier ran and detected a tamper. An unavailable verifier is never reported as "valid". The tamper detection algorithm itself (RFC 8785 canonicalization, first-broken-link detection, edit/reorder/truncation classification) is owned by the audit-trail block and is not re-implemented here.
+- **References:** ADR 026; `docs/tasks/test-specs/040-audit-verify-test-spec.md`; frozen block contract at `docs/CONTRACT.md` in `github.com/tkdtaylor/audit-trail`.
+
 ---
 
 ## Edge cases and error behaviors
@@ -227,3 +235,5 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - Claude executor web/tool routes are explicitly `disabled` or `reviewed`; prompt text or subprocess flags alone are not treated as the blocking control.
 - The default `agent-builder run` wiring dispatches at most one ready task per invocation; an idle run does not create a box or run an Executor.
 - The branch publisher is called only after Executor success, Gate pass, and non-empty branch capture.
+- An unavailable `audit-trail` verifier binary is never reported as "valid": `VerifyChain` returns a non-nil `ErrVerifierUnavailable` error, not a passing `VerifyResult`.
+- `audit.VerifyChain` does not re-implement tamper detection; it delegates to the block's `verify` verb and maps the block's verdict to a typed block-severity gate result.
