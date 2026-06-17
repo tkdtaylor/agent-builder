@@ -107,7 +107,8 @@ if env | grep -Eq '^(CONTAINER_HOST|DOCKER_HOST)='; then
 fi
 pass TC-005 'no container-engine socket path or environment variable is reachable'
 
-cgroup_root="/sys/fs/cgroup"
+# EXEC_BOX_CGROUP_ROOT is overridable for tests (default: /sys/fs/cgroup).
+cgroup_root="${EXEC_BOX_CGROUP_ROOT:-/sys/fs/cgroup}"
 pids_limited="unknown"
 memory_limited="unknown"
 cpu_limited="unknown"
@@ -139,7 +140,22 @@ elif [ -r "$cgroup_root/cpu/cpu.cfs_quota_us" ]; then
     [ "$cpu_quota" -gt 0 ] && cpu_limited="yes"
 fi
 
-if [ "$pids_limited" != "yes" ] || [ "$memory_limited" != "yes" ] || [ "$cpu_limited" != "yes" ]; then
-    fail TC-003 "expected cgroup limits, got cpu=$cpu_limited memory=$memory_limited pids=$pids_limited"
+# TC-003: runtime-aware in-box resource-cap check (ADR 028).
+# Allowlist: only "runsc" (gVisor) takes the relaxed path.
+# Under runc and any other runtime (kata, unknown, future): STRICT — all three caps
+# (cpu, memory, pids) must be visible in-box.  A future runtime fails closed.
+if [ "$runtime" = "runsc" ]; then
+    # Under gVisor, the in-box cgroupfs is a partial cgroup-v1 emulation that exposes
+    # memory but not cpu/pids.  Assert memory in-box; cpu/pids are verified by the
+    # launcher's host-side podman inspect (run.sh TC-003 HOST die-on-zero checks).
+    if [ "$memory_limited" != "yes" ]; then
+        fail TC-003 "expected memory cgroup limit in-box under runsc, got memory=$memory_limited"
+    fi
+    pass TC-003 "memory cap visible in-box; cpu/pids caps verified host-side under runsc (cpu=$cpu_limited pids=$pids_limited)"
+else
+    # Strict path: runc and any non-runsc runtime — all three caps must be visible in-box.
+    if [ "$pids_limited" != "yes" ] || [ "$memory_limited" != "yes" ] || [ "$cpu_limited" != "yes" ]; then
+        fail TC-003 "expected cgroup limits, got cpu=$cpu_limited memory=$memory_limited pids=$pids_limited"
+    fi
+    pass TC-003 'cpu, memory, and pids cgroup limits are visible in-box'
 fi
-pass TC-003 'cpu, memory, and pids cgroup limits are visible in-box'

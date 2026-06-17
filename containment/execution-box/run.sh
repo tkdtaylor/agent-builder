@@ -568,7 +568,13 @@ if [ "$probe" = true ]; then
     runtime_inspect="$(podman inspect --format '{{.OCIRuntime}}' "$cid")"
     printf 'TC-016 HOST: workload=%s runtime=%s\n' "$workload" "$runtime_inspect"
     [ "$runtime_inspect" = "$runtime" ] || die "TC-016 FAIL: host inspect runtime=$runtime_inspect expected $runtime"
-    podman start --attach "$cid" || die "podman start failed: container did not run (exit $?)"
+    _probe_rc=0
+    podman start --attach "$cid" || _probe_rc=$?
+    if [ "$_probe_rc" -eq 125 ]; then
+        die "podman start failed: container did not start (exit 125)"
+    elif [ "$_probe_rc" -ne 0 ]; then
+        die "probe failed: in-box probe exited non-zero (exit $_probe_rc)"
+    fi
     exit 0
 fi
 
