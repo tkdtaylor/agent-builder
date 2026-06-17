@@ -220,6 +220,89 @@ record_evidence() {
     EVIDENCE_ROWS+=("$row")
 }
 
+# ─── seed_live_fixture helper ────────────────────────────────────────────────
+#
+# seed_live_fixture: create a temp task-root and git worktree for live probes (022/028)
+# Outputs: two lines to stdout: task-root path, then worktree path
+# Sets shell variables: AGENT_BUILDER_TASK_ROOT, AGENT_BUILDER_WORKTREE
+#
+# The fixture task-root contains docs/plans/roadmap.md and one docs/tasks/backlog/001-fixture.md.
+# The fixture worktree is a real git-init directory with go.mod and a minimal test.
+#
+# Note: This function uses real system tools (mktemp, mkdir, git) and requires
+# PATH to not be restricted to stubs. It's only called when L6_PROBE_PATH is empty.
+
+seed_live_fixture() {
+    # Ensure we have access to real tools, not stubs. Scope the real PATH to the
+    # whole function so EVERY command (mktemp, mkdir, cat heredocs, git) resolves
+    # to a real binary even when the caller restricted PATH to stubs (L6_PROBE_PATH).
+    # Previously only mktemp/mkdir/git carried the prefix; the `cat` heredocs did
+    # not, so under a stub PATH the seeded files were created empty.
+    local real_path="/usr/bin:/bin:/usr/local/bin:${PATH}"
+    local PATH="$real_path"
+
+    local task_root worktree
+    task_root="$(PATH="$real_path" mktemp -d)"
+    worktree="$(PATH="$real_path" mktemp -d)"
+
+    # Create task-root structure
+    PATH="$real_path" mkdir -p "$task_root/docs/plans" "$task_root/docs/tasks/backlog"
+
+    # Write roadmap.md
+    cat > "$task_root/docs/plans/roadmap.md" <<'EOF'
+# Roadmap
+EOF
+
+    # Write a fixture task file (001-fixture.md)
+    cat > "$task_root/docs/tasks/backlog/001-fixture.md" <<'EOF'
+# Task 001: fixture task
+
+**Status:** ready
+
+## Goal
+
+Minimal fixture task for testing probe 022/028.
+EOF
+
+    # Create worktree as a real git repo with minimal Go module
+    local old_pwd
+    old_pwd="$(pwd)"
+    cd "$worktree"
+    PATH="$real_path" git init > /dev/null 2>&1
+
+    cat > "$worktree/go.mod" <<'EOF'
+module example.com/fixture
+
+go 1.23
+EOF
+
+    cat > "$worktree/main.go" <<'EOF'
+package main
+
+func main() {}
+EOF
+
+    cat > "$worktree/main_test.go" <<'EOF'
+package main
+
+import "testing"
+
+func TestFixture(t *testing.T) {
+    t.Skip("fixture test — not meant to run")
+}
+EOF
+
+    PATH="$real_path" git add -A > /dev/null 2>&1
+    PATH="$real_path" git commit -m "initial" > /dev/null 2>&1
+    cd "$old_pwd"
+
+    # Output paths and set shell variables
+    printf '%s\n%s\n' "$task_root" "$worktree"
+    AGENT_BUILDER_TASK_ROOT="$task_root"
+    AGENT_BUILDER_WORKTREE="$worktree"
+    export AGENT_BUILDER_TASK_ROOT AGENT_BUILDER_WORKTREE
+}
+
 # ─── detect prerequisite tools ────────────────────────────────────────────────
 
 HAS_PODMAN=0
@@ -227,6 +310,7 @@ HAS_PODMAN_ROOTLESS=0
 HAS_RUNSC=0
 HAS_SRT=0
 HAS_CLAUDE=0
+HAS_ANTHROPIC_API_KEY=0
 HAS_GH=0
 HAS_GIT_REMOTE=0
 
@@ -242,6 +326,15 @@ fi
 command -v runsc > /dev/null 2>&1 && HAS_RUNSC=1 || true
 command -v srt   > /dev/null 2>&1 && HAS_SRT=1   || true
 command -v claude > /dev/null 2>&1 && HAS_CLAUDE=1 || true
+
+# ANTHROPIC_API_KEY detection using only bash built-ins (no tr/sed/awk/grep)
+# to work even when PATH is restricted to stub binaries in test mode
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    _key="${ANTHROPIC_API_KEY}"
+    _key="${_key// /}"  # Remove all spaces using parameter expansion
+    [ -n "$_key" ] && HAS_ANTHROPIC_API_KEY=1 || true
+fi
+
 command -v gh    > /dev/null 2>&1 && HAS_GH=1    || true
 
 if command -v git > /dev/null 2>&1; then
@@ -397,10 +490,33 @@ SKIP_022=""
 if [ "$HAS_CLAUDE" -eq 0 ]; then
     SKIP_022="prereq claude CLI absent (or not authenticated)"
 fi
+if [ "$HAS_ANTHROPIC_API_KEY" -eq 0 ] && [ -z "$SKIP_022" ]; then
+    SKIP_022="ANTHROPIC_API_KEY unset"
+fi
 
-CMD_022='env AGENT_BUILDER_CLAUDE_CLI=claude go run ./cmd/agent-builder run'
+# Seed fixture for 022/028 probes (reused by both) — but only if PATH isn't restricted
+# (in test mode with L6_PROBE_PATH, mktemp won't be available, so skip fixture seeding)
+FIXTURE_TASK_ROOT=""
+FIXTURE_WORKTREE=""
+AGENT_BUILDER_RUN_RECORD=""
+
+if [ -z "${L6_PROBE_PATH:-}" ]; then
+    fixture_output="$(seed_live_fixture)"
+    FIXTURE_TASK_ROOT="$(printf '%s\n' "$fixture_output" | head -1)"
+    FIXTURE_WORKTREE="$(printf '%s\n' "$fixture_output" | tail -1)"
+    AGENT_BUILDER_RUN_RECORD="$(mktemp)"
+    export AGENT_BUILDER_RUN_RECORD
+fi
+
+CMD_022='env AGENT_BUILDER_TASK_ROOT=<fixture> AGENT_BUILDER_WORKTREE=<fixture> AGENT_BUILDER_PUBLISH_REMOTE=... AGENT_BUILDER_RUN_TIMEOUT=300s AGENT_BUILDER_MAX_ATTEMPTS=1 AGENT_BUILDER_RUN_RECORD=<tmp> go run ./cmd/agent-builder run'
 run_probe "022" "$CMD_022" "$SKIP_022" \
-    env AGENT_BUILDER_CLAUDE_CLI=claude go run ./cmd/agent-builder run
+    env AGENT_BUILDER_TASK_ROOT="${FIXTURE_TASK_ROOT}" \
+    AGENT_BUILDER_WORKTREE="${FIXTURE_WORKTREE}" \
+    AGENT_BUILDER_PUBLISH_REMOTE="${AGENT_BUILDER_PUBLISH_REMOTE:-}" \
+    AGENT_BUILDER_RUN_TIMEOUT=300s \
+    AGENT_BUILDER_MAX_ATTEMPTS=1 \
+    AGENT_BUILDER_RUN_RECORD="${AGENT_BUILDER_RUN_RECORD}" \
+    go run ./cmd/agent-builder run
 
 STATUS_022="$_LAST_STATUS"
 OUTPUT_022="$_LAST_OUTPUT_LINE"
@@ -411,18 +527,37 @@ record_evidence "022" "$CMD_022" "$OUTPUT_022" "$STATUS_022" "$SKIP_022"
 #
 # Bug 3 fix: AGENT_BUILDER_SANDBOX_RUNTIME=srt was removed by ADR 021; passing
 # it causes ConfigFromEnv to error with the migration message. Drop it entirely.
-# Probe 028 is gated only on claude presence (not srt — srt was only needed for
-# the now-removed env var, not for 028's actual workload).
+# Probe 028 is gated only on claude presence + ANTHROPIC_API_KEY (not srt — srt
+# was only needed for the now-removed env var, not for 028's actual workload).
+#
+# Reuses the fixture seeded by probe 022.
 
 SKIP_028=""
 if [ "$HAS_CLAUDE" -eq 0 ]; then
     SKIP_028="prereq claude CLI absent (or not authenticated)"
 fi
+if [ "$HAS_ANTHROPIC_API_KEY" -eq 0 ] && [ -z "$SKIP_028" ]; then
+    SKIP_028="ANTHROPIC_API_KEY unset"
+fi
 
-CMD_028='env AGENT_BUILDER_CLAUDE_CLI=claude go run ./cmd/agent-builder run --task-root docs/tasks/...'
+# Only create a real temp record file in live mode. Under L6_PROBE_PATH (test
+# stub mode) the PATH is restricted to stubs with no real mktemp, and an
+# unconditional $(mktemp) recurses into the stub forever (fork-bomb / hang).
+# In stub/dry-run mode the probe argv is never executed, so a placeholder is fine.
+if [ -z "${L6_PROBE_PATH:-}" ]; then
+    AGENT_BUILDER_RUN_RECORD="$(mktemp)"
+    export AGENT_BUILDER_RUN_RECORD
+fi
+
+CMD_028='env AGENT_BUILDER_TASK_ROOT=<fixture> AGENT_BUILDER_WORKTREE=<fixture> AGENT_BUILDER_PUBLISH_REMOTE=... AGENT_BUILDER_RUN_TIMEOUT=300s AGENT_BUILDER_MAX_ATTEMPTS=1 AGENT_BUILDER_RUN_RECORD=<tmp> go run ./cmd/agent-builder run'
 run_probe "028" "$CMD_028" "$SKIP_028" \
-    env AGENT_BUILDER_CLAUDE_CLI=claude \
-    go run ./cmd/agent-builder run --task-root docs/tasks/
+    env AGENT_BUILDER_TASK_ROOT="${FIXTURE_TASK_ROOT:-}" \
+    AGENT_BUILDER_WORKTREE="${FIXTURE_WORKTREE:-}" \
+    AGENT_BUILDER_PUBLISH_REMOTE="${AGENT_BUILDER_PUBLISH_REMOTE:-}" \
+    AGENT_BUILDER_RUN_TIMEOUT=300s \
+    AGENT_BUILDER_MAX_ATTEMPTS=1 \
+    AGENT_BUILDER_RUN_RECORD="$AGENT_BUILDER_RUN_RECORD" \
+    go run ./cmd/agent-builder run
 
 STATUS_028="$_LAST_STATUS"
 OUTPUT_028="$_LAST_OUTPUT_LINE"
@@ -445,12 +580,11 @@ OUTPUT_033="$_LAST_OUTPUT_LINE"
 
 record_evidence "033" "$CMD_033" "$OUTPUT_033" "$STATUS_033" "$SKIP_033"
 
-# ── Probe 034: Branch & PR publication ────────────────────────────────────────
+# ── Probe 034: Branch & PR publication (live test) ─────────────────────────────
 #
-# Bug 2 fix: thread AGENT_BUILDER_PUBLISH_REMOTE from the environment into the
-# actual argv. When unset, skip gracefully (SKIP discipline identical to absent
-# gh/git-remote, exit 0) — a blank remote causes publication failure (required
-# per docs/spec/configuration.md).
+# Task 053: wired to run the live test TestLiveBranchPRPublication_TC034.
+# Thread AGENT_BUILDER_PUBLISH_REMOTE from the environment into the actual argv
+# (for TC-046-02 regression guard). When unset, skip gracefully.
 
 SKIP_034=""
 if [ "$HAS_GH" -eq 0 ]; then
@@ -463,24 +597,26 @@ if [ -z "${AGENT_BUILDER_PUBLISH_REMOTE:-}" ] && [ -z "$SKIP_034" ]; then
     SKIP_034="AGENT_BUILDER_PUBLISH_REMOTE unset"
 fi
 
-CMD_034='env AGENT_BUILDER_PUBLISH_REMOTE=<remote> AGENT_BUILDER_GH_CLI=gh AGENT_BUILDER_GITHUB_TOKEN=<token> go test -count=1 -v ./tests/publisher -run TestBranchPRPublication'
+CMD_034='env AGENT_BUILDER_LIVE_PUBLISH=1 AGENT_BUILDER_LIVE_PUBLISH_REMOTE=<remote> AGENT_BUILDER_PUBLISH_REMOTE=<remote> go test -count=1 -v ./tests/publisher -run TestLiveBranchPRPublication_TC034'
 run_probe "034" "$CMD_034" "$SKIP_034" \
-    env AGENT_BUILDER_PUBLISH_REMOTE="${AGENT_BUILDER_PUBLISH_REMOTE:-}" AGENT_BUILDER_GH_CLI=gh \
-    go test -count=1 -v ./tests/publisher -run TestBranchPRPublication
+    env AGENT_BUILDER_LIVE_PUBLISH=1 \
+    AGENT_BUILDER_LIVE_PUBLISH_REMOTE="${AGENT_BUILDER_PUBLISH_REMOTE:-}" \
+    AGENT_BUILDER_PUBLISH_REMOTE="${AGENT_BUILDER_PUBLISH_REMOTE:-}" \
+    go test -count=1 -v ./tests/publisher -run TestLiveBranchPRPublication_TC034
 
 STATUS_034="$_LAST_STATUS"
 OUTPUT_034="$_LAST_OUTPUT_LINE"
 
 record_evidence "034" "$CMD_034" "$OUTPUT_034" "$STATUS_034" "$SKIP_034"
 
-# ── Probe 032: Phase 0 end-to-end capstone ────────────────────────────────────
+# ── Probe 032: Phase 0 end-to-end capstone (live test) ──────────────────────────
 #
+# Task 054: wired to run the live test TestLivePhase0EndToEndAcceptance_TC032.
 # Capstone requires all of: podman + rootless, runsc, claude, gh + git remote,
 # and AGENT_BUILDER_PUBLISH_REMOTE.
 #
-# Bug 2 fix: thread AGENT_BUILDER_PUBLISH_REMOTE; SKIP when unset.
-# Bug 3 fix: AGENT_BUILDER_SANDBOX_RUNTIME=srt removed (ADR 021); Podman is
-# now the containment path (ADR 026 / tasks 035/036).
+# Keep AGENT_BUILDER_PUBLISH_REMOTE in the env prefix (TC-046-02 regression guard).
+# No AGENT_BUILDER_SANDBOX_RUNTIME (ADR 021 removed it; tasks 035/036 use Podman).
 
 SKIP_032=""
 SKIP_032_PARTS=()
@@ -496,12 +632,12 @@ if [ "${#SKIP_032_PARTS[@]}" -gt 0 ]; then
     SKIP_032="$(IFS=', '; printf '%s' "${SKIP_032_PARTS[*]}")"
 fi
 
-CMD_032='env AGENT_BUILDER_CLAUDE_CLI=claude AGENT_BUILDER_PUBLISH_REMOTE=<remote> AGENT_BUILDER_GH_CLI=gh go test -count=1 -v ./tests/e2e -run TestPhase0EndToEndAcceptance'
+CMD_032='env AGENT_BUILDER_LIVE_E2E=1 AGENT_BUILDER_LIVE_E2E_REMOTE=<remote> AGENT_BUILDER_PUBLISH_REMOTE=<remote> go test -count=1 -v ./tests/e2e -run TestLivePhase0EndToEndAcceptance_TC032'
 run_probe "032" "$CMD_032" "$SKIP_032" \
-    env AGENT_BUILDER_CLAUDE_CLI=claude \
+    env AGENT_BUILDER_LIVE_E2E=1 \
+    AGENT_BUILDER_LIVE_E2E_REMOTE="${AGENT_BUILDER_PUBLISH_REMOTE:-}" \
     AGENT_BUILDER_PUBLISH_REMOTE="${AGENT_BUILDER_PUBLISH_REMOTE:-}" \
-    AGENT_BUILDER_GH_CLI=gh \
-    go test -count=1 -v ./tests/e2e -run TestPhase0EndToEndAcceptance
+    go test -count=1 -v ./tests/e2e -run TestLivePhase0EndToEndAcceptance_TC032
 
 STATUS_032="$_LAST_STATUS"
 OUTPUT_032="$_LAST_OUTPUT_LINE"
