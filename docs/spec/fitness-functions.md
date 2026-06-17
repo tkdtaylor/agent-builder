@@ -1,7 +1,7 @@
 # Fitness functions
 
 **Project:** agent-builder
-**Last updated:** 2026-06-05
+**Last updated:** 2026-06-16
 
 ## What this file is
 
@@ -47,6 +47,7 @@ Keep entries concrete: the rule must be checkable by a tool, and the threshold m
 | F-002 | Verification gate has no scanner bypass route | security | Production source under `cmd/agent-builder` and `internal/gate` exposes no `--no-verify`/skip flag, scanner-skip environment variable, or conditional early-return bypass around `dep-scan`/`code-scanner` | 0 bypass affordances | `make fitness-gate-blocking` | block | The verification gate is the definition of done. A silent scanner bypass would let unattended work complete without the security checks the gate promises. |
 | F-003 | Supervisor import graph has no executor/LLM/web-fetch dependency | structural | `go list -deps ./internal/supervisor/...` reports no package path segment named `executor`, `executors`, `llm`, `llms`, `web`, `webfetch`, or `web-fetch` | 0 violations | `make fitness-supervisor-isolation` | block | The supervisor is trusted host-side control code. Keeping executor, LLM, and untrusted-content fetch code out of its transitive imports preserves the "dumb supervisor" boundary. |
 | F-004 | Default run pipeline has no sandbox-runtime dependency | structural | `go list -deps ./internal/runtime/...` reports no package path containing `sandboxruntime` | 0 violations | `make fitness-no-srt` | block | ADR 021 swapped the rented `@anthropic-ai/sandbox-runtime` backend for the repo-owned Podman execution-box. Keeping `sandboxruntime` out of the production run pipeline's transitive imports is what makes the rented isolation a non-dependency; the package stays in the tree for reference, so this check, not deletion, enforces the swap. |
+| F-005 | `internal/audit` and its supervisor wiring have no executor/LLM/web-fetch or audit-trail-module dependency | structural | (1) `go list -deps ./internal/audit/...` reports no path segment `executor`, `executors`, `llm`, `llms`, `web`, `webfetch`, `web-fetch`, or `audit-trail` Go import; (2) `go list -deps ./internal/supervisor/...` reports no executor/LLM/web path segment introduced via the audit dependency | 0 violations | `make fitness-audit-isolation` | block | ADR 026 (Option A) mandates that `internal/audit` reaches the `audit-trail` block over `os/exec`, not as a Go module import — so the block's packages must never appear in the audit or supervisor import graph. Keeping executor/LLM/web code out of `internal/audit` preserves the "dumb leaf" discipline and ensures the supervisor's isolation boundary (F-003) is not widened by the audit wiring. |
 
 Categories: `structural` (cycles, layering, dependency direction), `hygiene` (logging, leftovers, debug code), `performance` (latency, throughput, memory), `complexity` (cyclomatic, file size, fan-out), `security` (deps, surface, secrets), `coverage` (test coverage thresholds).
 
@@ -68,6 +69,7 @@ None recorded.
 - F-002 (verification gate has no scanner bypass route) ← [SPEC.md](SPEC.md) §Invariants and §Fitness functions, [`behaviors.md`](behaviors.md) §B-001 and §Implementation constraints, [`../architecture/overview.md`](../architecture/overview.md) §The shape of a run.
 - F-003 (supervisor isolation) ← [SPEC.md](SPEC.md) §Fitness functions, [`architecture.md`](architecture.md) §4 Components, [`../architecture/overview.md`](../architecture/overview.md) §Components.
 - F-004 (no sandbox-runtime in run pipeline) ← [ADR 021](../architecture/decisions/021-podman-default-containment-swap.md) decision 1, [`interfaces.md`](interfaces.md) §exec-sandbox `run()` seam, [`configuration.md`](configuration.md) §Removed variables.
+- F-005 (audit leaf isolation + supervisor graph) ← [ADR 026](../architecture/decisions/026-audit-trail-consume-shipped-block.md) §Decision (Option A: consume via CLI subprocess, not Go module import), [`architecture.md`](architecture.md) §4 Components.
 
 ## Notes
 

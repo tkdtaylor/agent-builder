@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt check
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation check
 
 lint:
 	golangci-lint run
@@ -10,7 +10,7 @@ test:
 	go test ./...
 
 # Fitness functions — see docs/spec/fitness-functions.md
-fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt
+fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation
 	@echo "Fitness checks passed."
 
 fitness-no-docker:
@@ -129,6 +129,35 @@ fitness-no-srt:
 		exit 1; \
 	fi; \
 	echo "PASS fitness-no-srt: internal/runtime does not import sandboxruntime"
+
+# fitness-audit-isolation covers test-spec TC-042-01, TC-042-02, TC-042-03, TC-042-04:
+# internal/audit must be a leaf package — no executor/LLM/web-fetch imports and no
+# audit-trail Go module import (the block is reached over os/exec, not a Go import —
+# ADR 026 Option A). Also asserts that wiring internal/audit into the supervisor
+# (task 041) did not drag any executor/LLM/web package into the supervisor's
+# transitive import graph.
+fitness-audit-isolation:
+	@audit_deps=$$(go list -deps ./internal/audit/...) || exit $$?; \
+	audit_forbidden=$$(printf '%s\n' "$$audit_deps" | awk '/(^|\/)(executor|executors|llm|llms|web|webfetch|web-fetch)(\/|$$)/ { print }'); \
+	audit_trail_import=$$(printf '%s\n' "$$audit_deps" | grep 'audit-trail' || true); \
+	sup_deps=$$(go list -deps ./internal/supervisor/...) || exit $$?; \
+	sup_forbidden=$$(printf '%s\n' "$$sup_deps" | awk '/(^|\/)(executor|executors|llm|llms|web|webfetch|web-fetch)(\/|$$)/ { print }'); \
+	if [ -n "$$audit_forbidden" ]; then \
+		echo "FAIL fitness-audit-isolation: internal/audit imports forbidden executor/LLM/web package(s):"; \
+		printf '%s\n' "$$audit_forbidden"; \
+		exit 1; \
+	fi; \
+	if [ -n "$$audit_trail_import" ]; then \
+		echo "FAIL fitness-audit-isolation: internal/audit imports audit-trail as a Go module (must use os/exec — ADR 026):"; \
+		printf '%s\n' "$$audit_trail_import"; \
+		exit 1; \
+	fi; \
+	if [ -n "$$sup_forbidden" ]; then \
+		echo "FAIL fitness-audit-isolation: supervisor's audit dependency drags in forbidden executor/LLM/web package(s):"; \
+		printf '%s\n' "$$sup_forbidden"; \
+		exit 1; \
+	fi; \
+	echo "PASS fitness-audit-isolation: internal/audit import graph contains no executor/LLM/web-fetch or audit-trail-block packages and the supervisor's audit dependency drags none in."
 
 check: lint test fitness
 	@echo "All checks passed."
