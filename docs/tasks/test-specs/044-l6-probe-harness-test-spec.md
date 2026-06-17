@@ -24,11 +24,11 @@
 
 ## Test cases
 
-### TC-044-01: dry-run emits all 9 rows in the correct closing order
+### TC-044-01: dry-run emits all 10 rows in the correct closing order
 
 - **Requirement:** REQ-044-01
 - **Mechanism:** run `scripts/l6-probe.sh --dry-run` with a faked PATH that satisfies all prerequisites so no probe is skipped. The script must not invoke any real probe commands; it must only print what it *would* do.
-- **Expected output:** stdout contains exactly 9 rows, one per task, in this sequence: 014, 015, 016, 021, 030, 022, 028, 033, 034, 032. Each row identifies the task ID and the probe command it would invoke (verbatim, matching the checklist). Exit code is 0.
+- **Expected output:** stdout contains exactly 10 rows, one per task ID in the authoritative checklist's closing order, in this sequence: 014, 015, 016, 021, 030, 022, 028, 033, 034, 032 (the checklist enumerates 10 distinct task IDs — 030 is the ledger-update task and gets its own row). Each row identifies the task ID and the probe command it would invoke (verbatim, matching the checklist). Exit code is 0.
 - **Edge cases:** the order must be exactly as specified — the closing order from the checklist (014 → 015 → 016 → 021 → 030-ledger → 022 → 028 → 033 → 034 → 032). A sorted-by-task-ID order would be wrong; the test must assert position, not just presence.
 
 ### TC-044-02: a probe whose prerequisite is absent is marked SKIP with a reason — not FAIL
@@ -42,7 +42,7 @@
 
 - **Requirement:** REQ-044-03
 - **Mechanism:** run `scripts/l6-probe.sh --dry-run` with all prerequisites satisfied. After the run, read the evidence file written to disk (path is either documented or printed by the script).
-- **Expected output:** the evidence file contains exactly 9 rows (one per task). Each row is structured with the following fields, in a format suitable for pasting into the `Verified by` column of `coverage-tracker.md`: task ID, probe command (the exact command the checklist specifies), verbatim final output line (in dry-run mode this is a placeholder such as `[dry-run: not executed]`), and status (`PASS`, `SKIP`, or `FAIL`). The file format is consistent across all 9 rows (same delimiter / field structure). No row is missing; no extra rows appear.
+- **Expected output:** the evidence file contains exactly 10 rows (one per task ID in the closing order). Each row is structured with the following fields, in a format suitable for pasting into the `Verified by` column of `coverage-tracker.md`: task ID, probe command (the exact command the checklist specifies), verbatim final output line (in dry-run mode this is a placeholder such as `[dry-run: not executed]`), and status (`PASS`, `SKIP`, or `FAIL`). The file format is consistent across all 10 rows (same delimiter / field structure). No row is missing; no extra rows appear.
 - **Edge cases:** when a probe is SKIP, its evidence row must still appear in the file (with status `SKIP` and the skip reason in the output-line field). A missing row for a SKIP-ped probe would break the paste-ready contract.
 
 ### TC-044-04: preflight gate — harness refuses to run probes when preflight is NOT READY
