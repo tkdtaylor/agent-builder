@@ -65,33 +65,46 @@ env AGENT_BUILDER_LIVE_SRT=1 \
     AGENT_BUILDER_LIVE_SRT_DENY_HOST=<deny> \
   go test -count=1 -v ./tests/sandbox -run TestSandboxRuntimeLiveHarness_TC002_TC003
 # success: ok ./tests/sandbox  (real srt invoked, allow/deny network behaviour observed)
+# Note: srt was removed from the run path in Phase 1 (ADR 021); this task is historical L6 closure, not active.
 ```
 
 ### Task 022 — Claude CLI executor (already ✅, L6 note still open)
 Row is ✅ on a stubbed CLI but flagged "L6 real Claude CLI/auth pending." Confirm a real authenticated `claude` produces a branch.
 ```bash
-env AGENT_BUILDER_CLAUDE_CLI=claude go run ./cmd/agent-builder run ...   # one real task
-# success: executor invokes real claude, returns Result.Branch and Result.OK == true
+env ANTHROPIC_API_KEY=<key> \
+    AGENT_BUILDER_TASK_ROOT=<fixture> \
+    AGENT_BUILDER_WORKTREE=<fixture> \
+    AGENT_BUILDER_PUBLISH_REMOTE=<remote> \
+    AGENT_BUILDER_RUN_TIMEOUT=300s \
+    AGENT_BUILDER_MAX_ATTEMPTS=1 \
+    AGENT_BUILDER_RUN_RECORD=<tmp> \
+  go run ./cmd/agent-builder run
+# success: executor invokes real claude, returns Result.Branch and Result.OK == true; claude runs host-side
 ```
 
 ### Task 028 — Default run wiring (L6)
 Drive the full Phase 0 pipeline with real providers (not fakes).
 ```bash
-env AGENT_BUILDER_CLAUDE_CLI=claude \
-    AGENT_BUILDER_SANDBOX_RUNTIME=srt \
-  go run ./cmd/agent-builder run --task-root docs/tasks/...
-# success: one configured task selected, run executed in box, run_finished persisted
+env ANTHROPIC_API_KEY=<key> \
+    AGENT_BUILDER_TASK_ROOT=<fixture> \
+    AGENT_BUILDER_WORKTREE=<fixture> \
+    AGENT_BUILDER_PUBLISH_REMOTE=<remote> \
+    AGENT_BUILDER_RUN_TIMEOUT=300s \
+    AGENT_BUILDER_MAX_ATTEMPTS=1 \
+    AGENT_BUILDER_RUN_RECORD=<tmp> \
+  go run ./cmd/agent-builder run
+# success: one configured task selected, run executed in box, run_finished persisted; claude runs host-side
 ```
 
 ### Task 030 — Runtime isolation evidence (L6)
 This row *is* the evidence ledger; it closes when 014/015/016/021 probes above are observed green. Re-run the three execution-box probes and `command -v srt`, record real (non-blocker) output.
 
 ### Task 032 — Phase 0 end-to-end acceptance (L6)
-The capstone. Same harness, but with the live runtime path wired (real Podman + runsc + srt + claude + configured remote).
+The capstone. Same harness, but with the live runtime path wired (real Podman + runsc + claude + configured remote).
 ```bash
-env AGENT_BUILDER_CLAUDE_CLI=claude AGENT_BUILDER_SANDBOX_RUNTIME=srt \
-    AGENT_BUILDER_PUBLISH_REMOTE=<remote> AGENT_BUILDER_GH_CLI=gh \
-  go test -count=1 -v ./tests/e2e -run TestPhase0EndToEndAcceptance
+env AGENT_BUILDER_LIVE_E2E=1 \
+    AGENT_BUILDER_LIVE_E2E_REMOTE=<remote> \
+  go test -count=1 -v ./tests/e2e -run TestLivePhase0EndToEndAcceptance_TC032
 # success: task selected, branch produced, PR recorded LIVE, gate passed, run record persisted
 ```
 
@@ -105,8 +118,9 @@ containment/execution-box/run.sh --gate-tools <gate-tools-dir> --worktree . --pr
 ### Task 034 — Branch & PR publication (L6)
 Publish a real PR against a configured remote.
 ```bash
-env AGENT_BUILDER_PUBLISH_REMOTE=<remote> AGENT_BUILDER_GH_CLI=gh AGENT_BUILDER_GITHUB_TOKEN=<token> \
-  go test -count=1 -v ./tests/publisher -run TestBranchPRPublication
+env AGENT_BUILDER_LIVE_PUBLISH=1 \
+    AGENT_BUILDER_LIVE_PUBLISH_REMOTE=<remote> \
+  go test -count=1 -v ./tests/publisher -run TestLiveBranchPRPublication_TC034
 # success: a real PR is opened (capture PR URL); failure path still preserves task as not-done
 ```
 

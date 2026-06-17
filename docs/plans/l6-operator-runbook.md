@@ -235,6 +235,8 @@ make l6-probe
 
 **Closing order (the exact 10 steps):** 014 → 015 → 016 → 021 → 030 (ledger) → 022 → 028 → 033 → 034 → 032 (capstone).
 
+**Host-side execution (Claude and gate placement).** In probes 022, 028, 032, and 034, the **`claude` CLI executor runs on this host** (your machine) — it is **not** inside the Podman execution-box. The orchestrator invokes `claude run --prompt "..." …` as a host-side process, which produces a branch to the host's git, and then runs the gate (linter/tests/scanner) **inside** the Podman sandbox. This separation is load-bearing: the executor needs to edit files and produce a branch (host operations); the gate needs to run in a trusted sandbox (box operations). For probes 022 and 028, the executor writes a stub/real task to the host's `AGENT_BUILDER_TASK_ROOT`. For probe 032, the executor completes a real task against a real remote. All three use `AGENT_BUILDER_CLAUDE_CLI=claude` (the real CLI) and require `ANTHROPIC_API_KEY` set in your environment. Do **not** try to run `claude` inside the box — the box has read-only rootfs and no network (only `--dns none`), so it cannot reach the Anthropic API.
+
 The evidence file has **one pipe-delimited row per step** (`TASK-<id> | <command> | <final-output-line> | <status>`), paste-ready for the tracker's `Verified by` column. The exact command and success criterion for each probe (reproduced below) are the authoritative reference in [phase0-l6-verification-checklist.md](phase0-l6-verification-checklist.md) — `make l6-probe` runs these same commands:
 
 | # | Task | Command (run by the harness) | Success criterion |
@@ -244,11 +246,11 @@ The evidence file has **one pipe-delimited row per step** (`TASK-<id> | <command
 | 3 | 016 | `containment/execution-box/run.sh --gate-tools <dir> --worktree . --runtime runsc --probe` | box starts under runsc, probe exits 0 |
 | 4 | 021 | `env AGENT_BUILDER_LIVE_SRT=1 AGENT_BUILDER_LIVE_SRT_ALLOW_HOST=<allow> AGENT_BUILDER_LIVE_SRT_DENY_HOST=<deny> go test -count=1 -v ./tests/sandbox -run TestSandboxRuntimeLiveHarness_TC002_TC003` | `ok ./tests/sandbox` — real srt invoked, allow/deny observed |
 | 5 | 030 | ledger step — observe 014/015/016/021 green, record | SKIPs automatically if any of 014/015/016/021 did not run |
-| 6 | 022 | `env AGENT_BUILDER_CLAUDE_CLI=claude go run ./cmd/agent-builder run …` | real claude invoked, `Result.Branch` set, `Result.OK == true` |
-| 7 | 028 | `env AGENT_BUILDER_CLAUDE_CLI=claude AGENT_BUILDER_SANDBOX_RUNTIME=srt go run ./cmd/agent-builder run --task-root docs/tasks/…` | task selected, run executed in box, `run_finished` persisted |
+| 6 | 022 | `env ANTHROPIC_API_KEY=<key> … go run ./cmd/agent-builder run` (see Section 1c) | real claude invoked host-side, `Result.Branch` set, `Result.OK == true` |
+| 7 | 028 | `env ANTHROPIC_API_KEY=<key> … go run ./cmd/agent-builder run` (see Section 1c) | task selected, branch produced host-side, gate runs inside box, `run_finished` persisted |
 | 8 | 033 | `containment/execution-box/run.sh --gate-tools <dir> --worktree . --probe` | gate toolchain mounted, `make check` runs to completion inside the box |
-| 9 | 034 | `env AGENT_BUILDER_PUBLISH_REMOTE=<remote> AGENT_BUILDER_GH_CLI=gh AGENT_BUILDER_GITHUB_TOKEN=<token> go test -count=1 -v ./tests/publisher -run TestBranchPRPublication` | a real PR is opened (capture the URL) |
-| 10 | 032 | `env AGENT_BUILDER_CLAUDE_CLI=claude AGENT_BUILDER_SANDBOX_RUNTIME=srt AGENT_BUILDER_PUBLISH_REMOTE=<remote> AGENT_BUILDER_GH_CLI=gh go test -count=1 -v ./tests/e2e -run TestPhase0EndToEndAcceptance` | task selected, branch produced, PR recorded LIVE, gate passed |
+| 9 | 034 | `env AGENT_BUILDER_LIVE_PUBLISH=1 AGENT_BUILDER_LIVE_PUBLISH_REMOTE=<remote> go test -count=1 -v ./tests/publisher -run TestLiveBranchPRPublication_TC034` | a real PR is opened against the `l6` sandbox remote (capture the URL) |
+| 10 | 032 | `env AGENT_BUILDER_LIVE_E2E=1 AGENT_BUILDER_LIVE_E2E_REMOTE=<remote> go test -count=1 -v ./tests/e2e -run TestLivePhase0EndToEndAcceptance_TC032` | task selected, branch produced host-side, PR recorded LIVE against `l6`, gate passed |
 
 > **Sanity-check the wiring without a live host:** `make l6-probe` is `bash scripts/l6-probe.sh`; add `--dry-run` (i.e. `bash scripts/l6-probe.sh --dry-run`) to print the 10 rows and exercise the gating logic without invoking any real probe. On this host today a dry-run shows 014/015/016/022/033 as `DRY-RUN` and 021/028/030/032/034 as `SKIP` (srt not on PATH + no git remote) — which is exactly the gap Section 1 closes.
 
