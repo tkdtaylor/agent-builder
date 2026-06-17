@@ -434,8 +434,12 @@ func TestPodmanRunnerLive(t *testing.T) {
 		cwd = parent
 	}
 
+	// The execution-box image is ENTRYPOINT ["/bin/sh"] (ADR 032): the command is
+	// handed to /bin/sh as its args, so commands must be sh-compatible (`-c <script>`),
+	// not exec-style argv. ["echo","hello"] would become `sh echo hello` (open file
+	// "echo" as a script → fails); use `sh -c "echo hello"` instead.
 	req := sandbox.Request{
-		Command:  []string{"echo", "hello"},
+		Command:  []string{"-c", "echo hello"},
 		Worktree: cwd,
 		Limits: sandbox.Limits{
 			WallClockTimeout: 30 * time.Second,

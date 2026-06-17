@@ -47,7 +47,7 @@ func TestRuntimeRunWiresPhase0Pipeline(t *testing.T) {
 	if got := strings.Count(claudeLog, "task="); got != 1 {
 		t.Fatalf("TC-002 executor attempts = %d, want exactly 1", got)
 	}
-	if launcherLog := readRuntimeText(t, fixture.launcherLog); !strings.Contains(launcherLog, "cmd=/bin/true") {
+	if launcherLog := readRuntimeText(t, fixture.launcherLog); !strings.Contains(launcherLog, "cmd=-c true") {
 		t.Fatalf("TC-001 fake launcher log = %q, want containment probe", launcherLog)
 	}
 	if publishLog := readRuntimeText(t, fixture.publishLog); !strings.Contains(publishLog, "git push origin task/028-default-run-wiring") ||
@@ -180,8 +180,8 @@ func TestRuntimeRunWiresPodmanAdapter(t *testing.T) {
 	}
 
 	launcherLog := readRuntimeText(t, fixture.launcherLog)
-	if !strings.Contains(launcherLog, "cmd=/bin/true") {
-		t.Fatalf("TC-036-02 fake launcher log = %q, want Podman launcher invoked with the /bin/true probe", launcherLog)
+	if !strings.Contains(launcherLog, "cmd=-c true") {
+		t.Fatalf("TC-036-02 fake launcher log = %q, want Podman launcher invoked with the `-c true` sh-probe (ADR 032)", launcherLog)
 	}
 	if !strings.Contains(launcherLog, "worktree="+fixture.worktree) {
 		t.Fatalf("TC-036-02 fake launcher log = %q, want --worktree passed to the launcher", launcherLog)
@@ -388,7 +388,8 @@ printf 'https://github.com/acme/runfixture/pull/28\n'
 // writeFakeLauncherForRun writes a fake Podman execution-box launcher that
 // parses `--worktree X [--egress-allowlist Y] [--] cmd...` (the flag shape
 // emitted by internal/sandbox/podman), records the worktree and command, and
-// execs the command. The default-run containment probe command is /bin/true.
+// execs the command. The default-run containment probe command is `-c true`
+// (sh -c true; the box image is ENTRYPOINT ["/bin/sh"] per ADR 032).
 func writeFakeLauncherForRun(t *testing.T, dir, logPath string) string {
 	t.Helper()
 	path := filepath.Join(dir, "run.sh")
@@ -405,7 +406,7 @@ while [ $# -gt 0 ]; do
 done
 printf 'worktree=%%s\n' "$worktree" >> %s
 printf 'cmd=%%s\n' "$*" >> %s
-exec "$@"
+exec /bin/sh "$@"
 `, shellQuoteForRun(logPath), shellQuoteForRun(logPath))
 	writeFile(t, path, script)
 	if err := os.Chmod(path, 0o755); err != nil {

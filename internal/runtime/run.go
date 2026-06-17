@@ -332,8 +332,12 @@ func (b sandboxBox) Create(task supervisor.Task) (supervisor.BoxHandle, error) {
 	if b.runner == nil {
 		return supervisor.BoxHandle{}, fmt.Errorf("run config: missing sandbox runner")
 	}
+	// The execution-box image is ENTRYPOINT ["/bin/sh"] (ADR 032), so the command
+	// is passed to /bin/sh as its arguments: a bare ["/bin/true"] becomes `sh /bin/true`,
+	// which makes the shell read the ELF binary as a script ("ELF: not found", exit 2).
+	// Use an sh -c form so the box-liveness probe runs `sh -c true` and exits 0.
 	_, exitCode, err := b.runner.Run(sandbox.Request{
-		Command:  []string{"/bin/true"},
+		Command:  []string{"-c", "true"},
 		Worktree: b.worktree,
 		Limits:   b.limits,
 	})

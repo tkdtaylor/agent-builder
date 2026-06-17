@@ -301,7 +301,9 @@ printf '%s\n' > "$branch_file"
 
 // writeFakeLauncher writes a fake Podman execution-box launcher that parses the
 // `--worktree X [--egress-allowlist Y] [--] cmd...` flag shape emitted by
-// internal/sandbox/podman and execs the wrapped command.
+// internal/sandbox/podman and execs the wrapped command UNDER /bin/sh, modelling
+// the real execution-box image's ENTRYPOINT ["/bin/sh"] (ADR 032) — so commands
+// must be sh-compatible (e.g. `-c true`), exactly as against the real image.
 func writeFakeLauncher(t *testing.T, dir string) string {
 	t.Helper()
 	path := filepath.Join(dir, "run.sh")
@@ -315,7 +317,7 @@ while [ $# -gt 0 ]; do
 		*) break ;;
 	esac
 done
-exec "$@"
+exec /bin/sh "$@"
 `)
 	chmodExecutable(t, path)
 	return path
