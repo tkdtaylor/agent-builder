@@ -1,7 +1,7 @@
 # Architecture — C4 Element Catalog
 
 **Project:** agent-builder
-**Last updated:** 2026-06-05
+**Last updated:** 2026-06-16
 
 The structured catalog of architectural elements that the diagrams in [`../architecture/diagrams.md`](../architecture/diagrams.md) render. Tables here are the **machine-readable spec** for the system's structure — they survive a Mermaid rewrite and are what a drift audit checks the code against.
 
@@ -71,6 +71,7 @@ When the structure changes, both files update in the same commit. The tables her
 | agent-builder CLI | Armor Guard Adapter | `internal/armor` | Adapts an external armor-compatible process/service to the ingestion guard decision model without vendoring armor source | Ingestion Boundary; armor |
 | agent-builder CLI | Executor Ingestion Harness | `internal/executorharness` | Converts executor-facing web-content and tool-call events into ingestion candidates, routes them through the broker, and exposes only broker-reviewed release values to continuations/executors; constructs armor-backed harness wiring when configured | Ingestion Boundary; Armor Guard Adapter |
 | agent-builder CLI | Claude CLI Executor | `internal/executor` | Concrete `supervisor.Executor` adapter that invokes Claude Code CLI in a task worktree, captures the produced branch, and declares fail-closed/reviewed policy for Claude-facing web/tool routes | Supervisor; Claude Code CLI; Executor Ingestion Harness |
+| agent-builder CLI | Audit Sink Seam | `internal/audit` | Typed closed-enum `AuditAction` taxonomy, `AuditEvent` value type, `Sink` interface, event validation helper (`Validate`), and in-process `FakeSink`; strict leaf package with no executor/LLM/web imports; production backend is `BlockSink` (task 039) reached over the block's CLI subprocess seam | |
 | agent-builder CLI | exec-sandbox Run Adapter | `internal/sandbox` | Typed contained-command run seam plus deterministic fake backend | |
 | agent-builder CLI | Podman Adapter | `internal/sandbox/podman` | Concrete run backend that invokes `containment/execution-box/run.sh` with the worktree and typed limits (egress allowlist, CPU/memory/PID quotas, wall-clock timeout) without changing callers of the task-020 seam | exec-sandbox Run Adapter; rootless Podman |
 | agent-builder CLI | Verification Gate | `internal/gate` | Runs ordered blocking verification Steps and returns structured Verdicts | code-scanner |

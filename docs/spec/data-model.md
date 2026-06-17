@@ -1,7 +1,7 @@
 # Data Model
 
 **Project:** agent-builder
-**Last updated:** 2026-06-05
+**Last updated:** 2026-06-16
 
 What data exists, how it's structured, where it lives, and what relationships hold between entities. Covers persistent storage, in-memory state, and data-on-the-wire formats.
 
@@ -476,6 +476,82 @@ Trace          TraceRecorder         optional producer-consumer trace sink
 - **Lifecycle:** produced by inside-the-box runtime wiring and consumed by `executorharness.NewArmorGuarded`.
 - **Relationships:** composes `armor.NewGuard`, `ingestion.NewBroker`, and `executorharness.New` into one armor-backed harness.
 - **Failure behavior:** missing or failing armor configuration is preserved as a fail-closed broker decision, not a constructor error.
+
+### State: Audit Sink Seam
+
+- **Shape:** `internal/audit` owns a typed, closed-enum `AuditAction` constant set, the `AuditEvent` value type, the `Sink` interface, and the in-process `FakeSink` implementation. The production backend (`BlockSink`, task 039) and supervisor wiring (task 041) are separate components.
+- **Owner:** supervisor-side wiring constructs a `Sink` and passes it through the seam. Tests use `FakeSink`.
+- **Lifetime:** process-local per run. No event or seal is persisted by the seam itself; persistence is the responsibility of the production `Sink` implementation.
+- **Concurrency rules:** no internal synchronization is provided by `FakeSink`. Callers must serialize access or supply their own locking.
+- **Isolation:** `internal/audit` is a strict leaf package — it imports no executor, LLM, or web-fetch packages (enforced by the F-005 fitness check, task 042).
+
+#### Value: `audit.AuditAction` (closed enum)
+
+```
+constant            string value      notes
+─────────────────────────────────────────────────────────────
+ActionContainment   "containment"     containment box created; launcher identity recorded
+ActionPick          "pick"            task selected from the task source
+ActionAttempt       "attempt"         executor attempt started for the picked task
+ActionVerify        "verify"          gate verification started; verdict required
+ActionPublish       "publish"         branch pushed and PR artifact recorded
+ActionEscalate      "escalate"        retry exhausted; status written as needs-human
+ActionFinish        "finish"          run lifecycle complete; outcome recorded
+```
+
+- **Closed:** `AuditAction.Valid()` returns false for any value not in the constant set above. Raw stdout/stderr actions do not exist in this taxonomy (raw output stays in the 019 RunRecord).
+- **Identity:** the string value is the stable `action` field used in the block's `emit` wire format.
+
+#### Value: `audit.AuditEvent`
+
+```
+field       type              notes
+─────────────────────────────────────────────────────────────
+Action      AuditAction       required; must be Valid()
+RunID       string            run correlation ID (e.g. "NNN/box-NNN")
+TaskID      string            task being acted on
+Verdict     AuditVerdict      required for ActionVerify; "pass" or "fail"
+Outcome     AuditOutcome      optional for ActionFinish; "completed", "failed", or "timed-out"
+Detail      EventDetail       optional typed structured context; fields relevant per action
+```
+
+- **Identity:** an event is scoped to one run and one action occurrence; no primary key is assigned at this layer.
+- **Lifecycle:** constructed by supervisor wiring, validated by `audit.Validate`, and appended to a `Sink` implementation.
+- **Relationships:** maps onto the `audit-trail` block's `emit` wire fields (see ADR 026 mapping table).
+- **Validation rule:** `audit.Validate(ev)` returns a `*ValidationError` naming the offending field when `Action` is unset/unknown or when a `verify` event lacks a valid `Verdict`. A valid optional-field absence (e.g., a `pick` event with no `Detail`) passes validation.
+
+#### Value: `audit.EventDetail`
+
+```
+field       type      notes
+─────────────────────────────────────────────────────────────
+Launcher    string    containment launcher path (containment events)
+Branch      string    executor-produced branch (publish events)
+Remote      string    git remote used for publication (publish events)
+Attempt     int       1-based attempt number (attempt/escalate events)
+```
+
+- **Identity:** embedded in `AuditEvent`; carries only the non-zero fields relevant to the action.
+- **Lifecycle:** constructed at the call site with named fields (no `map[string]any`).
+
+#### Value: `audit.AuditVerdict`
+
+```
+constant      string value   notes
+────────────────────────────
+VerdictPass   "pass"         gate verification passed
+VerdictFail   "fail"         gate verification failed
+```
+
+#### Value: `audit.AuditOutcome`
+
+```
+constant          string value   notes
+──────────────────────────────────────────────────────────────
+OutcomeCompleted  "completed"    in-box loop returned nil
+OutcomeFailed     "failed"       in-box loop returned error or panicked
+OutcomeTimedOut   "timed-out"    configured wall-clock timeout expired
+```
 
 ### State: Armor Guard Adapter
 
