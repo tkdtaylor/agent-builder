@@ -588,6 +588,18 @@ resolved_allowlist="$egress_state/resolved-egress.allowlist"
 add_hosts_file="$egress_state/add-hosts"
 resolve_egress_plan "$parsed_allowlist" "$resolved_allowlist" "$add_hosts_file"
 
+# Resolve the egress workload runtime: on the rootless egress path, the workload must
+# run under runc because gVisor's gofer cannot join a rootless pod's keep-id userns.
+# See ADR 030. If the operator explicitly passed --runtime runsc, fail loudly rather
+# than silently downgrading.
+egress_runtime="$runtime"
+if [ "$runtime" = "runsc" ] && [ "$runtime_source" != "default" ]; then
+    die "explicit --runtime runsc is incompatible with the rootless egress path: gVisor's gofer cannot join a rootless pod's user namespace (ADR 030). Use --runtime runc for the egress path, or run without --egress-probe for a standalone runsc workload."
+fi
+if [ "$runtime" = "runsc" ] && [ "$runtime_source" = "default" ]; then
+    egress_runtime="runc"
+fi
+
 pod_name="${container_name}-pod"
 sidecar_name="${container_name}-egress"
 cleanup_egress() {
@@ -597,11 +609,21 @@ cleanup_egress() {
 }
 trap cleanup_egress EXIT
 
+# Build pod_add_host_args from the resolved allowlist entries so --add-host is
+# declared on the pod (infra container) rather than the workload member. The pod
+# resolves allowlisted destinations while the workload runs --dns none.
+pod_add_host_args=()
+while read -r add_host; do
+    [ -n "$add_host" ] || continue
+    pod_add_host_args+=(--add-host "$add_host")
+done < "$add_hosts_file"
+
 podman pod create \
     --name "$pod_name" \
     --label agent-builder.profile=execution-box \
     --label agent-builder.egress=default-deny \
-    --userns=keep-id >/dev/null \
+    --userns=keep-id \
+    "${pod_add_host_args[@]}" >/dev/null \
     || die "podman pod create failed: egress pod did not start (exit $?)"
 
 podman run -d \
@@ -635,26 +657,62 @@ done
     die 'egress sidecar did not become ready'
 }
 
-# Build egress workload_args as a filtered copy of common_args with --userns=keep-id
-# removed: rootless pod members inherit the userns from the pod's infra container
-# (declared on podman pod create above). Non-pod paths keep --userns=keep-id via
-# common_args unchanged (--probe, plain workload run).
+# Build egress workload_args as a filtered copy of common_args with:
+# - --userns=keep-id removed (rootless pod members inherit the userns from the pod's
+#   infra container, declared on podman pod create above). Non-pod paths keep
+#   --userns=keep-id via common_args unchanged (--probe, plain workload run).
+# - --runtime VALUE and --label agent-builder.runtime=VALUE substituted with egress_runtime
+#   (resolved to runc on the rootless egress path per ADR 030). This ensures the workload
+#   carries the correct runtime substitution while common_args and non-egress paths are
+#   unchanged.
 workload_args=()
+_skip_next_arg=false
+_pending_label=false
 for _arg in "${common_args[@]}"; do
+    # Skip --userns=keep-id entirely.
     [ "$_arg" = "--userns=keep-id" ] && continue
+
+    # If the previous arg was --runtime, skip this one (the original runtime value);
+    # we re-add --runtime "$egress_runtime" below.
+    if [ "$_skip_next_arg" = true ]; then
+        _skip_next_arg=false
+        continue
+    fi
+
+    # `--label` and its value are two separate array elements. Defer the `--label` so we
+    # can inspect its value: drop the agent-builder.runtime=VALUE pair (re-added below with
+    # egress_runtime) but keep every other label intact.
+    if [ "$_pending_label" = true ]; then
+        _pending_label=false
+        case "$_arg" in
+            agent-builder.runtime=*) : ;;                      # drop the stale runtime label
+            *) workload_args+=(--label "$_arg") ;;
+        esac
+        continue
+    fi
+    if [ "$_arg" = "--label" ]; then
+        _pending_label=true
+        continue
+    fi
+
+    # Detect --runtime and mark to skip its value on the next iteration.
+    if [ "$_arg" = "--runtime" ]; then
+        _skip_next_arg=true
+        continue
+    fi
+
     workload_args+=("$_arg")
 done
-unset _arg
+unset _arg _skip_next_arg _pending_label
+
+# Add the egress-specific runtime and label.
 workload_args+=(
+    --runtime "$egress_runtime"
+    --label "agent-builder.runtime=$egress_runtime"
     --pod "$pod_name"
     --dns none
     --mount "type=bind,source=$egress_state,target=/egress-state,ro,relabel=private"
 )
-
-while read -r add_host; do
-    [ -n "$add_host" ] || continue
-    workload_args+=(--add-host "$add_host")
-done < "$add_hosts_file"
 
 if [ "$egress_probe" = true ]; then
     _egress_probe_rc=0

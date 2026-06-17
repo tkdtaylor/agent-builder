@@ -453,7 +453,6 @@ run_egress_path() {
             --worktree "$worktree" \
             --gate-tools "$gate_tools" \
             --image "stub-image:test" \
-            --runtime "runsc" \
             -- /bin/true \
         > "$stdout_file" 2> "$stderr_file" \
         || _rp_exit=$?
@@ -493,7 +492,6 @@ run_egress_probe_path() {
             --worktree "$worktree" \
             --gate-tools "$gate_tools" \
             --image "stub-image:test" \
-            --runtime "runsc" \
         > "$stdout_file" 2> "$stderr_file" \
         || _rp_exit=$?
 
