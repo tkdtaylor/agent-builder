@@ -234,13 +234,16 @@ Fixture task.
 		runbook := readFile(t, filepath.Join(root, "docs/plans/l6-operator-runbook.md"))
 
 		// TC-052-02 positive assertions (4-7): live-test commands, env contract, host-side doc.
-		// Assertion 4: 034 row contains AGENT_BUILDER_LIVE_PUBLISH.
-		if !strings.Contains(checklist, "AGENT_BUILDER_LIVE_PUBLISH") {
-			t.Fatalf("TC-052-02c phase0-l6-verification-checklist.md Task 034 missing AGENT_BUILDER_LIVE_PUBLISH")
+		// Assertion 4: 034 row contains AGENT_BUILDER_LIVE_PUBLISH in BOTH plan files
+		// (spec mandates the runbook Section 3 table; the checklist mirrors it).
+		if !strings.Contains(checklist, "AGENT_BUILDER_LIVE_PUBLISH") || !strings.Contains(runbook, "AGENT_BUILDER_LIVE_PUBLISH") {
+			t.Fatalf("TC-052-02c Task 034 missing AGENT_BUILDER_LIVE_PUBLISH (checklist=%v runbook=%v)",
+				strings.Contains(checklist, "AGENT_BUILDER_LIVE_PUBLISH"), strings.Contains(runbook, "AGENT_BUILDER_LIVE_PUBLISH"))
 		}
-		// Assertion 5: 032 row contains AGENT_BUILDER_LIVE_E2E.
-		if !strings.Contains(checklist, "AGENT_BUILDER_LIVE_E2E") {
-			t.Fatalf("TC-052-02d phase0-l6-verification-checklist.md Task 032 missing AGENT_BUILDER_LIVE_E2E")
+		// Assertion 5: 032 row contains AGENT_BUILDER_LIVE_E2E in BOTH plan files.
+		if !strings.Contains(checklist, "AGENT_BUILDER_LIVE_E2E") || !strings.Contains(runbook, "AGENT_BUILDER_LIVE_E2E") {
+			t.Fatalf("TC-052-02d Task 032 missing AGENT_BUILDER_LIVE_E2E (checklist=%v runbook=%v)",
+				strings.Contains(checklist, "AGENT_BUILDER_LIVE_E2E"), strings.Contains(runbook, "AGENT_BUILDER_LIVE_E2E"))
 		}
 		// Assertion 6: at least one file documents ANTHROPIC_API_KEY in env contract.
 		if !strings.Contains(checklist, "ANTHROPIC_API_KEY") && !strings.Contains(runbook, "ANTHROPIC_API_KEY") {
