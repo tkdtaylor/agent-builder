@@ -479,10 +479,10 @@ Trace          TraceRecorder         optional producer-consumer trace sink
 
 ### State: Audit Sink Seam
 
-- **Shape:** `internal/audit` owns a typed, closed-enum `AuditAction` constant set, the `AuditEvent` value type, the `Sink` interface, and the in-process `FakeSink` implementation. The production backend (`BlockSink`, task 039) and supervisor wiring (task 041) are separate components.
+- **Shape:** `internal/audit` owns a typed, closed-enum `AuditAction` constant set, the `AuditEvent` value type, the `Sink` interface, the `BlockSink` production CLI adapter, and the in-process `FakeSink`. Supervisor wiring (task 041) is a separate component.
 - **Owner:** supervisor-side wiring constructs a `Sink` and passes it through the seam. Tests use `FakeSink`.
-- **Lifetime:** process-local per run. No event or seal is persisted by the seam itself; persistence is the responsibility of the production `Sink` implementation.
-- **Concurrency rules:** no internal synchronization is provided by `FakeSink`. Callers must serialize access or supply their own locking.
+- **Lifetime:** process-local per run. No event or seal is persisted by the seam itself; persistence is the responsibility of the `BlockSink` production implementation, which appends to the audit-trail block's JSONL log file via subprocess.
+- **Concurrency rules:** no internal synchronization is provided by `FakeSink` or `BlockSink`. Callers must serialize access or supply their own locking.
 - **Isolation:** `internal/audit` is a strict leaf package — it imports no executor, LLM, or web-fetch packages (enforced by the F-005 fitness check, task 042).
 
 #### Value: `audit.AuditAction` (closed enum)
@@ -552,6 +552,40 @@ OutcomeCompleted  "completed"    in-box loop returned nil
 OutcomeFailed     "failed"       in-box loop returned error or panicked
 OutcomeTimedOut   "timed-out"    configured wall-clock timeout expired
 ```
+
+#### Component: `audit.BlockSink`
+
+- **Shape:** `*audit.BlockSink` implements `audit.Sink` by mapping each `AuditEvent` onto one `audit-trail emit` CLI subprocess call. The block owns the on-disk chain format (JSONL, SHA-256 hash chain, RFC 8785 canonicalization, genesis sentinel); agent-builder owns only the typed-event→argv mapping.
+- **Construction:** `audit.NewBlockSink(binPath, logfile)` for production; `audit.NewBlockSinkWithRunner(logfile, runner)` for tests (injectable `ExecRunner` seam records argv without I/O).
+- **Frozen CLI contract:** `docs/CONTRACT.md` in `github.com/tkdtaylor/audit-trail`. The on-disk chain format is owned entirely by the block and is not documented here — see the contract file for the authoritative format.
+- **Sealed state:** after `Seal()`, further `Append` calls return `ErrAfterSeal`; `Seal` is idempotent.
+- **Error handling:** missing/non-executable binary, non-zero block exit, or unparseable `{seq,hash}` response each produce a non-nil named error; the adapter never degrades to a silent no-op when a logfile path is configured.
+
+#### Mapping: `AuditEvent` → `audit-trail emit` CLI argv (v0 CLI path)
+
+The v0 transport is a CLI subprocess per event. The IPC-socket transport (`audit-trail serve --socket`) is deferred per ADR 026 Option B and is not part of this mapping.
+
+| `AuditEvent` field | CLI flag | Notes |
+|---|---|---|
+| `Action` (enum string) | `-action <verb>` | e.g. `containment`, `pick`, `attempt`, `verify`, `publish`, `escalate`, `finish` |
+| constant `"agent-builder"` + `"/" + RunID` | `-actor <id>` | emitting identity + run correlation |
+| launcher / task id / branch@remote | `-target <resource>` | resource the action touched; see target derivation below |
+| `Verdict` (verify) / `Outcome` (finish) | `-decision <d>` | only emitted when the event carries a verdict or outcome; absent for all other actions |
+| `-logfile <path>` | `-logfile <path>` | JSONL log file path; block appends and reconstructs chain state on open |
+
+**Target derivation:**
+
+| Action | `-target` value |
+|---|---|
+| `containment` | `Detail.Launcher` (e.g. `podman`) |
+| `publish` | `Detail.Branch + "@" + Detail.Remote` |
+| all others | `"task/" + TaskID` |
+
+**Deferred fields (IPC transport, not v0 CLI):**
+
+- `context` (integer/string values from RunID, TaskID, Detail sub-fields) — block convention accepts this on the IPC path only; the v0 CLI has no `-context` flag.
+- `refs` (attestation references) — IPC path only; deferred per ADR 026 Option B.
+- `ts` — the block sets this itself on each `emit` call; agent-builder does not pass `-ts`.
 
 ### State: Armor Guard Adapter
 
