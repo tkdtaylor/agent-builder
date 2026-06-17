@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation check l6-preflight
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation check l6-preflight l6-probe
 
 lint:
 	golangci-lint run
@@ -166,3 +166,10 @@ check: lint test fitness
 # Run on a provisioned host before L6 probe runs to confirm all prerequisites are met.
 l6-preflight:
 	bash scripts/l6-preflight.sh
+
+# l6-probe — operator-invoked L6 evidence collector (NOT a gate prerequisite)
+# Runs (or in --dry-run simulates) all 9 Phase 0 L6 probes in the prescribed
+# closing order. Writes a structured evidence file paste-ready for coverage-tracker.md.
+# Requires: make l6-preflight to return READY (or use --dry-run to bypass the gate).
+l6-probe:
+	bash scripts/l6-probe.sh
