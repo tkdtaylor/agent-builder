@@ -1,18 +1,23 @@
-# Test Spec 040: audit.Verify
+# Test Spec 040: Wire `audit-trail verify` as the block-severity integrity gate
 
 **Linked task:** [`docs/tasks/backlog/040-audit-verify.md`](../backlog/040-audit-verify.md)
 **Written:** 2026-06-16
 **Status:** ready
 
+> Repurposed under ADR 026 (supersedes ADR 025): tamper detection is the **block's**
+> (`audit-trail verify`, RFC 8785, edit/reorder/truncation). This spec covers the
+> agent-builder-side `VerifyChain` helper that invokes the block's verifier and maps
+> its verdict to a block-severity gate — **not** a reimplemented first-broken-link walker.
+
 ## Requirements coverage
 
 | Req ID | Test cases | Covered? |
 |--------|------------|----------|
-| REQ-040-01 | TC-040-01, TC-040-02 | ⏳ |
-| REQ-040-02 | TC-040-03 | ⏳ |
+| REQ-040-01 | TC-040-01 | ⏳ |
+| REQ-040-02 | TC-040-02, TC-040-03 | ⏳ |
 | REQ-040-03 | TC-040-04 | ⏳ |
 | REQ-040-04 | TC-040-05 | ⏳ |
-| REQ-040-05 | TC-040-06, TC-040-07 | ⏳ |
+| REQ-040-05 | TC-040-06 | ⏳ |
 
 ## Pre-implementation checklist
 
@@ -24,61 +29,54 @@
 
 ## Test cases
 
-### TC-040-01: an intact chain verifies OK
+### TC-040-01: an intact chain verifies valid
 
 - **Requirement:** REQ-040-01
-- **Input:** a chain file produced by `audit.ChainWriter` (task 039) over N events, untouched.
-- **Expected output:** `audit.Verify(path)` returns a report with `OK == true`, no broken-link index, and a record count of N. The report names the first and last `hash` so an operator can compare against an external anchor later.
-- **Edge cases:** an empty chain (zero records) verifies OK with count 0 — an empty audit log is valid, not corrupt.
+- **Input:** a chain produced by the `BlockSink` (task 039) over N events; `VerifyChain(binPath, logfile)` invoked.
+- **Expected output:** a typed result `{ Valid: true, TamperedAt: nil, Message: … }` parsed from the block's `verify` response/exit 0; the record count/seq is carried through when the block provides it.
+- **Edge cases:** an empty chain the block treats as valid is reported `Valid == true` (an empty audit log is valid, not corrupt).
 
-### TC-040-02: a single-record chain verifies OK against the genesis sentinel
-
-- **Requirement:** REQ-040-01
-- **Input:** a one-event chain whose `prev_hash` is the genesis sentinel.
-- **Expected output:** `OK == true`, count 1; the genesis linkage is accepted.
-- **Edge cases:** a one-record chain whose `prev_hash` is NOT the genesis sentinel is reported broken at record 0 (a forged first link is caught).
-
-### TC-040-03: edit-in-place is detected at the edited record
+### TC-040-02: a tampered chain maps to Valid == false with TamperedAt set
 
 - **Requirement:** REQ-040-02
-- **Input:** an intact N-record chain; one field in record `k` (0 < k < N) is modified in place without recomputing downstream hashes (a clean post-hoc edit).
-- **Expected output:** `Verify` returns `OK == false` and identifies the **first** broken link. Because record `k`'s canonical bytes changed, record `k+1`'s stored `prev_hash` no longer matches the recomputed hash of `k` — the first broken link is at index `k+1` (the report states the index and the mismatch kind). The walk stops reporting at the first break, not every downstream record.
-- **Edge cases:** editing the **last** record (no successor to break) is caught as a self-hash mismatch on that record itself, not missed.
+- **Input:** a `BlockSink`-produced chain with one byte edited on disk; `VerifyChain` invoked (the block's `verify` does the detection).
+- **Expected output:** `{ Valid: false, TamperedAt: &seq }` parsed from the block's `tamper_detected_at` / exit 1; the helper preserves the seq the block localized.
+- **Edge cases:** the detection itself (which tamper classes — edit-in-place, reorder, truncation) is the block's, asserted via fixtures the block produces; this task asserts the agent-builder side faithfully carries the verdict.
 
-### TC-040-04: reorder is detected
+### TC-040-03: Valid == false is a block-severity gate failure
+
+- **Requirement:** REQ-040-02
+- **Input:** the `VerifyChain` result from TC-040-02 fed to the gate mapping.
+- **Expected output:** a tampered chain produces a **block-severity** (non-zero / gate-fail) outcome that names the `tamper_detected_at` seq — consistent with ADR 026 decision 3 and F-002 (no skip path). A `Valid == true` result passes the gate.
+- **Edge cases:** the gate must not down-rank a tamper to a warning; block severity is the contract.
+
+### TC-040-04: missing binary or unreadable logfile is a hard error, distinct from Valid == false
 
 - **Requirement:** REQ-040-03
-- **Input:** an intact chain with records `k` and `k+1` swapped.
-- **Expected output:** `OK == false`; the first broken link is reported at the first position where the stored `prev_hash` no longer matches the actual predecessor's hash.
-- **Edge cases:** swapping two records with coincidentally similar payloads still breaks the chain because the hashes differ.
+- **Input:** `VerifyChain` with (a) a non-existent/non-executable block binary, (b) an unreadable/non-existent logfile.
+- **Expected output:** a non-nil named error in both cases — explicitly distinct from a clean `Valid == false`. An unavailable verifier is never reported as "valid".
+- **Edge cases:** the error message distinguishes "cannot verify" (infra) from "verified and tampered" (integrity) so an operator/gate does not conflate them.
 
-### TC-040-05: truncation is detected
+### TC-040-05: VerifyChain reaches the block over os/exec only — internal/audit stays a leaf
 
 - **Requirement:** REQ-040-04
-- **Input:** (a) a chain with its final M records removed (tail truncation); (b) a chain with a middle record deleted (line removed).
-- **Expected output:** for (b), a middle deletion breaks the `prev_hash` linkage at the join and is reported `OK == false` at that index. For (a), tail truncation is reported per the documented policy: either `OK == false` with an explicit "chain truncated / shorter than sealed length" finding when a sealed length is recorded, or — if v0 cannot detect pure tail truncation of an unanchored chain — the report explicitly states the unanchored-tail-truncation limit rather than falsely reporting OK. The task's chosen policy must be documented and asserted, not left ambiguous.
-- **Edge cases:** truncating to zero records must not be confused with a legitimately empty chain if a sealed-length anchor exists.
+- **Input:** `go list -deps ./internal/audit/...`.
+- **Expected output:** no `audit-trail` block package, no executor/LLM/web package in the dependency list; `VerifyChain` uses `os/exec` (+ `encoding/json` to parse the response) only. (Enforced by F-005 in task 042.)
+- **Edge cases:** `VerifyChain` does not read or mutate the logfile itself — the block reads it; the helper only invokes the block and parses the verdict.
 
-### TC-040-06: a malformed (non-JSON / missing hash field) line is reported, not panicked
+### TC-040-06 (L5): real-block round trip — intact valid, tampered invalid
 
-- **Requirement:** REQ-040-05
-- **Input:** a chain file where one line is not valid JSON, or is valid JSON missing the `hash`/`prev_hash` fields.
-- **Expected output:** `Verify` returns `OK == false` with a finding naming the line index and the parse/field error; it does not panic and does not return a nil report.
-- **Edge cases:** a trailing blank line is tolerated (skipped), consistent with NDJSON conventions; a blank line in the middle is reported.
-
-### TC-040-07: Verify is a pure reader — no mutation, no executor/LLM/web dependency
-
-- **Requirement:** REQ-040-05
-- **Input:** `Verify` invoked over a fixture file; file contents and modification time inspected before and after.
-- **Expected output:** the file is unchanged after `Verify` (read-only). `Verify` lives in `internal/audit` with no imports outside the standard library + task 038/039 types (no executor/LLM/web) — confirmed here, enforced by F-005 in task 042.
-- **Edge cases:** a non-existent path returns a clear error, not a panic.
+- **Requirement:** REQ-040-05 (integration)
+- **Input:** produce a real chain via `BlockSink`; run `VerifyChain` (asserts `Valid == true`); tamper a byte on disk; run `VerifyChain` again.
+- **Expected output:** intact ⇒ `Valid == true`; tampered ⇒ `Valid == false` with `TamperedAt` populated by the block. (CI-without-binary fallback: a recorded-exec stub returning the block's documented valid/tampered JSON + exit codes; the real-binary path is opt-in and the L5 evidence states which ran.)
+- **Edge cases:** the tamper is applied to the on-disk file the block reads, exercising the block's real detection — not a stubbed verdict, when the real-binary path runs.
 
 ## Post-implementation verification
 
-- [ ] All test cases above pass (including all three tamper classes: edit-in-place, reorder, truncation)
+- [ ] All test cases above pass
 - [ ] No regressions in existing tests
-- [ ] L5 harness over a written-then-tampered chain reports the first broken link
+- [ ] L5 harness (produce → verify valid → tamper → verify invalid via the block) passes, or records the recorded-exec fallback + the opt-in real-binary command
 
 ## Test framework notes
 
-Framework: Go `testing` with adversarial fixtures. The tamper cases are the value of this task — generate an intact chain with the task-039 writer, then mutate the bytes (edit-in-place, swap two lines, drop a line, truncate the tail, corrupt a line) and assert `Verify` localizes the **first** break. Build the tamper fixtures programmatically from a known-good chain so they stay in sync with the writer's format rather than being hand-pasted hex.
+Framework: Go `testing` with an injectable exec seam for unit tests and an opt-in real-`audit-trail` path for L5. The adversarial tamper detection (first-broken-link, edit/reorder/truncation) is the **block's**, already tested in the audit-trail repo — this task asserts the agent-builder side invokes it, maps `valid == false` (+ `tamper_detected_at`) to a block-severity gate, and fails loud (not "valid") when the verifier is unavailable. Defense against a privileged full-file rewrite is the block's signed-checkpoint / Rekor-anchor surface, deferred per ADR 026.

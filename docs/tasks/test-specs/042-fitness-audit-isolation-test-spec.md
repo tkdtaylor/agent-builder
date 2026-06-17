@@ -27,8 +27,8 @@
 
 - **Requirement:** REQ-042-01
 - **Input:** `make fitness-audit-isolation` on the current tree after task 041 lands.
-- **Expected output:** the target exits zero and prints a PASS line, e.g. `PASS fitness-audit-isolation: internal/audit import graph contains no executor/LLM/web-fetch packages and the supervisor's audit dependency drags none in.`
-- **Edge cases:** the check covers `go list -deps ./internal/audit/...` (the leaf itself) and asserts no path segment named `executor`/`executors`/`llm`/`llms`/`web`/`webfetch`/`web-fetch`, mirroring the `fitness-supervisor-isolation` token set.
+- **Expected output:** the target exits zero and prints a PASS line, e.g. `PASS fitness-audit-isolation: internal/audit import graph contains no executor/LLM/web-fetch or audit-trail-block packages and the supervisor's audit dependency drags none in.`
+- **Edge cases:** the check covers `go list -deps ./internal/audit/...` (the leaf itself) and asserts no path segment named `executor`/`executors`/`llm`/`llms`/`web`/`webfetch`/`web-fetch`, mirroring the `fitness-supervisor-isolation` token set, plus an `audit-trail` block-package token (the block must be reached over `os/exec`, never imported as a Go module — ADR 026 Option A over C).
 
 ### TC-042-02: the check also guards the supervisor's transitive graph post-wiring
 
@@ -48,7 +48,7 @@
 
 - **Requirement:** REQ-042-04
 - **Input:** the `fitness` umbrella target's prerequisites and `docs/spec/fitness-functions.md`.
-- **Expected output:** `fitness-audit-isolation` is a prerequisite of `make fitness` (so it runs in `make check`); `docs/spec/fitness-functions.md` has an F-005 row (rule, asserts, threshold `0 violations`, check command `make fitness-audit-isolation`, severity `block`, a one-line *why*) and a source-of-truth link to ADR 025. `make fitness` prints the F-005 PASS line among the others.
+- **Expected output:** `fitness-audit-isolation` is a prerequisite of `make fitness` (so it runs in `make check`); `docs/spec/fitness-functions.md` has an F-005 row (rule, asserts, threshold `0 violations`, check command `make fitness-audit-isolation`, severity `block`, a one-line *why*) and a source-of-truth link to ADR 026. `make fitness` prints the F-005 PASS line among the others.
 - **Edge cases:** the `.PHONY` list and the `fitness:` prerequisite list both include the new target so it is discoverable and runnable standalone.
 
 ## Post-implementation verification

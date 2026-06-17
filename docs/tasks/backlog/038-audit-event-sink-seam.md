@@ -11,7 +11,7 @@ Stand up a new leaf package `internal/audit` owning a typed closed-enum `AuditEv
 ## Context
 
 - Tech stack: Go
-- Governing ADR: `docs/architecture/decisions/025-audit-trail-v0-hash-chained-reader.md` (Option B, accepted) — the `internal/audit` package owns `AuditEvent`, `Sink`, `FakeSink`; this task is the taxonomy + seam slice only.
+- Governing ADR: `docs/architecture/decisions/026-audit-trail-consume-shipped-block.md` (accepted; supersedes ADR 025) — `internal/audit` keeps the typed `AuditEvent` taxonomy, `Sink` seam, and `FakeSink`; the *production* `Sink` is a `BlockSink` adapter onto the shipped `audit-trail` block (task 039), not an in-repo chain writer. This task is the in-process contract slice and is **unchanged** by the supersession — it is independent of the backend.
 - Seam pattern to mirror: `docs/architecture/decisions/020-exec-sandbox-adapter-seam.md` and `internal/sandbox/run.go` (typed interface in a small package, in-process deterministic fake, supervisor depends only on the interface).
 - The action vocabulary is the action-class lifecycle events the run loop already emits as `command` lines (`internal/runtime/run.go`): `containment=podman`, `pick task`, `attempt`, `verify`, `publish branch`, `escalated`, `finish … outcome=…`. Raw stdout/stderr stay in the unchanged 019 RunRecord, not in this taxonomy.
 - **Model tier: balanced (sonnet)** — typed Go scaffolding behind a strict commit gate.
@@ -43,22 +43,22 @@ Stand up a new leaf package `internal/audit` owning a typed closed-enum `AuditEv
 
 ## Verification plan
 
-- **Highest level achievable:** L2 only — internal typed scaffolding, unit-test-covered. This task adds no runtime-observable surface (no file is written, no CLI flag, no supervisor change yet); the writer is task 039 and the wiring is task 041. ✅ at L2 is appropriate here provided the row's `Verified by` says "unit-test-only; no runtime surface."
-- **Level 5 — Validation harness command (if applicable):** N/A — no live runtime path until `ChainWriter` (039) and supervisor wiring (041) land.
+- **Highest level achievable:** L2 only — internal typed scaffolding, unit-test-covered. This task adds no runtime-observable surface (no subprocess, no CLI flag, no supervisor change yet); the production `BlockSink` adapter is task 039 and the wiring is task 041. ✅ at L2 is appropriate here provided the row's `Verified by` says "unit-test-only; no runtime surface."
+- **Level 5 — Validation harness command (if applicable):** N/A — no live runtime path until the `BlockSink` adapter (039) and supervisor wiring (041) land.
 - **Level 6 — Operator observation (if applicable):** N/A.
 - **Level 2 evidence expected:**
   ```
   go test -count=1 ./internal/audit/...
   ```
   Expected final assertion: `ok github.com/tkdtaylor/agent-builder/internal/audit`
-- **Cross-module state risk:** introduces the `AuditEvent` / `Sink` contract that tasks 039–041 consume — the producer (supervisor wiring, task 041) and the consumers (ChainWriter 039, Verify 040) must agree on the typed event shape this task fixes.
+- **Cross-module state risk:** introduces the `AuditEvent` / `Sink` contract that tasks 039–041 consume — the producer (supervisor wiring, task 041) and the consumer (`BlockSink` adapter, 039, which maps each event onto the block's `emit`) must agree on the typed event shape this task fixes.
 - **Runtime-visible surface:** none in this task.
 
 ## Out of scope
 
-- The `ChainWriter` production sink (task 039), `Verify` reader (task 040), supervisor wiring (task 041), the fitness isolation check (task 042).
+- The `BlockSink` production adapter (task 039), the integrity-gate wiring of `audit-trail verify` (task 040), supervisor wiring (task 041), the fitness isolation check (task 042).
 - Any supervisor or `internal/runtime` change — this task does not touch the write path.
-- **Egress-attempt audit events** — deferred and spike-gated per ADR 025 decision 2; a conditional Phase 2 follow-up pending a proxy-exposure spike, not part of v0.
+- **Egress-attempt audit events** — deferred and spike-gated per ADR 026 decision 2 (carried over from ADR 025); a conditional Phase 2 follow-up pending a proxy-exposure spike, not part of v0.
 
 ## Notes
 

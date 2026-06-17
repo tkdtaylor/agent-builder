@@ -73,4 +73,4 @@
 
 ## Test framework notes
 
-Framework: Go `testing`, table-driven over the action enum and event validation. No subprocess, no filesystem — this task is pure typed scaffolding (the seam + taxonomy + in-process fake), mirroring how `internal/sandbox`'s `run.go` is unit-tested without containment. The `ChainWriter` (task 039), `Verify` (task 040), and supervisor wiring (task 041) are explicitly out of scope here.
+Framework: Go `testing`, table-driven over the action enum and event validation. No subprocess, no filesystem — this task is pure typed scaffolding (the seam + taxonomy + in-process fake), mirroring how `internal/sandbox`'s `run.go` is unit-tested without containment. The production `BlockSink` adapter (task 039, ADR 026 — maps these events onto the shipped block's `audit-trail emit`), the `VerifyChain` integrity-gate helper (task 040), and supervisor wiring (task 041) are explicitly out of scope here.

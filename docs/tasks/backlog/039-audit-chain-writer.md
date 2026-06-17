@@ -1,4 +1,4 @@
-# Task 039: audit.ChainWriter
+# Task 039: audit.BlockSink — emit to the shipped audit-trail block
 
 **Project:** agent-builder
 **Created:** 2026-06-16
@@ -6,26 +6,39 @@
 
 ## Goal
 
-Implement the production `audit.Sink`: an append-only NDJSON `ChainWriter` where each record carries `prev_hash` + `hash` (SHA-256 over the previous record's canonical bytes), with a deterministic canonical encoding — the tamper-evident on-disk chain format that makes the audit log harder to silently rewrite than git.
+Implement the production `audit.Sink`: a `BlockSink` adapter that maps each typed `AuditEvent` onto one `audit-trail emit` call against the shipped `audit-trail` block (CLI subprocess in v0), so agent-builder's action layer lands in the block's tamper-evident chain **without reimplementing the chain**. The block owns the hash chain, canonical encoding, genesis, and verifier; this task owns only the mapping and the subprocess seam.
 
 ## Context
 
 - Tech stack: Go
-- Governing ADR: `docs/architecture/decisions/025-audit-trail-v0-hash-chained-reader.md` decision + Consequences — "append-only NDJSON where each record carries the SHA-256 of the previous record's canonical bytes." Tamper-*evident*, not tamper-*proof* (a full-file rewrite by a privileged attacker is the deferred upgrade; v0 detects edit-in-place + truncation, verified in task 040).
-- Builds on task 038's `audit.AuditEvent` + `Sink` interface — `ChainWriter` is the production implementation of that seam.
-- **Model tier: deep (opus)** — integrity / canonical-bytes correctness is load-bearing; a wrong canonicalization silently weakens tamper-evidence.
+- Governing ADR: `docs/architecture/decisions/026-audit-trail-consume-shipped-block.md` (Option A — consume via CLI; supersedes ADR 025). The block is `github.com/tkdtaylor/audit-trail` (`$HOME/Code/Public/audit-trail`), frozen v1 `emit`/`verify` contract (`docs/CONTRACT.md` in that repo).
+- **This task replaces the former in-repo `ChainWriter`.** Per ADR 026, agent-builder does not own the on-disk format — re-implementing SHA-256 chaining + RFC 8785 canonicalization duplicates a shipped, fitness-covered block. The adapter shells out to it instead.
+- Builds on task 038's `audit.AuditEvent` + `Sink` interface — `BlockSink` is the production implementation of that seam (the `FakeSink` stays the unit-test double).
+- The block's `emit` schema (frozen): `event = { ts, actor, action, target, decision?, refs, context? }` → returns `{ seq, hash }`. CLI form: `audit-trail emit --logfile <path> --actor <id> --action <verb> --target <res> [--decision <d>] …`. The CLI resumes chain state from disk per invocation (`seq`/`prev_hash` reconstructed on open), so one subprocess per action event yields a single continuous chain.
+- **Model tier: balanced (sonnet)** — the integrity-critical canonicalization now lives in the block; this task is a typed→CLI mapping with strict error handling, not a crypto implementation.
 - Dependencies: 038.
+
+## AuditEvent → block emit mapping (the load-bearing detail)
+
+| `AuditEvent` field | block `emit` field | notes |
+|---|---|---|
+| action (enum) | `action` | the verb string (`containment`, `pick`, `attempt`, `verify`, `publish`, `escalate`, `finish`) |
+| constant `"agent-builder"` (+ run identity) | `actor` | the emitting identity |
+| task id / branch / remote / launcher | `target` | the resource the action touched |
+| verdict (verify) / outcome (finish) | `decision` | only set when the event carries one |
+| run id, task id, other typed sub-fields | `context` | integer/string values only (block convention; no floats) |
+| event time (injectable clock) | `ts` | unix seconds |
 
 ## Requirements
 
 | Req ID | Description | Priority |
 |--------|-------------|----------|
-| REQ-039-01 | `ChainWriter` implements `audit.Sink` (`Append`/`Seal`) over an `io.Writer`/path | must have |
-| REQ-039-02 | Append-only NDJSON; first record links to a documented genesis sentinel; each record's `hash` = SHA-256(hex) of the previous record's canonical bytes; each `prev_hash` = the previous record's `hash` | must have |
-| REQ-039-03 | A written chain round-trips: every line parses and recomputed hashes match stored hashes (internally consistent) | must have |
-| REQ-039-04 | `Append` after `Seal` fails; a validation-failing event writes nothing and does not advance the chain; `Seal` flushes/closes and surfaces flush errors | must have |
-| REQ-039-05 | Canonical encoding is deterministic (sorted keys, fixed timestamp format via an injectable clock, `hash`/`prev_hash` excluded from the hashed bytes), pinned by a golden fixture | must have |
-| REQ-039-06 | `docs/spec/data-model.md` documents the chained AuditEvent NDJSON wire format (fields, genesis sentinel, hashing rule, tamper-evident-not-proof limit) in the same commit | must have |
+| REQ-039-01 | `BlockSink` implements `audit.Sink` (`Append`/`Seal`); construction takes the block binary path + logfile path (resolved from `AGENT_BUILDER_AUDIT_BIN`/`$PATH` and `AGENT_BUILDER_AUDIT_RECORD` by the caller, task 041) | must have |
+| REQ-039-02 | `Append(event)` validates the event (reusing 038's validator), maps it to the block `emit` field set per the mapping above, and invokes `audit-trail emit` once; a non-zero block exit or unparseable `{seq,hash}` response is surfaced as a non-nil error, never swallowed | must have |
+| REQ-039-03 | `BlockSink` reaches the block over a process boundary only (`os/exec`); it imports **no** `audit-trail` Go package and **no** executor/LLM/web package — `internal/audit` stays a leaf (keeps F-005 trivially green) | must have |
+| REQ-039-04 | `Append` after `Seal` fails; a validation-failing event invokes no subprocess and does not advance the chain; `Seal` is idempotent and surfaces any deferred error | must have |
+| REQ-039-05 | Block-unavailability is a hard, named error (binary not found / not executable / emit failed) — the adapter never degrades to silent no-op when a logfile path is configured | must have |
+| REQ-039-06 | `docs/spec/data-model.md` documents the `AuditEvent`→block-`emit` mapping and points to the block's frozen contract for the on-disk chain format (agent-builder does not own that format); `docs/spec/architecture.md` records the `audit-trail` block as an external dependency reached via CLI | must have |
 
 ## Readiness gate
 
@@ -35,34 +48,35 @@ Implement the production `audit.Sink`: an append-only NDJSON `ChainWriter` where
 
 ## Acceptance criteria
 
-- [ ] [REQ-039-01] `var _ audit.Sink = (*audit.ChainWriter)(nil)` compiles; the writer is constructed over a buffer or path
-- [ ] [REQ-039-02] Output is one JSON object per line; first `prev_hash` is the genesis sentinel; each `hash` is SHA-256 of the predecessor's canonical bytes and each `prev_hash` equals the predecessor's `hash`
-- [ ] [REQ-039-03] Reading a written file back and recomputing every hash matches the stored hashes for all records, including a single-event chain
-- [ ] [REQ-039-04] Post-`Seal` `Append` errors; a validation-failing event writes nothing; second `Seal` does not panic or corrupt the file
-- [ ] [REQ-039-05] Re-running the writer over identical input + injected clock yields byte-identical output equal to a checked-in golden fixture; the hashed bytes exclude `hash`/`prev_hash`
-- [ ] [REQ-039-06] `docs/spec/data-model.md` records the chained NDJSON format and the tamper-evident (not -proof) limit in the feat commit
+- [ ] [REQ-039-01] `var _ audit.Sink = (*audit.BlockSink)(nil)` compiles; the adapter is constructed with an explicit binary + logfile path (no global state)
+- [ ] [REQ-039-02] For each `AuditAction`, `Append` builds the correct `audit-trail emit` argument set (action/actor/target, decision only when present, context as int/string only) and treats a non-zero exit or malformed `{seq,hash}` as an error
+- [ ] [REQ-039-03] `go list -deps ./internal/audit/...` shows no `audit-trail`/executor/LLM/web package; the adapter uses `os/exec` only
+- [ ] [REQ-039-04] Post-`Seal` `Append` errors; a validation-failing event spawns no subprocess; a second `Seal` does not panic
+- [ ] [REQ-039-05] A missing/non-executable block binary, or an `emit` that fails, yields a non-nil named error from `Append`/construction — never a silent skip
+- [ ] [REQ-039-06] `docs/spec/data-model.md` (mapping + pointer to block contract) and `docs/spec/architecture.md` (external block dependency) updated in the feat commit
 
 ## Verification plan
 
-- **Highest level achievable:** L5 — a harness writes a chain to a real file, reads it back, and asserts every recomputed hash matches the stored chain (the runtime artifact is the chain file).
+- **Highest level achievable:** L5 — a harness drives `BlockSink` against a **real `audit-trail` binary** over a temp logfile, emits the seven action events, then runs `audit-trail verify --logfile <path>` and asserts `valid == true` with the expected `seq` count. (If the block binary is not installed in CI, the harness uses a recorded-exec stub that asserts the exact argv per event, and the real-binary path is gated behind a `make`/env opt-in — the L5 evidence states which was run.)
 - **Level 5 — Validation harness command (if applicable):**
   ```
-  go test -count=1 -v ./internal/audit/... -run 'TestChainWriter|TestChainRoundTrip|TestChainGolden'
+  go test -count=1 -v ./internal/audit/... -run 'TestBlockSink|TestBlockSinkEmitArgs|TestBlockSinkChainVerifies'
   ```
-  Expected final assertion: a written-then-read chain file's recomputed hashes match the stored hashes for all N records (`TC-039-04`), and the golden fixture bytes match (`TC-039-06`).
-- **Level 6 — Operator observation (if applicable):** optional — `cat` a produced chain file and confirm each `prev_hash` equals the prior line's `hash`. Not required for ✅ given L5 covers the runtime artifact.
-- **Cross-module state risk:** names the on-disk `prev_hash`/`hash` chain fields and the genesis sentinel — task 040 (`Verify`) is the consumer and must agree on the exact canonical-bytes + genesis definition. A golden fixture pins the contract between writer and verifier.
-- **Runtime-visible surface:** file output — the append-only NDJSON chain file on disk. The executor must produce a chain file and quote sample lines.
+  Expected final assertion: seven `emit` calls produce a chain the block's own `verify` reports `valid == true`; the argv for each event matches the mapping table; a failing `emit` surfaces an error.
+- **Level 6 — Operator observation (if applicable):** optional — `AGENT_BUILDER_AUDIT_RECORD=/tmp/a.log` drive a few events, then `audit-trail verify --logfile /tmp/a.log` and observe `valid`. Not required for ✅ given L5.
+- **Cross-module state risk:** the contract is now **cross-repo** — `BlockSink` depends on the block's frozen `emit` CLI surface. A drift in the block's CLI flags or `{seq,hash}` response shape breaks the adapter; the L5 real-binary path is what catches it. Producer = supervisor wiring (041); consumer of the chain = the block's own `verify` (wired in 040).
+- **Runtime-visible surface:** subprocess invocations of `audit-trail emit` and the chain file the block writes. The executor must run the harness and quote both the emitted argv and the block's `verify` result.
 
 ## Out of scope
 
-- The tamper-detection reader (`audit.Verify`, task 040) — this task only proves the writer is self-consistent and deterministic.
-- Supervisor wiring (task 041) and the fitness check (task 042).
-- Cryptographic signing / external anchoring — deferred per ADR 025 Consequences (the defense against a full-file rewrite).
-- **Egress-attempt audit events** — deferred and spike-gated per ADR 025 decision 2.
+- Re-implementing the hash chain, canonical encoding, genesis sentinel, or verifier — **owned by the block** (this is the duplication ADR 026 removes).
+- The IPC-socket transport / `audit-trail serve` sidecar — deferred upgrade per ADR 026 Option B; the adapter is shaped so CLI→socket is an internal swap.
+- Importing the block as a Go module — rejected per ADR 026 Option C (coupling).
+- Supervisor wiring (task 041), the integrity-gate wiring of `verify` (task 040), the fitness check (task 042).
+- **Egress-attempt audit events** — deferred and spike-gated per ADR 026 decision 2.
 
 ## Notes
 
-- Canonical encoding is the load-bearing detail: sort keys, fix the timestamp format, inject the clock for golden tests, and exclude the `hash`/`prev_hash` fields from the bytes that get hashed (a record cannot hash itself).
-- Append-only: the writer never rewrites an earlier line; `Seal` is the terminal flush/close.
-- Update `docs/spec/data-model.md` in the same commit (chained NDJSON format + tamper-evident-not-proof limit, per ADR 025). Do not edit spec during backlog authoring.
+- The whole point of ADR 026 is that this task is *small*: a typed event → CLI argv mapping plus rigorous "block unavailable = loud error" handling. The hard crypto is the block's, already frozen and tested.
+- Keep `internal/audit` a leaf: `os/exec` only, no `audit-trail` import, no executor/LLM/web import — task 042's F-005 depends on it.
+- Update `docs/spec/data-model.md` (mapping + pointer to the block contract, not a re-spec of the chain format) and `docs/spec/architecture.md` (external block dependency) in the same commit. Do not edit spec during backlog authoring.

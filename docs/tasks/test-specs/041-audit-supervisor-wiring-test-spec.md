@@ -45,19 +45,19 @@
 - **Expected output:** `Seal()` is called on the Sink before the containment box is torn down (mirrors the RunRecord close-before-teardown durability rule). `FakeSink.Sealed()` is true after the run, and the seal happens before the teardown hook fires.
 - **Edge cases:** on a failed/escalated run the Sink is still Sealed (the finish event + seal are written on the failure path too).
 
-### TC-041-04: ChainWriter is wired into internal/runtime behind AGENT_BUILDER_AUDIT_RECORD
+### TC-041-04: BlockSink is wired into internal/runtime behind AGENT_BUILDER_AUDIT_RECORD
 
 - **Requirement:** REQ-041-03
-- **Input:** `runtime.ConfigFromEnv` with `AGENT_BUILDER_AUDIT_RECORD` set to a path; a run through the default wiring with a fake launcher / fake executor / gate-passing worktree.
-- **Expected output:** the run produces a chain file at that path written by `audit.ChainWriter`; the file is non-empty NDJSON carrying `prev_hash`/`hash` and the action events. When `AGENT_BUILDER_AUDIT_RECORD` is blank/absent, no chain file is written and the run still completes (mirrors `AGENT_BUILDER_RUN_RECORD`).
-- **Edge cases:** an unwritable audit path fails the run with a clear configuration error before dispatch, not silently.
+- **Input:** `runtime.ConfigFromEnv` with `AGENT_BUILDER_AUDIT_RECORD` set to a path and a resolvable `audit-trail` binary (`AGENT_BUILDER_AUDIT_BIN` or `$PATH`); a run through the default wiring with a fake launcher / fake executor / gate-passing worktree.
+- **Expected output:** the run produces the block's chain file at that path via the `audit.BlockSink` adapter (one `audit-trail emit` per action event); the file is the block's non-empty chain carrying the action events in order. When `AGENT_BUILDER_AUDIT_RECORD` is blank/absent, no chain file is written and the run still completes (mirrors `AGENT_BUILDER_RUN_RECORD`).
+- **Edge cases:** an unresolvable `audit-trail` binary or an unwritable audit path fails the run with a clear configuration error before dispatch, not silently — auditing is never skipped when configured.
 
 ### TC-041-05: the produced run's chain verifies (block-severity end-to-end)
 
 - **Requirement:** REQ-041-04
-- **Input:** the chain file produced by TC-041-04, passed to `audit.Verify` (task 040).
-- **Expected output:** `Verify` reports `OK == true` for the freshly produced chain — a real run yields a valid, verifiable audit chain. (Consistent with ADR 025 decision 3: verify over a produced chain is block-severity.)
-- **Edge cases:** the e2e harness asserts the action sequence in the chain matches the run (pick → attempt → verify → publish → finish), not just that it verifies.
+- **Input:** the chain file produced by TC-041-04, passed to `VerifyChain` (task 040 — the block's `audit-trail verify`).
+- **Expected output:** the block reports `Valid == true` for the freshly produced chain — a real run yields a valid, verifiable audit chain. (Consistent with ADR 026 decision 3: verify over a produced chain is block-severity.)
+- **Edge cases:** the e2e harness asserts the action sequence in the chain matches the run (pick → attempt → verify → publish → finish), not just that it verifies. (CI-without-binary: the e2e gates the real-binary path behind an opt-in and otherwise asserts the emitted `audit-trail emit` argv per action via a recorded-exec stub.)
 
 ### TC-041-06: wiring does not widen the F-003 supervisor isolation boundary
 
@@ -70,8 +70,8 @@
 
 - [ ] All test cases above pass
 - [ ] No regressions in task 019/028/037 RunRecord and e2e assertions
-- [ ] L5 e2e shows a run produces a valid, verifiable audit chain
+- [ ] L5 e2e shows a run produces a chain the block's `verify` reports valid (or records the recorded-exec fallback + opt-in real-binary command)
 
 ## Test framework notes
 
-Framework: Go `testing`. Supervisor-level tests use `FakeSink` (task 038) to assert the typed action projection without files. The runtime/e2e test sets `AGENT_BUILDER_AUDIT_RECORD`, drives the real wiring with the existing fake launcher/executor/gate pattern (as in tests/e2e for task 037), then runs `audit.Verify` over the produced file. The F-003 guard is `go list -deps` + the existing `make fitness-supervisor-isolation`; the new dedicated `fitness-audit-isolation` is task 042.
+Framework: Go `testing`. Supervisor-level tests use `FakeSink` (task 038) to assert the typed action projection without subprocesses. The runtime/e2e test sets `AGENT_BUILDER_AUDIT_RECORD` (+ `AGENT_BUILDER_AUDIT_BIN`), drives the real wiring with the existing fake launcher/executor/gate pattern (as in tests/e2e for task 037), then runs `VerifyChain` (the block's `audit-trail verify`) over the produced file — or, without the binary in CI, asserts the per-action `audit-trail emit` argv via a recorded-exec stub and gates the real-binary path behind an opt-in. The F-003 guard is `go list -deps` + the existing `make fitness-supervisor-isolation`; the new dedicated `fitness-audit-isolation` (also covering the `audit-trail` block-package token) is task 042.
