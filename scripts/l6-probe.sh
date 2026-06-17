@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # scripts/l6-probe.sh — L6 evidence collector and probe runner
 #
-# Runs (or in --dry-run simulates) all 9 Phase 0 L6 probes in the prescribed
-# closing order from docs/plans/phase0-l6-verification-checklist.md.
+# Runs (or in --dry-run simulates) all 10 Phase 0 L6 probe steps (9 binary
+# probes + the 030 ledger step) in the prescribed closing order from
+# docs/plans/phase0-l6-verification-checklist.md.
 #
 # Each probe is gated on its prerequisites. A missing prerequisite produces a
 # SKIP status (not FAIL) and execution continues. Exit 0 unless a real
 # prerequisite check or probe invocation encounters an unexpected error.
 #
-# After the run, writes a structured evidence file with one row per task (9 rows)
+# After the run, writes a structured evidence file with one row per closing-order step (10 rows)
 # containing: task ID, probe command, verbatim final output line (or
 # "[dry-run: not executed]"), and status (PASS/SKIP/FAIL). The file is
 # paste-ready for the Verified-by column of coverage-tracker.md.
@@ -29,7 +30,7 @@
 # Evidence file:
 #   Default path: docs/plans/l6-evidence.txt (fixed, simpler for tests)
 #   Override:     L6_EVIDENCE_FILE=/tmp/my-evidence.txt
-#   Format:       9 rows, one per task, pipe-delimited:
+#   Format:       10 rows, one per closing-order step, pipe-delimited:
 #                 TASK-<id> | <command> | <output-line> | <status> [| SKIP-REASON: <reason>]
 
 set -euo pipefail
@@ -54,8 +55,9 @@ for arg in "$@"; do
             cat <<USAGE
 Usage: bash scripts/l6-probe.sh [--dry-run] [--help]
 
-Runs (or simulates) all 9 Phase 0 L6 probes in the closing order prescribed
-by docs/plans/phase0-l6-verification-checklist.md.
+Runs (or simulates) all 10 Phase 0 L6 probe steps (9 binary probes + the 030
+ledger step) in the closing order prescribed by
+docs/plans/phase0-l6-verification-checklist.md.
 
 Options:
   --dry-run   Simulate all probes without invoking real commands. Bypasses
@@ -68,7 +70,7 @@ Environment:
 
 Evidence file:
   Path: ${REPO_ROOT}/docs/plans/l6-evidence.txt  (or L6_EVIDENCE_FILE)
-  Format: 9 rows, pipe-delimited (task ID | command | output | status)
+  Format: 10 rows, pipe-delimited (task ID | command | output | status)
   Paste-ready for the Verified-by column of docs/tasks/test-specs/coverage-tracker.md.
 
 Closing order:

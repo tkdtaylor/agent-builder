@@ -2,71 +2,89 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-16
+**Last verified against this host:** 2026-06-16
 **Purpose:** The single home for every **hands-on, operator-only** step that promotes Phase 0 and Phase 1 from L5 (fake-provider) to **L6 (live runtime)**. Everything here needs your host, your credentials, or your judgement — it is deliberately *not* in the task backlog. The backlog holds only codeable/automatable work; this runbook holds what a human must do.
 
-> **Dependency on the backlog.** The two automation tasks — [043 host preflight doctor](../tasks/backlog/043-l6-host-preflight-doctor.md) (`make l6-preflight`) and [044 probe harness](../tasks/backlog/044-l6-probe-harness.md) (`make l6-probe`) — build the tools this runbook drives. **Clear those two from the backlog first**; until they merge, the `make l6-*` targets below do not exist and the probe steps fall back to the manual per-probe commands in [phase0-l6-verification-checklist.md](phase0-l6-verification-checklist.md).
+> **Automation status — ready.** The two automation tasks this runbook drives are **done and merged**: `make l6-preflight` (task 043) and `make l6-probe` (task 044) exist on `main` now. You no longer fall back to running the per-probe commands by hand — the harness runs them in order and collects evidence. The per-probe reference (exact command + success criterion for each task) lives in [phase0-l6-verification-checklist.md](phase0-l6-verification-checklist.md); use it only to debug a SKIP/FAIL or to run one probe manually.
 
 ---
 
-## Host snapshot (observed 2026-06-16, Ubuntu 26.04 LTS, x86_64)
+## Host snapshot (verified on THIS host, 2026-06-16)
 
-The roadmap's L6 blocker notes predate this host and are **stale** — most prerequisites are already satisfied. Verified present and ready, **no action needed**:
+Ubuntu 26.04 LTS, x86_64, kernel 7.0.0-22-generic. Verified present and working — **no install action needed**:
 
-- rootless **Podman** 5.7.0 (`Rootless=true`)
-- **`runsc`** (gVisor) `release-20260601.0`, spec 1.2.1 — installed at `/usr/local/bin/runsc`
-- **`srt`** (`@anthropic-ai/sandbox-runtime`) — installed via **nvm** (node v24.14.0), **not** snap, so the snap-confine blocker the checklist warns about **does not apply here**
-- **`claude`** 2.1.150 — logged in (`claude.ai`, a personal address)
-- **`gh`** 2.46.0 — authenticated (tkdtaylor)
-- **`bwrap`** 0.11.1
+| Tool | Version | Path | Notes |
+|------|---------|------|-------|
+| Podman | 5.7.0 | `/usr/bin/podman` | rootless `true` ✓ |
+| `runsc` (gVisor) | release-20260601.0, spec 1.2.1 | `/usr/local/bin/runsc` | installed, **but not yet registered in Podman** → step 1a |
+| `srt` | `@anthropic-ai/sandbox-runtime` 0.0.54 | `~/.nvm/versions/node/v24.14.0/bin/srt` | via **nvm** (node v24.14.0), **not** snap → snap-confine blocker does **not** apply. ⚠ only on `PATH` when nvm's node is active → see the gotcha below |
+| `claude` | 2.1.150 | `~/.local/bin/claude` | confirm it is still logged in (`claude` → check account) |
+| `gh` | 2.46.0 | `/usr/bin/gh` | authenticated as `tkdtaylor` ✓ (`gh auth status`) |
+| `bwrap` | 0.11.1 | `/usr/bin/bwrap` | ✓ |
+| `go` | 1.26.4 | — | ✓ |
 
-**The only real provisioning gaps are the three in Section 1.** Re-confirm the whole picture with `make l6-preflight` (task 043) before trusting this snapshot — it may have drifted by the time you run it.
+> **⚠ srt-on-nvm gotcha (the one that bites first).** `srt` is installed under nvm, so a plain non-login shell does **not** have it on `PATH` — `command -v srt` returns nothing and `make l6-preflight` reports `srt MISSING`. Put it on `PATH` for the whole L6 session before running anything:
+> ```bash
+> export PATH="$HOME/.nvm/versions/node/v24.14.0/bin:$PATH"
+> command -v srt    # expect: $HOME/.nvm/versions/node/v24.14.0/bin/srt
+> ```
+
+**The real provisioning gaps on this host are the three in Section 1** (register runsc, populate gate-tools, configure a git remote). Everything else is already satisfied. Re-confirm the whole picture with `make l6-preflight` (Section 2) before trusting this snapshot — it may have drifted.
 
 ---
 
 ## Section 1 — Provision the host (operator-only)
 
-Three concrete steps. Each ends with a verification command.
+Three concrete steps. Each ends with a verification command and its expected output.
 
-### 1a. Wire `runsc` into rootless Podman
+### 1a. Register `runsc` into rootless Podman
 
-The binary is installed but Podman's default runtime is still `runc`; `--runtime runsc` will fail until it's registered. Add it to your **rootless user** config (`~/.config/containers/containers.conf`):
+**What:** the `runsc` binary is installed but Podman's default runtime is still `runc`; `--runtime runsc` fails until it's registered in your **rootless user** config. Create/edit `~/.config/containers/containers.conf` (currently has no `[engine.runtimes]` block):
 
 ```toml
 [engine.runtimes]
 runsc = ["/usr/local/bin/runsc"]
 ```
 
-Verify Podman now resolves the runtime and a container actually boots under gVisor:
+**Verify** Podman resolves the runtime and a container boots under gVisor:
 
 ```bash
-podman --runtime runsc run --rm docker.io/library/alpine uname -a
-# success: prints a kernel string from inside the gVisor sandbox (not the host's 7.0.0 kernel)
+podman --runtime runsc run --rm docker.io/library/alpine uname -r
+# expect: a gVisor kernel string (e.g. "4.4.0") — NOT the host's "7.0.0-22-generic".
+#         The differing kernel version is the proof you're inside gVisor, not on the host.
 ```
 
-> **Rootless gVisor caveat.** If the run fails on cgroup delegation, add `ignore-cgroups` per the gVisor + Podman rootless guide (gvisor.dev/docs/user_guide/quick_start/podman) — either via a `--runtime-flag` or a runsc wrapper. This is the one step that may need a host-specific tweak; everything else is registration-only.
+> **Rootless gVisor caveat.** If the run fails on cgroup delegation, add `ignore-cgroups` per the gVisor + Podman rootless guide (gvisor.dev/docs/user_guide/quick_start/podman) — via a `--runtime-flag` or a runsc wrapper. This is the only step that may need a host-specific tweak; everything else is registration-only.
 
 ### 1b. Populate the execution-box Gate-toolchain directory
 
-The execution-box mounts a read-only tools dir at `/opt/agent-builder/gate-tools` (default source: `containment/execution-box/gate-tools/`). `go`/`gofmt` come from the image; you supply the other three. Per [gate-toolchain.manifest](../../containment/execution-box/gate-toolchain.manifest):
+**What:** the execution-box mounts a read-only tools dir at `/opt/agent-builder/gate-tools` (default source: `containment/execution-box/gate-tools/`, which **does not exist yet** on this host). `go`/`gofmt` come from the image; you supply the other three, per [gate-toolchain.manifest](../../containment/execution-box/gate-toolchain.manifest):
 
 | Tool | Where to get it |
 |------|-----------------|
-| `golangci-lint` | `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest` (or distro/release binary) |
+| `golangci-lint` | `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest` (or a release binary) |
 | `gods` (dep-scan, Go) | `curl -fsSL https://raw.githubusercontent.com/tkdtaylor/dep-scan/main/install.sh \| bash` |
 | `code-scanner` | from the `code-scanner` skill / its release binary |
 
-Drop the three executables into `containment/execution-box/gate-tools/` (or point `EXEC_BOX_GATE_TOOLS` / `--gate-tools` at wherever they live). Verify the launcher sees them all:
+Create the dir and drop the three executables in (or point `--gate-tools` / `EXEC_BOX_GATE_TOOLS` at wherever they live):
+
+```bash
+mkdir -p containment/execution-box/gate-tools
+# copy golangci-lint, gods, code-scanner into it (chmod +x)
+```
+
+**Verify** the launcher resolves all three:
 
 ```bash
 containment/execution-box/run.sh --print-toolchain-plan
-# success: each of golangci-lint, gods, code-scanner resolves to a path (no "missing" lines)
+# expect: golangci-lint, gods, and code-scanner each resolve to a path — no "missing" lines.
 ```
 
 ### 1c. Configure a git remote for PR publication
 
-There is no remote configured (the project is private-for-now). The publication probes (tasks 028, 032, 034) open a **real PR**, so they need a remote to push to. **Operator decision** — pick one:
+**What:** there is no remote configured (`git remote -v` is empty — the project is private-for-now). The publication probes (tasks 028, 032, 034) open a **real PR**, so they need a remote. **Operator decision** — pick one:
 
-- **Dedicated sandbox repo (recommended)** — keeps real PR noise out of the project history:
+- **Dedicated sandbox repo (recommended)** — keeps real PR noise out of project history:
   ```bash
   gh repo create tkdtaylor/agent-builder-l6-sandbox --private
   git remote add l6 git@github.com:tkdtaylor/agent-builder-l6-sandbox.git
@@ -77,64 +95,101 @@ There is no remote configured (the project is private-for-now). The publication 
   gh repo create tkdtaylor/agent-builder --private --source=. --remote=origin
   ```
 
-Verify:
+**Verify:**
 
 ```bash
-git remote -v        # success: at least one remote with a fetch+push URL
+git remote -v
+# expect: at least one remote with a fetch+push URL.
 ```
 
 ---
 
 ## Section 2 — Pre-flight gate
 
-Once Section 1 is done, run the doctor (task 043) until it reports **READY**. It re-checks every prerequisite, flags the snap-confine `srt` condition (moot on this host but caught defensively), and exits non-zero while anything is missing:
+**What:** `make l6-preflight` (task 043) re-checks every prerequisite — tool presence, rootless Podman, git remote, and the baseline gate — and refuses to call the host READY until all pass. It catches the snap-confine `srt` condition defensively (moot on this host) and exits non-zero while anything is missing.
 
 ```bash
 make l6-preflight
-# success: overall verdict READY, exit 0
+# expect once Section 1 is done AND srt is on PATH: a PASS row per prerequisite, final line READY, exit 0.
 ```
 
-Baseline gate must also be green:
+**Current output on this host (before Section 1, srt not yet on PATH)** — for reference, this is what NOT READY looks like:
+
+```
+PASS   podman (binary)
+PASS   runsc
+PASS   bwrap
+MISSING srt — install sandbox-runtime: npm i -g @anthropic-ai/sandbox-runtime
+PASS   claude
+PASS   gh
+MISSING git-remote — no git remote configured — run: git remote add origin <url>
+PASS   podman-rootless
+PASS   make-check
+PASS   make-fitness
+NOT READY
+```
+
+Here the two `MISSING` rows are exactly the gaps to close: `srt` (put nvm's node on `PATH` — see the gotcha) and `git-remote` (step 1c). `runsc` reports PASS for **presence**; the live-runtime registration (1a) is exercised later by the 016/032 probes, not by preflight.
+
+The baseline gate is also confirmed by preflight (`make-check` / `make-fitness` rows), but you can run them directly:
 
 ```bash
-make check      # -> All checks passed.
-make fitness    # -> Fitness checks passed.
+make check      # expect: All checks passed.
+make fitness    # expect: Fitness checks passed.   (includes F-005 fitness-audit-isolation)
 ```
 
 ---
 
 ## Section 3 — Run the Phase 0 live probes
 
-Run the harness (task 044). It executes the 9 probes in the prescribed closing order (014 → 015 → 016 → 021 → 030-ledger → 022 → 028 → 033 → 034 → 032), skips any whose prereqs are absent, and writes a paste-ready evidence file:
+**What:** `make l6-probe` (task 044) runs all 10 closing-order steps in order — the 9 binary probes plus the 030 ledger step — gating each on its prerequisites (a probe whose prereq is absent is `SKIP`, not `FAIL`, and the run continues), and writes a paste-ready evidence file. It calls `l6-preflight` first and refuses to run real probes if the host is NOT READY.
 
 ```bash
 make l6-probe
-# produces an evidence file: one row per task — id, command, verbatim final line, PASS/SKIP/FAIL
+# expect (host READY): 10 status rows in closing order, each PASS or SKIP, then a summary line.
+#   writes evidence to docs/plans/l6-evidence.txt
 ```
 
-The exact verbatim command and success criterion for each probe live in [phase0-l6-verification-checklist.md](phase0-l6-verification-checklist.md) — the harness runs those same commands; the checklist is the reference if you need to run one by hand or debug a SKIP/FAIL.
+**Closing order (the exact 10 steps):** 014 → 015 → 016 → 021 → 030 (ledger) → 022 → 028 → 033 → 034 → 032 (capstone).
+
+The evidence file has **one pipe-delimited row per step** (`TASK-<id> | <command> | <final-output-line> | <status>`), paste-ready for the tracker's `Verified by` column. The exact command and success criterion for each probe (reproduced below) are the authoritative reference in [phase0-l6-verification-checklist.md](phase0-l6-verification-checklist.md) — `make l6-probe` runs these same commands:
+
+| # | Task | Command (run by the harness) | Success criterion |
+|---|------|------------------------------|-------------------|
+| 1 | 014 | `containment/execution-box/run.sh --gate-tools <dir> --worktree . --probe` | probe runs inside the box, exits 0 (no "podman unavailable") |
+| 2 | 015 | `containment/execution-box/run.sh --gate-tools <dir> --worktree . --egress-probe` | allowlisted host reachable, denied host refused |
+| 3 | 016 | `containment/execution-box/run.sh --gate-tools <dir> --worktree . --runtime runsc --probe` | box starts under runsc, probe exits 0 |
+| 4 | 021 | `env AGENT_BUILDER_LIVE_SRT=1 AGENT_BUILDER_LIVE_SRT_ALLOW_HOST=<allow> AGENT_BUILDER_LIVE_SRT_DENY_HOST=<deny> go test -count=1 -v ./tests/sandbox -run TestSandboxRuntimeLiveHarness_TC002_TC003` | `ok ./tests/sandbox` — real srt invoked, allow/deny observed |
+| 5 | 030 | ledger step — observe 014/015/016/021 green, record | SKIPs automatically if any of 014/015/016/021 did not run |
+| 6 | 022 | `env AGENT_BUILDER_CLAUDE_CLI=claude go run ./cmd/agent-builder run …` | real claude invoked, `Result.Branch` set, `Result.OK == true` |
+| 7 | 028 | `env AGENT_BUILDER_CLAUDE_CLI=claude AGENT_BUILDER_SANDBOX_RUNTIME=srt go run ./cmd/agent-builder run --task-root docs/tasks/…` | task selected, run executed in box, `run_finished` persisted |
+| 8 | 033 | `containment/execution-box/run.sh --gate-tools <dir> --worktree . --probe` | gate toolchain mounted, `make check` runs to completion inside the box |
+| 9 | 034 | `env AGENT_BUILDER_PUBLISH_REMOTE=<remote> AGENT_BUILDER_GH_CLI=gh AGENT_BUILDER_GITHUB_TOKEN=<token> go test -count=1 -v ./tests/publisher -run TestBranchPRPublication` | a real PR is opened (capture the URL) |
+| 10 | 032 | `env AGENT_BUILDER_CLAUDE_CLI=claude AGENT_BUILDER_SANDBOX_RUNTIME=srt AGENT_BUILDER_PUBLISH_REMOTE=<remote> AGENT_BUILDER_GH_CLI=gh go test -count=1 -v ./tests/e2e -run TestPhase0EndToEndAcceptance` | task selected, branch produced, PR recorded LIVE, gate passed |
+
+> **Sanity-check the wiring without a live host:** `make l6-probe` is `bash scripts/l6-probe.sh`; add `--dry-run` (i.e. `bash scripts/l6-probe.sh --dry-run`) to print the 10 rows and exercise the gating logic without invoking any real probe. On this host today a dry-run shows 014/015/016/022/033 as `DRY-RUN` and 021/028/030/032/034 as `SKIP` (srt not on PATH + no git remote) — which is exactly the gap Section 1 closes.
 
 ---
 
 ## Section 4 — Promote 🟡 → ✅ (human-reviewed)
 
-The harness produces evidence; **it does not edit the tracker or commit** — that stays a human step, by the *no unattended self-modification* invariant. For each probe that came back PASS, you promote its row in [coverage-tracker.md](../tasks/test-specs/coverage-tracker.md):
+The harness produces evidence; **it does not edit the tracker or commit** — that stays a human step, by the *no unattended self-modification* invariant. For each probe that came back PASS, promote its row in [coverage-tracker.md](../tasks/test-specs/coverage-tracker.md):
 
 - One task per commit, on a task branch, **not batched** (per CLAUDE.md commit rules).
 - Paste the verbatim final line from the evidence file into the `Verified by` column.
 - Commit message: `verify: confirm task NNN — <L6 evidence>`, then merge.
 
-The 9 rows to promote: **014, 015, 016, 021, 028, 030, 032, 033, 034** (plus closing the 022 "real Claude" note).
+**The 9 rows currently 🟡 and awaiting L6 promotion: 014, 015, 016, 021, 028, 030, 032, 033, 034.** (The evidence file has 10 rows because it also emits **022**, which is already ✅ at L5 — its row carries an open "real Claude CLI/auth" note you can close at the same time, but it is not one of the 9 pending promotions.)
 
 ---
 
 ## Section 5 — Phase 1 live probe
 
-Phase 1 (exec-sandbox v0 / Podman swap) has its own L6 residual: the live-Podman e2e, which needs `runsc` wired (1a) and the Gate-toolchain dir populated (1b):
+Phase 1 (exec-sandbox v0 / Podman swap) has its own L6 residual: the live-Podman e2e, which needs `runsc` registered (1a) and the Gate-toolchain dir populated (1b):
 
 ```bash
 AGENT_BUILDER_LIVE_PODMAN=1 go test -count=1 -v ./tests/e2e -run TestPhase1LivePodman
-# success: ok ./tests/e2e — box runs under Podman+runsc, gate runs inside the box
+# expect: ok ./tests/e2e — box runs under Podman+runsc, gate runs inside the box.
 # (skips if Podman/runsc unavailable; config-errors if the Gate-toolchain dir is absent)
 ```
 
@@ -142,11 +197,30 @@ Promote Phase 1's row the same way as Section 4.
 
 ---
 
+## Section 6 — Audit-trail L6 (optional, now available)
+
+The audit-trail chain (tasks 038–042) shipped during this session and is verified at L5 with the **real** `audit-trail` binary. There is no required L6 residual, but you can confirm the live operator path end-to-end:
+
+```bash
+# 1. Put the shipped block binary on PATH (or pass AGENT_BUILDER_AUDIT_BIN):
+export PATH="$HOME/Code/Public/audit-trail:$PATH"
+command -v audit-trail            # expect: .../audit-trail
+
+# 2. Drive a run with the audit chain enabled, then verify it with the block's own verifier:
+AGENT_BUILDER_AUDIT_RECORD=/tmp/audit.log <your run command>
+audit-trail verify --logfile /tmp/audit.log
+# expect: {"valid": true, "tamper_detected_at": null, "message": "chain intact"}
+```
+
+`make fitness` already enforces audit isolation as a standing gate (`PASS fitness-audit-isolation: …`) — no operator action needed for that.
+
+---
+
 ## Definition of done
 
 L6 is complete when:
 
-- All 9 Phase 0 rows are ✅ in the tracker with live (non-fake) evidence recorded.
+- All 9 pending Phase 0 rows (014, 015, 016, 021, 028, 030, 032, 033, 034) are ✅ in the tracker with live (non-fake) evidence recorded, and the 022 "real Claude" note is closed.
 - `TestPhase1LivePodman` passes and Phase 1's row is ✅.
 - Both phases' roadmap acceptance notes are updated from "accepted at L5 / L6 pending" to "accepted at L6."
 

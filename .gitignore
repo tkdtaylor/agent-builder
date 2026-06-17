@@ -18,3 +18,6 @@ coverage.*
 # Editor
 .idea/
 .vscode/
+
+# L6 probe evidence — operator-generated, regenerated each run (task 044)
+docs/plans/l6-evidence.txt
