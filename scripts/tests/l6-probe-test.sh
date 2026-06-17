@@ -359,7 +359,11 @@ run_tc044_03() {
     evidence_file="$(mktemp)"
 
     local output exit_code
-    output="$(L6_PROBE_PATH="$tmpdir" L6_EVIDENCE_FILE="$evidence_file" bash "$PROBE" --dry-run 2>&1)" \
+    # Provide AGENT_BUILDER_PUBLISH_REMOTE so probes 034/032 are not SKIP-due-to-unset-remote;
+    # this keeps the "all 10 rows are DRY-RUN" invariant that the test checks.
+    output="$(L6_PROBE_PATH="$tmpdir" L6_EVIDENCE_FILE="$evidence_file" \
+        AGENT_BUILDER_PUBLISH_REMOTE="git@github.com:example/repo.git" \
+        bash "$PROBE" --dry-run 2>&1)" \
         && exit_code=$? || exit_code=$?
 
     rm -rf "$tmpdir"
@@ -411,7 +415,10 @@ run_tc044_03() {
         ok=0
     fi
 
-    # In dry-run mode, each TASK- row must have the dry-run placeholder
+    # In dry-run mode with all prerequisites present (including AGENT_BUILDER_PUBLISH_REMOTE),
+    # each TASK- row must have the dry-run placeholder (SKIP rows appear only when a
+    # prerequisite tool or required env var is absent — that scenario is tested in TC-044-03b
+    # and TC-046-02).
     local dryrun_count
     dryrun_count="$(printf '%s\n' "$evidence" | grep '^TASK-' | grep -c "dry-run" 2>/dev/null || echo 0)"
     if [ "$dryrun_count" -ne 10 ]; then
@@ -617,6 +624,327 @@ run_tc044_05() {
     [ "$ok" -eq 1 ] && tc_pass "$tc"
 }
 
+# ─── TC-046-01: resolved gate-tools argument is non-empty, honors EXEC_BOX_GATE_TOOLS ──
+
+run_tc046_01() {
+    local tc="TC-046-01"
+    local ok=1
+
+    # Part A: unset EXEC_BOX_GATE_TOOLS — default should resolve to repo's gate-tools path
+    local tmpdir_a ev_a
+    tmpdir_a="$(make_probe_stub_dir preflight_ready)"
+    ev_a="$(mktemp)"
+
+    local output_a exit_a
+    output_a="$(L6_PROBE_PATH="$tmpdir_a" L6_EVIDENCE_FILE="$ev_a" \
+        env -u EXEC_BOX_GATE_TOOLS bash "$PROBE" --dry-run 2>&1)" && exit_a=$? || exit_a=$?
+
+    rm -rf "$tmpdir_a"
+    rm -f "$ev_a"
+
+    if [ "$exit_a" -ne 0 ]; then
+        tc_fail "${tc}a" "expected exit 0; got $exit_a; output:\n$output_a"
+        ok=0
+    fi
+
+    # Must NOT contain --gate-tools "" (empty string arg)
+    if printf '%s' "$output_a" | grep -qF -- '--gate-tools ""'; then
+        tc_fail "${tc}a" "output contains '--gate-tools \"\"' (empty gate-tools); output:\n$output_a"
+        ok=0
+    fi
+
+    # Positive assertion: with EXEC_BOX_GATE_TOOLS unset, the bash -x trace must show
+    # the resolved default path (containing 'containment/execution-box/gate-tools')
+    # actually passed as the --gate-tools argument — proving the default resolves correctly.
+    local tmpdir_a2 ev_a2
+    tmpdir_a2="$(make_probe_stub_dir preflight_ready)"
+    ev_a2="$(mktemp)"
+
+    local trace_a
+    trace_a="$(L6_PROBE_PATH="$tmpdir_a2" L6_EVIDENCE_FILE="$ev_a2" \
+        env -u EXEC_BOX_GATE_TOOLS bash -x "$PROBE" --dry-run 2>&1)" || true
+
+    rm -rf "$tmpdir_a2"
+    rm -f "$ev_a2"
+
+    # The bash -x trace will show the GATE_TOOLS_DIR assignment and its use as --gate-tools.
+    # Assert the default path substring appears in the trace (non-empty, real default).
+    if ! printf '%s' "$trace_a" | grep -qF 'containment/execution-box/gate-tools'; then
+        tc_fail "${tc}a-default-path" "default gate-tools path 'containment/execution-box/gate-tools' not found in bash -x trace; GATE_TOOLS_DIR may not be resolving correctly; relevant trace lines:\n$(printf '%s' "$trace_a" | grep -E 'GATE_TOOLS|gate.tools|gate_tools' | head -20)"
+        ok=0
+    fi
+
+    # Part B: set EXEC_BOX_GATE_TOOLS to a known temp path — that value must appear in argv
+    local tmpdir_b ev_b test_gate_dir
+    tmpdir_b="$(make_probe_stub_dir preflight_ready)"
+    ev_b="$(mktemp)"
+    test_gate_dir="/tmp/test-gate-tools-$$"
+
+    local output_b exit_b
+    output_b="$(L6_PROBE_PATH="$tmpdir_b" L6_EVIDENCE_FILE="$ev_b" \
+        EXEC_BOX_GATE_TOOLS="$test_gate_dir" bash "$PROBE" --dry-run 2>&1)" && exit_b=$? || exit_b=$?
+
+    local ev_content_b
+    ev_content_b="$(cat "$ev_b" 2>/dev/null || true)"
+
+    rm -rf "$tmpdir_b"
+    rm -f "$ev_b"
+
+    if [ "$exit_b" -ne 0 ]; then
+        tc_fail "${tc}b" "expected exit 0 with EXEC_BOX_GATE_TOOLS set; got $exit_b; output:\n$output_b"
+        ok=0
+    fi
+
+    # The resolved test_gate_dir must appear in the dry-run script state (GATE_TOOLS_DIR)
+    # We verify by running with a custom EXEC_BOX_GATE_TOOLS and checking the script
+    # accepts it without error. Additionally, verify no empty --gate-tools
+    if printf '%s' "$output_b" | grep -qF -- '--gate-tools ""'; then
+        tc_fail "${tc}b" "output contains '--gate-tools \"\"' even with EXEC_BOX_GATE_TOOLS set; output:\n$output_b"
+        ok=0
+    fi
+
+    # Verify that the custom gate-tools value is wired by running with a bash debug trace
+    # to see the actual GATE_TOOLS_DIR expansion. Use a subshell with 'set -x' output capture.
+    local trace_dir ev_trace
+    trace_dir="$(make_probe_stub_dir preflight_ready)"
+    ev_trace="$(mktemp)"
+
+    local trace_out
+    trace_out="$(L6_PROBE_PATH="$trace_dir" L6_EVIDENCE_FILE="$ev_trace" \
+        EXEC_BOX_GATE_TOOLS="$test_gate_dir" bash -x "$PROBE" --dry-run 2>&1)" || true
+
+    rm -rf "$trace_dir"
+    rm -f "$ev_trace"
+
+    # The bash -x trace will show the expanded value of GATE_TOOLS_DIR
+    if ! printf '%s' "$trace_out" | grep -qF "$test_gate_dir"; then
+        tc_fail "${tc}b" "EXEC_BOX_GATE_TOOLS value '$test_gate_dir' not found in script trace; check GATE_TOOLS_DIR expansion; trace:\n$(printf '%s' "$trace_out" | grep -E 'GATE_TOOLS|gate.tools' | head -20)"
+        ok=0
+    fi
+
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
+# ─── TC-046-02: AGENT_BUILDER_PUBLISH_REMOTE threading and SKIP-when-unset ────
+
+run_tc046_02() {
+    local tc="TC-046-02"
+    local ok=1
+
+    # Part A: AGENT_BUILDER_PUBLISH_REMOTE set — must appear in argv for 034 and 032
+    # (only verifiable via bash -x trace since dry-run doesn't exec the argv)
+    local tmpdir_a ev_a test_remote
+    tmpdir_a="$(make_probe_stub_dir preflight_ready)"
+    ev_a="$(mktemp)"
+    test_remote="git@github.com:example/repo.git"
+
+    local trace_a
+    trace_a="$(L6_PROBE_PATH="$tmpdir_a" L6_EVIDENCE_FILE="$ev_a" \
+        AGENT_BUILDER_PUBLISH_REMOTE="$test_remote" bash -x "$PROBE" --dry-run 2>&1)" || true
+
+    local ev_a_content
+    ev_a_content="$(cat "$ev_a" 2>/dev/null || true)"
+
+    rm -rf "$tmpdir_a"
+    rm -f "$ev_a"
+
+    # The trace must show the remote value in env setup for run_probe 034/032
+    if ! printf '%s' "$trace_a" | grep -qF "$test_remote"; then
+        tc_fail "${tc}a" "AGENT_BUILDER_PUBLISH_REMOTE value not found in script trace for 034/032; trace excerpt:\n$(printf '%s' "$trace_a" | grep -E 'PUBLISH_REMOTE|034|032' | head -20)"
+        ok=0
+    fi
+
+    # 034 must NOT be SKIP due to AGENT_BUILDER_PUBLISH_REMOTE (it is set)
+    if printf '%s' "$ev_a_content" | grep "TASK-034" | grep -q "AGENT_BUILDER_PUBLISH_REMOTE unset"; then
+        tc_fail "${tc}a" "probe 034 shows 'AGENT_BUILDER_PUBLISH_REMOTE unset' skip even though it is set; evidence:\n$ev_a_content"
+        ok=0
+    fi
+
+    # Part B: AGENT_BUILDER_PUBLISH_REMOTE unset — 034 must be SKIP, exit 0
+    local tmpdir_b ev_b
+    tmpdir_b="$(make_probe_stub_dir preflight_ready)"
+    ev_b="$(mktemp)"
+
+    local output_b exit_b
+    output_b="$(L6_PROBE_PATH="$tmpdir_b" L6_EVIDENCE_FILE="$ev_b" \
+        env -u AGENT_BUILDER_PUBLISH_REMOTE bash "$PROBE" --dry-run 2>&1)" && exit_b=$? || exit_b=$?
+
+    local ev_b_content
+    ev_b_content="$(cat "$ev_b" 2>/dev/null || true)"
+
+    rm -rf "$tmpdir_b"
+    rm -f "$ev_b"
+
+    if [ "$exit_b" -ne 0 ]; then
+        tc_fail "${tc}b" "expected exit 0 when AGENT_BUILDER_PUBLISH_REMOTE unset; got $exit_b; output:\n$output_b"
+        ok=0
+    fi
+
+    # 034 must show SKIP in stdout output
+    if ! printf '%s' "$output_b" | grep "\[034\]" | grep -qi "SKIP"; then
+        tc_fail "${tc}b" "probe 034 should be SKIP when AGENT_BUILDER_PUBLISH_REMOTE unset; stdout 034 line:\n$(printf '%s' "$output_b" | grep "\[034\]")"
+        ok=0
+    fi
+
+    # Evidence file 034 row must contain AGENT_BUILDER_PUBLISH_REMOTE unset reason
+    if ! printf '%s' "$ev_b_content" | grep "TASK-034" | grep -q "AGENT_BUILDER_PUBLISH_REMOTE unset"; then
+        tc_fail "${tc}b" "evidence TASK-034 does not show 'AGENT_BUILDER_PUBLISH_REMOTE unset' skip reason; evidence:\n$(printf '%s' "$ev_b_content" | grep "TASK-034")"
+        ok=0
+    fi
+
+    # SKIP reason must be distinct from 'no git remote configured'
+    if printf '%s' "$ev_b_content" | grep "TASK-034" | grep -q "no git remote configured"; then
+        tc_fail "${tc}b" "probe 034 skip reason shows 'no git remote configured' instead of 'AGENT_BUILDER_PUBLISH_REMOTE unset'; those are different conditions"
+        ok=0
+    fi
+
+    # Exit 0 (SKIP is not FAIL) — already checked above
+    # 032 must also be SKIP (AGENT_BUILDER_PUBLISH_REMOTE is a capstone prerequisite)
+    if ! printf '%s' "$output_b" | grep "\[032\]" | grep -qi "SKIP"; then
+        tc_fail "${tc}b" "probe 032 should be SKIP when AGENT_BUILDER_PUBLISH_REMOTE unset; 032 line:\n$(printf '%s' "$output_b" | grep "\[032\]")"
+        ok=0
+    fi
+
+    if ! printf '%s' "$ev_b_content" | grep "TASK-032" | grep -q "AGENT_BUILDER_PUBLISH_REMOTE unset"; then
+        tc_fail "${tc}b" "evidence TASK-032 does not mention 'AGENT_BUILDER_PUBLISH_REMOTE unset'; evidence:\n$(printf '%s' "$ev_b_content" | grep "TASK-032")"
+        ok=0
+    fi
+
+    # Part C: gh absent AND AGENT_BUILDER_PUBLISH_REMOTE set — gh-absent check must take
+    # precedence.  Probe 034 must be SKIP with a reason naming the gh-absent condition
+    # (not the PUBLISH_REMOTE condition), and exit must be 0 (SKIP is not FAIL).
+    # This proves publication cannot proceed without gh regardless of the remote env var.
+    local tmpdir_c ev_c
+    tmpdir_c="$(make_probe_stub_dir missing:gh preflight_ready)"
+    ev_c="$(mktemp)"
+
+    local output_c exit_c
+    output_c="$(L6_PROBE_PATH="$tmpdir_c" L6_EVIDENCE_FILE="$ev_c" \
+        AGENT_BUILDER_PUBLISH_REMOTE="git@github.com:example/repo.git" \
+        bash "$PROBE" --dry-run 2>&1)" && exit_c=$? || exit_c=$?
+
+    local ev_c_content
+    ev_c_content="$(cat "$ev_c" 2>/dev/null || true)"
+
+    rm -rf "$tmpdir_c"
+    rm -f "$ev_c"
+
+    # Must exit 0 (gh-absent SKIP is not a FAIL)
+    if [ "$exit_c" -ne 0 ]; then
+        tc_fail "${tc}c" "expected exit 0 when gh absent + PUBLISH_REMOTE set; got $exit_c; output:\n$output_c"
+        ok=0
+    fi
+
+    # 034 must be SKIP in stdout
+    if ! printf '%s' "$output_c" | grep "\[034\]" | grep -qi "SKIP"; then
+        tc_fail "${tc}c" "probe 034 should be SKIP when gh absent (even with PUBLISH_REMOTE set); 034 line:\n$(printf '%s' "$output_c" | grep "\[034\]")"
+        ok=0
+    fi
+
+    # The SKIP reason must name the gh-absent condition (not AGENT_BUILDER_PUBLISH_REMOTE)
+    if ! printf '%s' "$ev_c_content" | grep "TASK-034" | grep -qi "gh"; then
+        tc_fail "${tc}c" "probe 034 SKIP reason should mention 'gh' absent (gh-absent takes precedence over PUBLISH_REMOTE); evidence TASK-034 line:\n$(printf '%s' "$ev_c_content" | grep "TASK-034")"
+        ok=0
+    fi
+
+    # Must NOT cite AGENT_BUILDER_PUBLISH_REMOTE as the skip reason (it is set)
+    if printf '%s' "$ev_c_content" | grep "TASK-034" | grep -q "AGENT_BUILDER_PUBLISH_REMOTE unset"; then
+        tc_fail "${tc}c" "probe 034 skip reason should NOT be 'AGENT_BUILDER_PUBLISH_REMOTE unset' when PUBLISH_REMOTE is set (gh-absent is the real blocker); evidence:\n$(printf '%s' "$ev_c_content" | grep "TASK-034")"
+        ok=0
+    fi
+
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
+# ─── TC-046-03: no probe command contains AGENT_BUILDER_SANDBOX_RUNTIME=srt ───
+
+run_tc046_03() {
+    local tc="TC-046-03"
+    local ok=1
+
+    # Part A: scan stdout and evidence file for AGENT_BUILDER_SANDBOX_RUNTIME=srt
+    local tmpdir ev
+    tmpdir="$(make_probe_stub_dir preflight_ready)"
+    ev="$(mktemp)"
+
+    local output exit_code
+    output="$(L6_PROBE_PATH="$tmpdir" L6_EVIDENCE_FILE="$ev" \
+        AGENT_BUILDER_PUBLISH_REMOTE="git@github.com:example/repo.git" \
+        bash "$PROBE" --dry-run 2>&1)" && exit_code=$? || exit_code=$?
+
+    local ev_content
+    ev_content="$(cat "$ev" 2>/dev/null || true)"
+
+    rm -rf "$tmpdir"
+    rm -f "$ev"
+
+    if [ "$exit_code" -ne 0 ]; then
+        tc_fail "${tc}a" "expected exit 0; got $exit_code; output:\n$output"
+        ok=0
+    fi
+
+    # Neither stdout nor evidence file must contain AGENT_BUILDER_SANDBOX_RUNTIME=srt
+    if printf '%s' "$output" | grep -qF 'AGENT_BUILDER_SANDBOX_RUNTIME=srt'; then
+        tc_fail "${tc}a" "stdout contains 'AGENT_BUILDER_SANDBOX_RUNTIME=srt'; output:\n$output"
+        ok=0
+    fi
+
+    if printf '%s' "$ev_content" | grep -qF 'AGENT_BUILDER_SANDBOX_RUNTIME=srt'; then
+        tc_fail "${tc}a" "evidence file contains 'AGENT_BUILDER_SANDBOX_RUNTIME=srt'; evidence:\n$ev_content"
+        ok=0
+    fi
+
+    # Part B: probe 028 NOT skipped when srt absent but claude present
+    local tmpdir_b ev_b
+    tmpdir_b="$(make_probe_stub_dir missing:srt preflight_ready)"
+    ev_b="$(mktemp)"
+
+    local output_b exit_b
+    output_b="$(L6_PROBE_PATH="$tmpdir_b" L6_EVIDENCE_FILE="$ev_b" \
+        AGENT_BUILDER_PUBLISH_REMOTE="git@github.com:example/repo.git" \
+        bash "$PROBE" --dry-run 2>&1)" && exit_b=$? || exit_b=$?
+
+    rm -rf "$tmpdir_b"
+    rm -f "$ev_b"
+
+    if [ "$exit_b" -ne 0 ]; then
+        tc_fail "${tc}b" "expected exit 0 when srt absent; got $exit_b; output:\n$output_b"
+        ok=0
+    fi
+
+    # 028 must NOT be SKIP when srt is absent (srt is no longer a prerequisite for 028)
+    if printf '%s' "$output_b" | grep "\[028\]" | grep -qi "SKIP"; then
+        tc_fail "${tc}b" "probe 028 should NOT be SKIP when only srt is absent (srt gating on 028 was stale); got:\n$(printf '%s' "$output_b" | grep "\[028\]")"
+        ok=0
+    fi
+
+    # Part C: probe 021 must still be SKIP when srt absent (its gate is legitimate)
+    if ! printf '%s' "$output_b" | grep "\[021\]" | grep -qi "SKIP"; then
+        tc_fail "${tc}c" "probe 021 should still be SKIP when srt absent; got:\n$(printf '%s' "$output_b" | grep "\[021\]")"
+        ok=0
+    fi
+
+    if ! printf '%s' "$output_b" | grep "\[021\]" | grep -qi "srt"; then
+        tc_fail "${tc}c" "probe 021 SKIP reason should mention 'srt'; got:\n$(printf '%s' "$output_b" | grep "\[021\]")"
+        ok=0
+    fi
+
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
+# ─── TC-046-04: regression guard — TC-044-01..05 still green ─────────────────
+#
+# TC-044-01 through TC-044-05 are already called directly in main below.
+# This function is a named marker so the results summary attributes the
+# regression guard to TC-046-04. The actual assertions run inside the
+# run_tc044_0x functions; any failure there also counts against this TC.
+
+run_tc046_04_marker() {
+    # No separate test body — TC-044 functions are the regression guard.
+    # This is a placeholder so TC-046-04 appears explicitly in the report.
+    :
+}
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 printf '\n=== l6-probe test harness ===\n\n'
@@ -634,6 +962,9 @@ run_tc044_03b
 run_tc044_04
 run_tc044_04b
 run_tc044_05
+run_tc046_01
+run_tc046_02
+run_tc046_03
 
 printf '\n=== Results: %d passed, %d failed ===\n' "$PASS_COUNT" "$FAIL_COUNT"
 

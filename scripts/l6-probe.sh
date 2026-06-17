@@ -45,6 +45,14 @@ case "$_SCRIPT_DIR" in
 esac
 REPO_ROOT="$(cd "$_SCRIPT_DIR/.." && pwd)"
 
+# ─── gate-tools directory ─────────────────────────────────────────────────────
+#
+# Bug 1 fix: resolve the gate-tools directory once here rather than passing ""
+# to run.sh (which causes "Gate toolchain directory does not exist:" error).
+# Honor EXEC_BOX_GATE_TOOLS when set — the same default run.sh uses at line ~49:
+#   gate_tools="${EXEC_BOX_GATE_TOOLS:-$box_dir/gate-tools}"
+GATE_TOOLS_DIR="${EXEC_BOX_GATE_TOOLS:-${REPO_ROOT}/containment/execution-box/gate-tools}"
+
 # ─── argument parsing ─────────────────────────────────────────────────────────
 
 DRY_RUN=0
@@ -272,7 +280,7 @@ fi
 
 CMD_014='containment/execution-box/run.sh --gate-tools <gate-tools-dir> --worktree . --probe'
 run_probe "014" "$CMD_014" "$SKIP_014" \
-    bash containment/execution-box/run.sh --gate-tools "" --worktree . --probe
+    bash containment/execution-box/run.sh --gate-tools "$GATE_TOOLS_DIR" --worktree . --probe
 
 STATUS_014="$_LAST_STATUS"
 OUTPUT_014="$_LAST_OUTPUT_LINE"
@@ -292,7 +300,7 @@ fi
 
 CMD_015='containment/execution-box/run.sh --gate-tools <gate-tools-dir> --worktree . --egress-probe'
 run_probe "015" "$CMD_015" "$SKIP_015" \
-    bash containment/execution-box/run.sh --gate-tools "" --worktree . --egress-probe
+    bash containment/execution-box/run.sh --gate-tools "$GATE_TOOLS_DIR" --worktree . --egress-probe
 
 STATUS_015="$_LAST_STATUS"
 OUTPUT_015="$_LAST_OUTPUT_LINE"
@@ -314,7 +322,7 @@ fi
 
 CMD_016='containment/execution-box/run.sh --gate-tools <gate-tools-dir> --worktree . --runtime runsc --probe'
 run_probe "016" "$CMD_016" "$SKIP_016" \
-    bash containment/execution-box/run.sh --gate-tools "" --worktree . --runtime runsc --probe
+    bash containment/execution-box/run.sh --gate-tools "$GATE_TOOLS_DIR" --worktree . --runtime runsc --probe
 
 STATUS_016="$_LAST_STATUS"
 OUTPUT_016="$_LAST_OUTPUT_LINE"
@@ -400,19 +408,20 @@ OUTPUT_022="$_LAST_OUTPUT_LINE"
 record_evidence "022" "$CMD_022" "$OUTPUT_022" "$STATUS_022" "$SKIP_022"
 
 # ── Probe 028: Default run wiring ─────────────────────────────────────────────
+#
+# Bug 3 fix: AGENT_BUILDER_SANDBOX_RUNTIME=srt was removed by ADR 021; passing
+# it causes ConfigFromEnv to error with the migration message. Drop it entirely.
+# Probe 028 is gated only on claude presence (not srt — srt was only needed for
+# the now-removed env var, not for 028's actual workload).
 
 SKIP_028=""
 if [ "$HAS_CLAUDE" -eq 0 ]; then
     SKIP_028="prereq claude CLI absent (or not authenticated)"
 fi
-# 028 also requires srt in the run environment per checklist
-if [ "$HAS_SRT" -eq 0 ] && [ -z "$SKIP_028" ]; then
-    SKIP_028="prereq srt absent"
-fi
 
-CMD_028='env AGENT_BUILDER_CLAUDE_CLI=claude AGENT_BUILDER_SANDBOX_RUNTIME=srt go run ./cmd/agent-builder run --task-root docs/tasks/...'
+CMD_028='env AGENT_BUILDER_CLAUDE_CLI=claude go run ./cmd/agent-builder run --task-root docs/tasks/...'
 run_probe "028" "$CMD_028" "$SKIP_028" \
-    env AGENT_BUILDER_CLAUDE_CLI=claude AGENT_BUILDER_SANDBOX_RUNTIME=srt \
+    env AGENT_BUILDER_CLAUDE_CLI=claude \
     go run ./cmd/agent-builder run --task-root docs/tasks/
 
 STATUS_028="$_LAST_STATUS"
@@ -429,7 +438,7 @@ fi
 
 CMD_033='containment/execution-box/run.sh --gate-tools <gate-tools-dir> --worktree . --probe'
 run_probe "033" "$CMD_033" "$SKIP_033" \
-    bash containment/execution-box/run.sh --gate-tools "" --worktree . --probe
+    bash containment/execution-box/run.sh --gate-tools "$GATE_TOOLS_DIR" --worktree . --probe
 
 STATUS_033="$_LAST_STATUS"
 OUTPUT_033="$_LAST_OUTPUT_LINE"
@@ -437,6 +446,11 @@ OUTPUT_033="$_LAST_OUTPUT_LINE"
 record_evidence "033" "$CMD_033" "$OUTPUT_033" "$STATUS_033" "$SKIP_033"
 
 # ── Probe 034: Branch & PR publication ────────────────────────────────────────
+#
+# Bug 2 fix: thread AGENT_BUILDER_PUBLISH_REMOTE from the environment into the
+# actual argv. When unset, skip gracefully (SKIP discipline identical to absent
+# gh/git-remote, exit 0) — a blank remote causes publication failure (required
+# per docs/spec/configuration.md).
 
 SKIP_034=""
 if [ "$HAS_GH" -eq 0 ]; then
@@ -445,10 +459,13 @@ fi
 if [ "$HAS_GIT_REMOTE" -eq 0 ] && [ -z "$SKIP_034" ]; then
     SKIP_034="no git remote configured"
 fi
+if [ -z "${AGENT_BUILDER_PUBLISH_REMOTE:-}" ] && [ -z "$SKIP_034" ]; then
+    SKIP_034="AGENT_BUILDER_PUBLISH_REMOTE unset"
+fi
 
 CMD_034='env AGENT_BUILDER_PUBLISH_REMOTE=<remote> AGENT_BUILDER_GH_CLI=gh AGENT_BUILDER_GITHUB_TOKEN=<token> go test -count=1 -v ./tests/publisher -run TestBranchPRPublication'
 run_probe "034" "$CMD_034" "$SKIP_034" \
-    env AGENT_BUILDER_GH_CLI=gh \
+    env AGENT_BUILDER_PUBLISH_REMOTE="${AGENT_BUILDER_PUBLISH_REMOTE:-}" AGENT_BUILDER_GH_CLI=gh \
     go test -count=1 -v ./tests/publisher -run TestBranchPRPublication
 
 STATUS_034="$_LAST_STATUS"
@@ -458,25 +475,31 @@ record_evidence "034" "$CMD_034" "$OUTPUT_034" "$STATUS_034" "$SKIP_034"
 
 # ── Probe 032: Phase 0 end-to-end capstone ────────────────────────────────────
 #
-# Capstone requires all of: podman + rootless, runsc, srt, claude, gh + git remote
+# Capstone requires all of: podman + rootless, runsc, claude, gh + git remote,
+# and AGENT_BUILDER_PUBLISH_REMOTE.
+#
+# Bug 2 fix: thread AGENT_BUILDER_PUBLISH_REMOTE; SKIP when unset.
+# Bug 3 fix: AGENT_BUILDER_SANDBOX_RUNTIME=srt removed (ADR 021); Podman is
+# now the containment path (ADR 026 / tasks 035/036).
 
 SKIP_032=""
 SKIP_032_PARTS=()
 
 [ "$HAS_PODMAN" -eq 0 ] || [ "$HAS_PODMAN_ROOTLESS" -eq 0 ] && SKIP_032_PARTS+=("podman/rootless-podman absent")
 [ "$HAS_RUNSC" -eq 0 ]  && SKIP_032_PARTS+=("runsc absent")
-[ "$HAS_SRT" -eq 0 ]    && SKIP_032_PARTS+=("srt absent")
 [ "$HAS_CLAUDE" -eq 0 ] && SKIP_032_PARTS+=("claude absent")
 [ "$HAS_GH" -eq 0 ]     && SKIP_032_PARTS+=("gh absent")
 [ "$HAS_GIT_REMOTE" -eq 0 ] && SKIP_032_PARTS+=("no git remote")
+[ -z "${AGENT_BUILDER_PUBLISH_REMOTE:-}" ] && SKIP_032_PARTS+=("AGENT_BUILDER_PUBLISH_REMOTE unset")
 
 if [ "${#SKIP_032_PARTS[@]}" -gt 0 ]; then
     SKIP_032="$(IFS=', '; printf '%s' "${SKIP_032_PARTS[*]}")"
 fi
 
-CMD_032='env AGENT_BUILDER_CLAUDE_CLI=claude AGENT_BUILDER_SANDBOX_RUNTIME=srt AGENT_BUILDER_PUBLISH_REMOTE=<remote> AGENT_BUILDER_GH_CLI=gh go test -count=1 -v ./tests/e2e -run TestPhase0EndToEndAcceptance'
+CMD_032='env AGENT_BUILDER_CLAUDE_CLI=claude AGENT_BUILDER_PUBLISH_REMOTE=<remote> AGENT_BUILDER_GH_CLI=gh go test -count=1 -v ./tests/e2e -run TestPhase0EndToEndAcceptance'
 run_probe "032" "$CMD_032" "$SKIP_032" \
-    env AGENT_BUILDER_CLAUDE_CLI=claude AGENT_BUILDER_SANDBOX_RUNTIME=srt \
+    env AGENT_BUILDER_CLAUDE_CLI=claude \
+    AGENT_BUILDER_PUBLISH_REMOTE="${AGENT_BUILDER_PUBLISH_REMOTE:-}" \
     AGENT_BUILDER_GH_CLI=gh \
     go test -count=1 -v ./tests/e2e -run TestPhase0EndToEndAcceptance
 
