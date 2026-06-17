@@ -6,6 +6,8 @@ import (
 	"io"
 	"sync"
 	"time"
+
+	"github.com/tkdtaylor/agent-builder/internal/audit"
 )
 
 const runRecordVersion = "1"
@@ -21,10 +23,20 @@ const (
 
 // RunStreams are host-side writers handed to the in-box loop. The supervisor
 // owns the backing writers so output leaves the ephemeral box during the run.
+//
+// Audit is the optional typed action sink (task 041). The in-box loop projects
+// each action-class lifecycle event (containment, pick, attempt, verify, publish,
+// escalate, finish) through it ALONGSIDE the raw command/stdout/stderr stream
+// above — raw bytes stay in the RunRecord, never the Sink. It is nil when no
+// audit chain is configured, in which case the loop must skip projection and
+// behave exactly as before. The supervisor owns the Sink lifecycle and Seals it
+// before containment teardown (mirroring the RunRecord close-before-teardown
+// durability rule).
 type RunStreams struct {
 	Stdout  io.Writer
 	Stderr  io.Writer
 	Command io.Writer
+	Audit   audit.Sink
 }
 
 // RunRecordMetadata identifies one dispatched run in the durable record.

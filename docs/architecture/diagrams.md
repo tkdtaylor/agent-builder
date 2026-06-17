@@ -140,6 +140,7 @@ C4Component
 - Task 022 fixes the Claude CLI executor adapter: `claude -p` runs in the task worktree, receives `ANTHROPIC_API_KEY` through env, and reports the produced branch through an executor-owned temp file.
 - Task 017 fixes the supervisor dispatch lifecycle: create one box, run one in-box loop, and tear the box down exactly once.
 - Task 019 fixes the run-record seam: command/stdout/stderr events stream to host-side NDJSON and close before box teardown.
+- Task 041 wires the audit action layer: the in-box loop projects typed action events through an optional `audit.Sink` (`RunStreams.Audit`) alongside the unchanged 019 raw run-record stream; the supervisor Seals the sink before teardown on success and failure. The production sink (`audit.BlockSink`, behind `AGENT_BUILDER_AUDIT_RECORD`) shells out to the `audit-trail` block to produce the hash-chained log, resolved fail-fast before dispatch. The supervisor depends only on the `audit.Sink` interface, so F-003 isolation holds.
 - Task 028 fixes the default CLI run wiring: `internal/runtime` parses explicit environment configuration, selects one ready task, composes the Phase 0 adapters, and calls the supervisor without adding executor/web/LLM imports to `internal/supervisor`.
 - Task 034 fixes branch and PR publication: `internal/publisher` pushes only Gate-verified non-empty branches and records PR artifact evidence with publication-token redaction.
 - The supervisor remains trusted and dumb; the gate contains verification orchestration only, not executor/LLM/web logic.
@@ -168,6 +169,7 @@ sequenceDiagram
     participant Gate as Verification Gate
     participant Publisher as Branch Publisher
     participant RunRecord as RunRecord NDJSON
+    participant AuditChain as audit.BlockSink → audit-trail block
     participant StatusWriter as Task Status Writer
     participant Roadmap as docs/plans/roadmap.md
     participant Tasks as docs/tasks/*.md
@@ -187,8 +189,12 @@ sequenceDiagram
     Supervisor->>RunRecord: open + write run_started
     Supervisor-->>Supervisor: log loop.started
     Supervisor->>RunRecord: write command
-    Supervisor->>AgentLoop: RunInside(BoxHandle, Task, RunStreams)
-    AgentLoop-->>RunRecord: stream stdout/stderr/commands
+    opt AGENT_BUILDER_AUDIT_RECORD set
+        Supervisor-->>Supervisor: resolve audit-trail bin + check path writable (fail-fast before dispatch)
+    end
+    Supervisor->>AgentLoop: RunInside(BoxHandle, Task, RunStreams{+Audit})
+    AgentLoop-->>RunRecord: stream stdout/stderr/commands (raw)
+    AgentLoop-->>AuditChain: emit typed action events (containment, pick, attempt, verify, publish, finish) — alongside the raw stream, never raw bytes
     AgentLoop-->>AgentLoop: pick configured Task
     loop up to MaxAttempts
         AgentLoop->>Executor: Run(Task)
@@ -214,6 +220,9 @@ sequenceDiagram
         AgentLoop-->>Supervisor: RetryOutcome{idle}
     end
     Supervisor->>RunRecord: write run_finished + close
+    opt audit sink configured
+        Supervisor->>AuditChain: Seal() — before teardown, on success and failure
+    end
     Supervisor->>Box: Teardown(BoxHandle)
     Supervisor-->>Supervisor: log box.torn_down
 ```
