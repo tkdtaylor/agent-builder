@@ -39,6 +39,7 @@ When the structure changes, both files update in the same commit. The tables her
 | code-scanner | External CLI | Malware/backdoor/credential-harvest scanner invoked as a blocking gate step | Tooling environment |
 | git | External CLI | Version-control CLI used to push verified executor branches to the configured remote | Tooling environment |
 | GitHub CLI | External CLI | `gh pr` CLI used to look up or create PR artifacts for verified branches | GitHub |
+| audit-trail block | External CLI | Hash-chained, append-only forensic log block (`github.com/tkdtaylor/audit-trail`); invoked as `audit-trail emit` and `audit-trail verify` CLI subprocesses by `audit.BlockSink`; owns the JSONL chain format, SHA-256 chaining, RFC 8785 canonicalization, genesis sentinel, and verifier — agent-builder owns only the typed-event→argv mapping. Governing ADR: 026. | tkdtaylor |
 
 ---
 
@@ -71,7 +72,7 @@ When the structure changes, both files update in the same commit. The tables her
 | agent-builder CLI | Armor Guard Adapter | `internal/armor` | Adapts an external armor-compatible process/service to the ingestion guard decision model without vendoring armor source | Ingestion Boundary; armor |
 | agent-builder CLI | Executor Ingestion Harness | `internal/executorharness` | Converts executor-facing web-content and tool-call events into ingestion candidates, routes them through the broker, and exposes only broker-reviewed release values to continuations/executors; constructs armor-backed harness wiring when configured | Ingestion Boundary; Armor Guard Adapter |
 | agent-builder CLI | Claude CLI Executor | `internal/executor` | Concrete `supervisor.Executor` adapter that invokes Claude Code CLI in a task worktree, captures the produced branch, and declares fail-closed/reviewed policy for Claude-facing web/tool routes | Supervisor; Claude Code CLI; Executor Ingestion Harness |
-| agent-builder CLI | Audit Sink Seam | `internal/audit` | Typed closed-enum `AuditAction` taxonomy, `AuditEvent` value type, `Sink` interface, event validation helper (`Validate`), and in-process `FakeSink`; strict leaf package with no executor/LLM/web imports; production backend is `BlockSink` (task 039) reached over the block's CLI subprocess seam | |
+| agent-builder CLI | Audit Sink Seam | `internal/audit` | Typed closed-enum `AuditAction` taxonomy, `AuditEvent` value type, `Sink` interface, event validation helper (`Validate`), in-process `FakeSink`, and `BlockSink` production CLI adapter; strict leaf package with no executor/LLM/web imports (enforced by F-005 fitness check, task 042) | audit-trail block |
 | agent-builder CLI | exec-sandbox Run Adapter | `internal/sandbox` | Typed contained-command run seam plus deterministic fake backend | |
 | agent-builder CLI | Podman Adapter | `internal/sandbox/podman` | Concrete run backend that invokes `containment/execution-box/run.sh` with the worktree and typed limits (egress allowlist, CPU/memory/PID quotas, wall-clock timeout) without changing callers of the task-020 seam | exec-sandbox Run Adapter; rootless Podman |
 | agent-builder CLI | Verification Gate | `internal/gate` | Runs ordered blocking verification Steps and returns structured Verdicts | code-scanner |
@@ -101,6 +102,7 @@ When the structure changes, both files update in the same commit. The tables her
 - Task 028: Default run wiring — `agent-builder run` composes the concrete task source, Executor, Gate, containment-box adapter, retrying loop, timeout, and optional RunRecord path from explicit environment configuration while preserving supervisor isolation. (Containment backend swapped from the rented srt adapter to the Podman adapter by ADR 021 / task 036.)
 - Task 037: Phase 1 end-to-end acceptance — fake-Podman end-to-end harness drives the real `agent-builder run` pipeline through Podman containment with zero `srt` invocation and a clean run record; accepted at fake-provider L5 (live `runsc` + provisioned Gate-toolchain L6 pending).
 - Task 034: Branch and PR publication — default run wiring publishes only Gate-verified non-empty branches through the fakeable publisher seam and records PR artifact evidence without logging configured publication tokens.
+- ADR 026 / Task 039: audit-trail block consumption — agent-builder reaches the shipped `audit-trail` block over a CLI subprocess seam (`audit.BlockSink`); the block owns the chain format, hash, and verifier; agent-builder owns only the typed `AuditEvent`→argv mapping. `context`/`refs` fields are deferred to the IPC-socket upgrade (ADR 026 Option B). `internal/audit` stays a strict stdlib-only leaf (no block Go import; enforced by F-005).
 
 ---
 
