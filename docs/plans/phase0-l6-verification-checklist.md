@@ -4,6 +4,8 @@
 **Created:** 2026-06-16
 **Purpose:** Close the 9 🟡 rows in [coverage-tracker.md](../tasks/test-specs/coverage-tracker.md) to ✅ by running each task's live runtime path on a properly provisioned host. None of this requires code changes — it is environment provisioning plus operator-observed probe runs.
 
+> This file is the **per-probe reference** (exact command + success criterion for each task). For the end-to-end operator journey — host provisioning, pre-flight, running the probes, and promotion — start from [l6-operator-runbook.md](l6-operator-runbook.md), which drives these probes via the `make l6-preflight` / `make l6-probe` automation.
+
 Phase 0 is currently *accepted at fake-provider L5* (Task 032 harness). Every row below is held at 🟡 because its existing L5 evidence exercises **fakes/stubs**, not the live path. This checklist is what an operator runs to promote them.
 
 ## Prerequisites — provision the host
