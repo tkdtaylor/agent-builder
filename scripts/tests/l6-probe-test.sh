@@ -653,6 +653,27 @@ run_tc046_01() {
         ok=0
     fi
 
+    # Positive assertion: with EXEC_BOX_GATE_TOOLS unset, the bash -x trace must show
+    # the resolved default path (containing 'containment/execution-box/gate-tools')
+    # actually passed as the --gate-tools argument — proving the default resolves correctly.
+    local tmpdir_a2 ev_a2
+    tmpdir_a2="$(make_probe_stub_dir preflight_ready)"
+    ev_a2="$(mktemp)"
+
+    local trace_a
+    trace_a="$(L6_PROBE_PATH="$tmpdir_a2" L6_EVIDENCE_FILE="$ev_a2" \
+        env -u EXEC_BOX_GATE_TOOLS bash -x "$PROBE" --dry-run 2>&1)" || true
+
+    rm -rf "$tmpdir_a2"
+    rm -f "$ev_a2"
+
+    # The bash -x trace will show the GATE_TOOLS_DIR assignment and its use as --gate-tools.
+    # Assert the default path substring appears in the trace (non-empty, real default).
+    if ! printf '%s' "$trace_a" | grep -qF 'containment/execution-box/gate-tools'; then
+        tc_fail "${tc}a-default-path" "default gate-tools path 'containment/execution-box/gate-tools' not found in bash -x trace; GATE_TOOLS_DIR may not be resolving correctly; relevant trace lines:\n$(printf '%s' "$trace_a" | grep -E 'GATE_TOOLS|gate.tools|gate_tools' | head -20)"
+        ok=0
+    fi
+
     # Part B: set EXEC_BOX_GATE_TOOLS to a known temp path — that value must appear in argv
     local tmpdir_b ev_b test_gate_dir
     tmpdir_b="$(make_probe_stub_dir preflight_ready)"
@@ -786,6 +807,49 @@ run_tc046_02() {
 
     if ! printf '%s' "$ev_b_content" | grep "TASK-032" | grep -q "AGENT_BUILDER_PUBLISH_REMOTE unset"; then
         tc_fail "${tc}b" "evidence TASK-032 does not mention 'AGENT_BUILDER_PUBLISH_REMOTE unset'; evidence:\n$(printf '%s' "$ev_b_content" | grep "TASK-032")"
+        ok=0
+    fi
+
+    # Part C: gh absent AND AGENT_BUILDER_PUBLISH_REMOTE set — gh-absent check must take
+    # precedence.  Probe 034 must be SKIP with a reason naming the gh-absent condition
+    # (not the PUBLISH_REMOTE condition), and exit must be 0 (SKIP is not FAIL).
+    # This proves publication cannot proceed without gh regardless of the remote env var.
+    local tmpdir_c ev_c
+    tmpdir_c="$(make_probe_stub_dir missing:gh preflight_ready)"
+    ev_c="$(mktemp)"
+
+    local output_c exit_c
+    output_c="$(L6_PROBE_PATH="$tmpdir_c" L6_EVIDENCE_FILE="$ev_c" \
+        AGENT_BUILDER_PUBLISH_REMOTE="git@github.com:example/repo.git" \
+        bash "$PROBE" --dry-run 2>&1)" && exit_c=$? || exit_c=$?
+
+    local ev_c_content
+    ev_c_content="$(cat "$ev_c" 2>/dev/null || true)"
+
+    rm -rf "$tmpdir_c"
+    rm -f "$ev_c"
+
+    # Must exit 0 (gh-absent SKIP is not a FAIL)
+    if [ "$exit_c" -ne 0 ]; then
+        tc_fail "${tc}c" "expected exit 0 when gh absent + PUBLISH_REMOTE set; got $exit_c; output:\n$output_c"
+        ok=0
+    fi
+
+    # 034 must be SKIP in stdout
+    if ! printf '%s' "$output_c" | grep "\[034\]" | grep -qi "SKIP"; then
+        tc_fail "${tc}c" "probe 034 should be SKIP when gh absent (even with PUBLISH_REMOTE set); 034 line:\n$(printf '%s' "$output_c" | grep "\[034\]")"
+        ok=0
+    fi
+
+    # The SKIP reason must name the gh-absent condition (not AGENT_BUILDER_PUBLISH_REMOTE)
+    if ! printf '%s' "$ev_c_content" | grep "TASK-034" | grep -qi "gh"; then
+        tc_fail "${tc}c" "probe 034 SKIP reason should mention 'gh' absent (gh-absent takes precedence over PUBLISH_REMOTE); evidence TASK-034 line:\n$(printf '%s' "$ev_c_content" | grep "TASK-034")"
+        ok=0
+    fi
+
+    # Must NOT cite AGENT_BUILDER_PUBLISH_REMOTE as the skip reason (it is set)
+    if printf '%s' "$ev_c_content" | grep "TASK-034" | grep -q "AGENT_BUILDER_PUBLISH_REMOTE unset"; then
+        tc_fail "${tc}c" "probe 034 skip reason should NOT be 'AGENT_BUILDER_PUBLISH_REMOTE unset' when PUBLISH_REMOTE is set (gh-absent is the real blocker); evidence:\n$(printf '%s' "$ev_c_content" | grep "TASK-034")"
         ok=0
     fi
 
