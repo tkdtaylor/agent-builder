@@ -595,14 +595,14 @@ trap cleanup_egress EXIT
 podman pod create \
     --name "$pod_name" \
     --label agent-builder.profile=execution-box \
-    --label agent-builder.egress=default-deny >/dev/null \
+    --label agent-builder.egress=default-deny \
+    --userns=keep-id >/dev/null \
     || die "podman pod create failed: egress pod did not start (exit $?)"
 
 podman run -d \
     --name "$sidecar_name" \
     --pod "$pod_name" \
     --label agent-builder.profile=execution-box-egress \
-    --userns=keep-id \
     --user 0:0 \
     --read-only \
     --cap-drop=all \
@@ -630,8 +630,17 @@ done
     die 'egress sidecar did not become ready'
 }
 
-workload_args=(
-    "${common_args[@]}"
+# Build egress workload_args as a filtered copy of common_args with --userns=keep-id
+# removed: rootless pod members inherit the userns from the pod's infra container
+# (declared on podman pod create above). Non-pod paths keep --userns=keep-id via
+# common_args unchanged (--probe, plain workload run).
+workload_args=()
+for _arg in "${common_args[@]}"; do
+    [ "$_arg" = "--userns=keep-id" ] && continue
+    workload_args+=("$_arg")
+done
+unset _arg
+workload_args+=(
     --pod "$pod_name"
     --dns none
     --mount "type=bind,source=$egress_state,target=/egress-state,ro,relabel=private"
