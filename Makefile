@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation check
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation check l6-preflight
 
 lint:
 	golangci-lint run
@@ -161,3 +161,8 @@ fitness-audit-isolation:
 
 check: lint test fitness
 	@echo "All checks passed."
+
+# l6-preflight — operator-invoked host readiness check (NOT a gate prerequisite)
+# Run on a provisioned host before L6 probe runs to confirm all prerequisites are met.
+l6-preflight:
+	bash scripts/l6-preflight.sh

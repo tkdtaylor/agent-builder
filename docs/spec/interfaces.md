@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** agent-builder
-**Last updated:** 2026-06-05
+**Last updated:** 2026-06-16
 
 The system's contact surface — everything that calls into the system, everything the system calls out to, and the public boundaries within the system. Each interface is a stable contract: changes here are breaking changes.
 
@@ -497,6 +497,21 @@ func (l *RetryingLoop) RunOnce() (RetryOutcome, error)
 - Gate checks are extended by registering additional `gate.Step` implementations with `gate.New(steps ...Step)`. Registration rejects nil, blank-name, and duplicate-name steps.
 - Task-source input locations are supplied by constructing `tasksource.Source` with a different `fs.FS`, roadmap path, or task directory list.
 - Retry escalation behavior is extended by providing a different `loop.EscalationHook`. `loop.BootstrapEscalationHook` returns the current Executor; router-like hooks can return a different Executor for the next attempt.
+
+### Executable artifact: L6 host preflight doctor
+
+```bash
+scripts/l6-preflight.sh
+make l6-preflight
+```
+
+- Operator-invoked diagnostic. Checks all prerequisites from `docs/plans/phase0-l6-verification-checklist.md` and emits a structured readiness report.
+- **Not a gate prerequisite.** `make l6-preflight` is in `.PHONY` but is not listed as a prerequisite of `make check` or `make fitness`.
+- **Output format:** one row per prerequisite: `PASS <name>`, `FAIL <name> — <hint>`, or `MISSING <name> — <hint>`. Final line is `READY` (exit 0) or `NOT READY` (exit 1).
+- **Prerequisites checked (in order):** tool presence via `command -v` for `podman`, `runsc`, `bwrap`, `srt`, `claude`, `gh`; rootless Podman via `podman info`; git remote configured via `git remote -v`; `make check` green; `make fitness` green.
+- **srt snap-confine detection:** if `srt --version` exits non-zero with the string `snap-confine has elevated permissions and is not confined`, the `srt` row reports `FAIL` with a snap-specific hint (install srt outside snap). Any other non-zero exit produces a generic `FAIL`.
+- **rootless-Podman detection:** if `podman info` exits non-zero or prints a value other than `true`, the `podman-rootless` row reports `FAIL` with a rootless configuration hint.
+- **Testability seam (REQ-043-05):** setting `L6_PREFLIGHT_PATH` to a directory of stub binaries replaces PATH entirely for the script's duration. This allows TC-043-01 through TC-043-04 to run with only stub binaries and no live host tooling.
 
 ### Executable artifact: execution-box launcher
 
