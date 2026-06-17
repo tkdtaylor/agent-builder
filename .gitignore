@@ -21,3 +21,7 @@ coverage.*
 
 # L6 probe evidence — operator-generated, regenerated each run (task 044)
 docs/plans/l6-evidence.txt
+
+# Operator-provisioned Gate toolchain binaries (host-specific, large; never commit) — runbook 1b
+containment/execution-box/gate-tools/*
+!containment/execution-box/gate-tools/.gitkeep

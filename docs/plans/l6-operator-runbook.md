@@ -29,7 +29,7 @@ Ubuntu 26.04 LTS, x86_64, kernel 7.0.0-22-generic. Verified present and working 
 > command -v srt    # expect: $HOME/.nvm/versions/node/v24.14.0/bin/srt
 > ```
 
-**The real provisioning gaps on this host are the three in Section 1** (register runsc, populate gate-tools, configure a git remote). Everything else is already satisfied. Re-confirm the whole picture with `make l6-preflight` (Section 2) before trusting this snapshot — it may have drifted.
+**Provisioning status on this host (2026-06-16):** step 1a (runsc cgroup wrapper + registration) ✅ done & verified, step 1b (gate-tools populated) ✅ done & verified. **Remaining: step 1c (configure a git remote), and exporting `srt` onto PATH** (the nvm gotcha above). Re-confirm with `make l6-preflight` (Section 2) before trusting this snapshot.
 
 ---
 
@@ -111,41 +111,38 @@ podman --runtime runsc run --rm docker.io/library/alpine uname -r
 
 ### 1b. Populate the execution-box Gate-toolchain directory
 
-**What:** the execution-box mounts a read-only tools dir at `/opt/agent-builder/gate-tools` (default source: `containment/execution-box/gate-tools/`, which **does not exist yet** on this host). `go`/`gofmt` come from the image; you supply the other three, per [gate-toolchain.manifest](../../containment/execution-box/gate-toolchain.manifest).
+**What:** the execution-box mounts a read-only tools dir at `/opt/agent-builder/gate-tools` (default source: `containment/execution-box/gate-tools/`). `go`/`gofmt` come from the image; you supply `golangci-lint`, `gods`, and `code-scanner`, per [gate-toolchain.manifest](../../containment/execution-box/gate-toolchain.manifest). **This was wired and verified on this host on 2026-06-16** — the commands below are the exact ones used; run them verbatim, no substitution needed. `golangci-lint`/`gods` are static binaries; `code-scanner` is your Python tool at `$HOME/Code/Public/code-scanner/cli/code-scanner` (it's self-contained but needs its `semgrep-rules/` directory copied alongside it for the offline ruleset).
 
-**Check what's already on PATH** (on this host: `golangci-lint` and `gods` are present, `code-scanner` is not):
-
-```bash
-for t in golangci-lint gods code-scanner; do printf '%-14s ' "$t"; command -v "$t" || echo "NOT on PATH"; done
-# this host today:
-#   golangci-lint  $HOME/go/bin/golangci-lint
-#   gods           $HOME/.local/bin/gods
-#   code-scanner   NOT on PATH   <-- the one you must obtain
-```
-
-**Create the dir and copy in the two you already have** (uses whatever path each resolves to, so it stays correct if they move):
+Copy-paste the whole block — it creates the dir, copies all three tools by their real resolved paths plus the semgrep ruleset, and sets execute bits:
 
 ```bash
 mkdir -p containment/execution-box/gate-tools
-cp "$(command -v golangci-lint)" containment/execution-box/gate-tools/
-cp "$(command -v gods)"          containment/execution-box/gate-tools/
+cp "$(command -v golangci-lint)" containment/execution-box/gate-tools/                                   # $HOME/go/bin/golangci-lint
+cp "$(command -v gods)"          containment/execution-box/gate-tools/                                   # $HOME/.local/bin/gods
+cp    $HOME/Code/Public/code-scanner/cli/code-scanner   containment/execution-box/gate-tools/
+cp -r $HOME/Code/Public/code-scanner/cli/semgrep-rules  containment/execution-box/gate-tools/
+chmod +x containment/execution-box/gate-tools/code-scanner \
+         containment/execution-box/gate-tools/golangci-lint \
+         containment/execution-box/gate-tools/gods
 ```
 
-**Obtain `code-scanner`** — it ships with the `code-scanner` skill (its release binary), not via PATH. Once you have the executable, copy it in and make everything executable:
+> These copied binaries are host-specific and large (golangci-lint is ~40 MB), so `containment/execution-box/gate-tools/*` is **git-ignored** — they will not show up as changes to commit.
 
-```bash
-cp /path/to/code-scanner containment/execution-box/gate-tools/   # <-- replace with the real path
-chmod +x containment/execution-box/gate-tools/*
-```
-
-(Missing either of the first two? `golangci-lint` → `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`; `gods` → `curl -fsSL https://raw.githubusercontent.com/tkdtaylor/dep-scan/main/install.sh | bash`.)
-
-**Verify** the launcher resolves all three:
+**Verify** the launcher resolves all three (no "missing" lines):
 
 ```bash
 containment/execution-box/run.sh --print-toolchain-plan
-# expect: golangci-lint, gods, and code-scanner each resolve to a path — no "missing" lines.
+# expect (verified on this host):
+#   TC-001 PLAN: mount golangci-lint=…/gate-tools/golangci-lint
+#   TC-002 PLAN: golangci-lint version=golangci-lint has version 2.12.2 …
+#   TC-001 PLAN: mount gods=…/gate-tools/gods
+#   TC-001 PLAN: mount code-scanner=…/gate-tools/code-scanner
+#   TC-002 PLAN: code-scanner version=code-scanner 1.0.0
 ```
+
+> **In-box execution caveat (does not block Phase 0 probes).** The box image is `golang:1.26-alpine` with **no python3**, so `code-scanner` (a `#!/usr/bin/env python3` script) can be *mounted and presence-validated* inside the box but cannot actually *scan* there. This is fine for the L6 probes: the in-box gate runs agent-builder's own `make check`, which does **not** invoke `code-scanner`, and the probe only checks the tool is present on PATH. `code-scanner` only needs to execute when the box later runs the Gate against a built block — at which point add `RUN apk add --no-cache python3` to [containment/execution-box/Containerfile](../../containment/execution-box/Containerfile) (a separate, tracked change).
+>
+> (If you ever need the first two fresh: `golangci-lint` → `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`; `gods` → `curl -fsSL https://raw.githubusercontent.com/tkdtaylor/dep-scan/main/install.sh | bash`.)
 
 ### 1c. Configure a git remote for PR publication
 
