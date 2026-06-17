@@ -553,6 +553,26 @@ OutcomeFailed     "failed"       in-box loop returned error or panicked
 OutcomeTimedOut   "timed-out"    configured wall-clock timeout expired
 ```
 
+#### Value: `audit.VerifyResult`
+
+```
+field       type      notes
+─────────────────────────────────────────────────────────────
+Valid       bool      true when the block reported "valid": true (chain intact)
+TamperedAt  *int      seq of the first tampered entry, or nil when intact / unknown
+Message     string    human-readable message from the block's verify response
+```
+
+- **Identity:** scoped to one `VerifyChain` call.
+- **Lifecycle:** produced by `audit.VerifyChain` or `audit.VerifyChainWithRunner`; consumed by gate-severity logic or tests.
+- **Relationships:** `IsTampered()` returns `!Valid` and is the block-severity gate predicate. A `Valid == false` result with `TamperedAt != nil` names the sequence number the block localized.
+- **Detection boundary:** the tamper detection algorithm (RFC 8785 JCS canonicalization, first-broken-link `prev_hash` chain walk, edit/reorder/truncation classification) is entirely owned by the `audit-trail` block. The agent-builder `VerifyResult` carries only what the block reports. For the authoritative detection contract see `docs/CONTRACT.md` in `github.com/tkdtaylor/audit-trail`.
+
+#### Sentinel: `audit.ErrVerifierUnavailable`
+
+- **Identity:** sentinel error returned when `VerifyChain` cannot invoke the verifier or parse its response (binary missing, non-executable, logfile unreadable, or unparseable output).
+- **Semantics:** distinct from a clean `Valid == false` result. `ErrVerifierUnavailable` means "we could not produce a verdict"; `Valid == false` means "the block ran and detected a tamper". Callers use `errors.Is(err, audit.ErrVerifierUnavailable)` to distinguish the two failure modes. An unavailable verifier is never reported as valid.
+
 #### Component: `audit.BlockSink`
 
 - **Shape:** `*audit.BlockSink` implements `audit.Sink` by mapping each `AuditEvent` onto one `audit-trail emit` CLI subprocess call. The block owns the on-disk chain format (JSONL, SHA-256 hash chain, RFC 8785 canonicalization, genesis sentinel); agent-builder owns only the typed-event→argv mapping.
@@ -772,3 +792,5 @@ run_finished    outcome; error when outcome is failed or timed-out
 - Retry escalation writes only `needs-human` through the constrained task status-writer seam after exhausted failures.
 - A configured RunRecord is host-side and durable: stream events are written during `RunInside`, the terminal outcome is written, and the file is closed before containment teardown.
 - A default runtime configuration selects at most one task and fails missing required configuration before Executor attempt.
+- `audit.VerifyResult.Valid == true` implies `TamperedAt == nil`; the block never reports both intact and a tampered sequence number simultaneously.
+- `audit.ErrVerifierUnavailable` and `audit.VerifyResult{Valid: false}` are mutually exclusive: the error path means no verdict was produced; the `Valid == false` path means the block produced and reported a tamper verdict.
