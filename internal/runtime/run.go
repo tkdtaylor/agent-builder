@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/tkdtaylor/agent-builder/internal/audit"
 	"github.com/tkdtaylor/agent-builder/internal/executor"
 	"github.com/tkdtaylor/agent-builder/internal/gate"
 	agentloop "github.com/tkdtaylor/agent-builder/internal/loop"
@@ -27,6 +29,8 @@ const (
 	EnvClaudeCLI       = "AGENT_BUILDER_CLAUDE_CLI"
 	EnvExecBoxLauncher = "AGENT_BUILDER_EXEC_BOX_LAUNCHER"
 	EnvRunRecord       = "AGENT_BUILDER_RUN_RECORD"
+	EnvAuditRecord     = "AGENT_BUILDER_AUDIT_RECORD"
+	EnvAuditBin        = "AGENT_BUILDER_AUDIT_BIN"
 	EnvRunTimeout      = "AGENT_BUILDER_RUN_TIMEOUT"
 	EnvMaxAttempts     = "AGENT_BUILDER_MAX_ATTEMPTS"
 	EnvPublishRemote   = "AGENT_BUILDER_PUBLISH_REMOTE"
@@ -51,6 +55,8 @@ type Config struct {
 	ClaudeToken     string
 	ExecBoxLauncher string
 	RunRecordPath   string
+	AuditRecordPath string
+	AuditBin        string
 	RunTimeout      time.Duration
 	MaxAttempts     int
 	PublishRemote   string
@@ -85,6 +91,8 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		ClaudeToken:     getenv(executor.ClaudeCLIAuthEnv),
 		ExecBoxLauncher: cleanPath(getenv(EnvExecBoxLauncher)),
 		RunRecordPath:   cleanPath(getenv(EnvRunRecord)),
+		AuditRecordPath: cleanPath(getenv(EnvAuditRecord)),
+		AuditBin:        strings.TrimSpace(getenv(EnvAuditBin)),
 		PublishRemote:   strings.TrimSpace(getenv(EnvPublishRemote)),
 		GitCLI:          strings.TrimSpace(getenv(EnvGitCLI)),
 		GitHubCLI:       strings.TrimSpace(getenv(EnvGitHubCLI)),
@@ -213,12 +221,71 @@ func Run(config Config, stdout io.Writer) error {
 	if config.RunRecordPath != "" {
 		options = append(options, supervisor.WithRunRecordPath(config.RunRecordPath))
 	}
+	// Optional typed audit chain (task 041). When AGENT_BUILDER_AUDIT_RECORD is
+	// set, the audit-trail binary must resolve and the path must be writable
+	// BEFORE dispatch — auditing is never silently skipped when configured.
+	if config.AuditRecordPath != "" {
+		sink, err := newBlockSink(config)
+		if err != nil {
+			return err
+		}
+		options = append(options, supervisor.WithSink(sink))
+	}
 
 	if err := supervisor.New(options...).Run(); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "run completed: task %s\n", task.ID)
 	return nil
+}
+
+// newBlockSink resolves the audit-trail binary and verifies the chain logfile
+// path is writable, then constructs the production audit.BlockSink. It fails
+// fast with a clear configuration error when the binary cannot be resolved or
+// the path cannot be written — auditing is never silently skipped once
+// AGENT_BUILDER_AUDIT_RECORD is configured. The supervisor depends only on the
+// audit.Sink interface; BlockSink reaches the block over os/exec, so no block
+// package enters the supervisor import graph (F-003 holds).
+func newBlockSink(config Config) (audit.Sink, error) {
+	binPath, err := resolveAuditBin(config.AuditBin)
+	if err != nil {
+		return nil, err
+	}
+	if err := requireWritable(config.AuditRecordPath); err != nil {
+		return nil, err
+	}
+	return audit.NewBlockSink(binPath, config.AuditRecordPath), nil
+}
+
+// resolveAuditBin resolves the audit-trail binary path: an explicit
+// AGENT_BUILDER_AUDIT_BIN value (validated executable) takes precedence,
+// otherwise the bare name "audit-trail" is looked up on $PATH. An unresolvable
+// binary is a hard configuration error.
+func resolveAuditBin(configured string) (string, error) {
+	if configured != "" {
+		resolved, err := exec.LookPath(configured)
+		if err != nil {
+			return "", fmt.Errorf("run config: %s %q is not an executable audit-trail binary: %w", EnvAuditBin, configured, err)
+		}
+		return resolved, nil
+	}
+	resolved, err := exec.LookPath("audit-trail")
+	if err != nil {
+		return "", fmt.Errorf("run config: %s is set but no audit-trail binary resolves (set %s or add audit-trail to PATH): %w", EnvAuditRecord, EnvAuditBin, err)
+	}
+	return resolved, nil
+}
+
+// requireWritable confirms the audit chain logfile path can be created/appended
+// before dispatch. The block owns the chain format and appends to this path; we
+// only verify the host side can write it so a misconfigured path fails loudly
+// up front rather than mid-run.
+func requireWritable(path string) error {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644) //nolint:gosec // operator-supplied audit chain path
+	if err != nil {
+		return fmt.Errorf("run config: %s %q is not writable: %w", EnvAuditRecord, path, err)
+	}
+	return file.Close()
 }
 
 func validatePaths(config Config) error {
@@ -302,9 +369,15 @@ type retryingInBoxLoop struct {
 	publishSecrets []string
 }
 
-func (l retryingInBoxLoop) RunInside(_ supervisor.BoxHandle, task supervisor.Task, streams supervisor.RunStreams) error {
+func (l retryingInBoxLoop) RunInside(handle supervisor.BoxHandle, task supervisor.Task, streams supervisor.RunStreams) error {
+	runID := auditRunID(task, handle)
 	writeCommand(streams, "containment=podman launcher=%s", l.launcher)
+	emitAudit(streams, audit.AuditEvent{
+		Action: audit.ActionContainment, RunID: runID, TaskID: task.ID,
+		Detail: audit.EventDetail{Launcher: l.launcher},
+	})
 	writeCommand(streams, "pick task %s", task.ID)
+	emitAudit(streams, audit.AuditEvent{Action: audit.ActionPick, RunID: runID, TaskID: task.ID})
 	writeStdout(streams, "task %s selected\n", task.ID)
 
 	runner, err := agentloop.NewRetryingLoop(singleTaskSource{task: task}, l.executor, l.gate, l.worktree, l.statusWriter, l.policy)
@@ -319,8 +392,16 @@ func (l retryingInBoxLoop) RunInside(_ supervisor.BoxHandle, task supervisor.Tas
 		switch state {
 		case agentloop.StateAttempt:
 			writeCommand(streams, "attempt task %s attempt=%d", task.ID, outcome.Attempts)
+			emitAudit(streams, audit.AuditEvent{
+				Action: audit.ActionAttempt, RunID: runID, TaskID: task.ID,
+				Detail: audit.EventDetail{Attempt: outcome.Attempts},
+			})
 		case agentloop.StateVerify:
 			writeCommand(streams, "verify worktree %s", l.worktree)
+			emitAudit(streams, audit.AuditEvent{
+				Action: audit.ActionVerify, RunID: runID, TaskID: task.ID,
+				Verdict: auditVerdict(outcome.LastOutcome.Verdict),
+			})
 		}
 	}
 
@@ -329,6 +410,10 @@ func (l retryingInBoxLoop) RunInside(_ supervisor.BoxHandle, task supervisor.Tas
 		writeStdout(streams, "executor attempt completed: branch=%s\n", outcome.Branch)
 		writeStdout(streams, "gate passed: %s\n", summarizeVerdict(outcome.LastOutcome.Verdict))
 		writeCommand(streams, "publish branch %s remote=%s", outcome.Branch, l.redact(l.publishRemote))
+		emitAudit(streams, audit.AuditEvent{
+			Action: audit.ActionPublish, RunID: runID, TaskID: task.ID,
+			Detail: audit.EventDetail{Branch: outcome.Branch, Remote: l.redact(l.publishRemote)},
+		})
 		if l.publisher == nil {
 			return fmt.Errorf("run: publish task %s: missing publisher", task.ID)
 		}
@@ -349,10 +434,21 @@ func (l retryingInBoxLoop) RunInside(_ supervisor.BoxHandle, task supervisor.Tas
 		}
 		writeStdout(streams, "publication recorded: branch=%s pr=%s\n", outcome.Branch, l.redact(prArtifact))
 		writeCommand(streams, "finish task %s outcome=completed branch=%s pr=%s", task.ID, outcome.Branch, l.redact(prArtifact))
+		emitAudit(streams, audit.AuditEvent{
+			Action: audit.ActionFinish, RunID: runID, TaskID: task.ID, Outcome: audit.OutcomeCompleted,
+			Detail: audit.EventDetail{Branch: outcome.Branch},
+		})
 		return nil
 	case agentloop.RetryOutcomeEscalated:
 		writeFailureEvidence(streams, outcome.LastOutcome)
 		writeStderr(streams, "task %s escalated after %d attempts\n", task.ID, outcome.Attempts)
+		emitAudit(streams, audit.AuditEvent{
+			Action: audit.ActionEscalate, RunID: runID, TaskID: task.ID,
+			Detail: audit.EventDetail{Attempt: outcome.Attempts},
+		})
+		emitAudit(streams, audit.AuditEvent{
+			Action: audit.ActionFinish, RunID: runID, TaskID: task.ID, Outcome: audit.OutcomeFailed,
+		})
 		return fmt.Errorf("run: task %s escalated after %d attempts", task.ID, outcome.Attempts)
 	case agentloop.RetryOutcomeIdle:
 		writeStdout(streams, "no ready task\n")
@@ -421,6 +517,48 @@ func writeCommand(streams supervisor.RunStreams, format string, args ...any) {
 		return
 	}
 	_, _ = fmt.Fprintf(streams.Command, format, args...)
+}
+
+// emitAudit projects one typed action event through the optional audit Sink. It
+// is a no-op when no Sink is configured (streams.Audit == nil), so a run without
+// AGENT_BUILDER_AUDIT_RECORD behaves exactly as before. Only typed action events
+// flow here — raw stdout/stderr stay in the RunRecord and never reach the Sink.
+//
+// Append errors are intentionally swallowed for the in-loop projection: the
+// chain is a parallel durable artifact, not the run's control flow, and the
+// block-severity integrity gate (VerifyChain) is what surfaces a corrupt chain.
+// Misconfiguration (unresolvable binary / unwritable path) is caught up front by
+// newBlockSink before dispatch, so a live Append failure here is a block-side
+// fault, not a silent skip of a configured audit.
+func emitAudit(streams supervisor.RunStreams, ev audit.AuditEvent) {
+	if streams.Audit == nil {
+		return
+	}
+	_ = streams.Audit.Append(ev)
+}
+
+// auditRunID derives the run correlation id used in audit events, matching the
+// RunRecord's run-id shape ("<task>/<box>").
+func auditRunID(task supervisor.Task, handle supervisor.BoxHandle) string {
+	parts := make([]string, 0, 2)
+	if id := strings.TrimSpace(task.ID); id != "" {
+		parts = append(parts, id)
+	}
+	if id := strings.TrimSpace(handle.ID); id != "" {
+		parts = append(parts, id)
+	}
+	if len(parts) == 0 {
+		return "run"
+	}
+	return strings.Join(parts, "/")
+}
+
+// auditVerdict maps a gate verdict onto the typed audit verdict.
+func auditVerdict(verdict gate.Verdict) audit.AuditVerdict {
+	if verdict.OK {
+		return audit.VerdictPass
+	}
+	return audit.VerdictFail
 }
 
 func writeStdout(streams supervisor.RunStreams, format string, args ...any) {

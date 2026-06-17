@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tkdtaylor/agent-builder/internal/audit"
 	"github.com/tkdtaylor/agent-builder/internal/gate"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox"
 )
@@ -96,6 +97,7 @@ type Supervisor struct {
 	task          Task
 	logger        *slog.Logger
 	runRecordPath string
+	sink          audit.Sink
 	runTimeout    time.Duration
 }
 
@@ -147,6 +149,17 @@ func WithRunRecordPath(path string) Option {
 	}
 }
 
+// WithSink configures the optional typed audit action sink (task 041). The
+// supervisor hands it to the in-box loop through RunStreams.Audit and Seals it
+// before containment teardown on both the success and failure paths, mirroring
+// the RunRecord close-before-teardown durability rule. A nil sink disables audit
+// projection and leaves the run behaving exactly as before.
+func WithSink(sink audit.Sink) Option {
+	return func(s *Supervisor) {
+		s.sink = sink
+	}
+}
+
 // WithRunTimeout configures the wall-clock deadline for one in-box loop run.
 // Non-positive durations leave the timeout disabled.
 func WithRunTimeout(timeout time.Duration) Option {
@@ -193,6 +206,10 @@ func (s *Supervisor) Run() (err error) {
 
 	defer func() {
 		recordErr := s.closeRunRecord(record, outcome, err)
+		// Seal the audit sink before containment teardown on BOTH success and
+		// failure paths — same durability ordering as closeRunRecord. A nil
+		// sink seals to a no-op.
+		sealErr := s.sealSink()
 
 		teardownErr := s.box.Teardown(handle)
 		s.logLifecycle("box.torn_down", handle)
@@ -200,7 +217,7 @@ func (s *Supervisor) Run() (err error) {
 			teardownErr = fmt.Errorf("supervisor: teardown box: %w", teardownErr)
 		}
 
-		err = errors.Join(err, recordErr, teardownErr)
+		err = errors.Join(err, recordErr, sealErr, teardownErr)
 	}()
 
 	record, err = s.openRunRecord(handle)
@@ -215,6 +232,9 @@ func (s *Supervisor) Run() (err error) {
 	if record != nil {
 		streams = record.Streams()
 	}
+	// Attach the optional typed audit sink so the in-box loop can project action
+	// events through it alongside the raw command/stdout/stderr stream above.
+	streams.Audit = s.sink
 
 	s.logLifecycle("loop.started", handle)
 	if record != nil {
@@ -343,6 +363,20 @@ func (s *Supervisor) closeRunRecord(record *RunRecordWriter, outcome RunOutcome,
 		closeErr = fmt.Errorf("supervisor: close run record: %w", closeErr)
 	}
 	return errors.Join(finishErr, closeErr)
+}
+
+// sealSink flushes and closes the optional audit sink. It is the audit-chain
+// analogue of closeRunRecord: called in the teardown defer so the chain is
+// durable before the containment box is torn down, on both success and failure
+// paths. A nil sink seals to a no-op.
+func (s *Supervisor) sealSink() error {
+	if s.sink == nil {
+		return nil
+	}
+	if err := s.sink.Seal(); err != nil {
+		return fmt.Errorf("supervisor: seal audit sink: %w", err)
+	}
+	return nil
 }
 
 func runID(task Task, handle BoxHandle) string {

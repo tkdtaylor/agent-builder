@@ -236,6 +236,8 @@ func filteredEnv() []string {
 		runtimewiring.EnvExecBoxLauncher: {},
 		runtimewiring.EnvSandboxRuntime:  {},
 		runtimewiring.EnvRunRecord:       {},
+		runtimewiring.EnvAuditRecord:     {},
+		runtimewiring.EnvAuditBin:        {},
 		runtimewiring.EnvRunTimeout:      {},
 		runtimewiring.EnvMaxAttempts:     {},
 		runtimewiring.EnvPublishRemote:   {},
