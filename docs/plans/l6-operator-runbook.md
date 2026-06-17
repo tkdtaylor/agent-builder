@@ -39,11 +39,43 @@ Three concrete steps. Each ends with a verification command and its expected out
 
 ### 1a. Register `runsc` into rootless Podman
 
-**What:** the `runsc` binary is installed but Podman's default runtime is still `runc`; `--runtime runsc` fails until it's registered in your **rootless user** config. Create/edit `~/.config/containers/containers.conf` (currently has no `[engine.runtimes]` block):
+**What:** the `runsc` binary is installed but Podman's default runtime is still `runc`; `--runtime runsc` fails until it's registered in your **rootless user** config `~/.config/containers/containers.conf`.
 
-```toml
+**First, find out whether that file already exists** (on this host, as of 2026-06-16, it does **not**):
+
+```bash
+ls -l ~/.config/containers/containers.conf 2>/dev/null \
+  && echo ">>> EXISTS — use the EDIT path below" \
+  || echo ">>> MISSING — use the CREATE path below"
+```
+
+**CREATE path** (file does not exist — this is the current state on this host). Copy-paste this whole block; it makes the directory and writes the file:
+
+```bash
+mkdir -p ~/.config/containers
+cat >> ~/.config/containers/containers.conf <<'EOF'
+
 [engine.runtimes]
 runsc = ["/usr/local/bin/runsc"]
+EOF
+```
+
+**EDIT path** (file already exists — it drifted since this was written). Open it and add the runsc line; if an `[engine.runtimes]` section already exists, add the `runsc = …` line *under* it rather than creating a second section:
+
+```bash
+${EDITOR:-nano} ~/.config/containers/containers.conf   # opens nano (or your $EDITOR)
+# ensure these two lines are present, together:
+#   [engine.runtimes]
+#   runsc = ["/usr/local/bin/runsc"]
+```
+
+**Confirm the file now has the entry** (either path):
+
+```bash
+grep -A1 '\[engine.runtimes\]' ~/.config/containers/containers.conf
+# expect:
+#   [engine.runtimes]
+#   runsc = ["/usr/local/bin/runsc"]
 ```
 
 **Verify** Podman resolves the runtime and a container boots under gVisor:
@@ -58,20 +90,34 @@ podman --runtime runsc run --rm docker.io/library/alpine uname -r
 
 ### 1b. Populate the execution-box Gate-toolchain directory
 
-**What:** the execution-box mounts a read-only tools dir at `/opt/agent-builder/gate-tools` (default source: `containment/execution-box/gate-tools/`, which **does not exist yet** on this host). `go`/`gofmt` come from the image; you supply the other three, per [gate-toolchain.manifest](../../containment/execution-box/gate-toolchain.manifest):
+**What:** the execution-box mounts a read-only tools dir at `/opt/agent-builder/gate-tools` (default source: `containment/execution-box/gate-tools/`, which **does not exist yet** on this host). `go`/`gofmt` come from the image; you supply the other three, per [gate-toolchain.manifest](../../containment/execution-box/gate-toolchain.manifest).
 
-| Tool | Where to get it |
-|------|-----------------|
-| `golangci-lint` | `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest` (or a release binary) |
-| `gods` (dep-scan, Go) | `curl -fsSL https://raw.githubusercontent.com/tkdtaylor/dep-scan/main/install.sh \| bash` |
-| `code-scanner` | from the `code-scanner` skill / its release binary |
+**Check what's already on PATH** (on this host: `golangci-lint` and `gods` are present, `code-scanner` is not):
 
-Create the dir and drop the three executables in (or point `--gate-tools` / `EXEC_BOX_GATE_TOOLS` at wherever they live):
+```bash
+for t in golangci-lint gods code-scanner; do printf '%-14s ' "$t"; command -v "$t" || echo "NOT on PATH"; done
+# this host today:
+#   golangci-lint  $HOME/go/bin/golangci-lint
+#   gods           $HOME/.local/bin/gods
+#   code-scanner   NOT on PATH   <-- the one you must obtain
+```
+
+**Create the dir and copy in the two you already have** (uses whatever path each resolves to, so it stays correct if they move):
 
 ```bash
 mkdir -p containment/execution-box/gate-tools
-# copy golangci-lint, gods, code-scanner into it (chmod +x)
+cp "$(command -v golangci-lint)" containment/execution-box/gate-tools/
+cp "$(command -v gods)"          containment/execution-box/gate-tools/
 ```
+
+**Obtain `code-scanner`** — it ships with the `code-scanner` skill (its release binary), not via PATH. Once you have the executable, copy it in and make everything executable:
+
+```bash
+cp /path/to/code-scanner containment/execution-box/gate-tools/   # <-- replace with the real path
+chmod +x containment/execution-box/gate-tools/*
+```
+
+(Missing either of the first two? `golangci-lint` → `go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest`; `gods` → `curl -fsSL https://raw.githubusercontent.com/tkdtaylor/dep-scan/main/install.sh | bash`.)
 
 **Verify** the launcher resolves all three:
 
@@ -82,24 +128,34 @@ containment/execution-box/run.sh --print-toolchain-plan
 
 ### 1c. Configure a git remote for PR publication
 
-**What:** there is no remote configured (`git remote -v` is empty — the project is private-for-now). The publication probes (tasks 028, 032, 034) open a **real PR**, so they need a remote. **Operator decision** — pick one:
+**What:** the publication probes (tasks 028, 032, 034) open a **real PR**, so they need a remote. **Check the current state first** (on this host: no remote — the project is private-for-now):
 
-- **Dedicated sandbox repo (recommended)** — keeps real PR noise out of project history:
+```bash
+git remote -v
+# this host today: prints nothing (no remote configured)
+```
+
+If it already prints a remote you trust for throwaway L6 PRs, skip to verify. Otherwise **pick one** (operator decision):
+
+- **Dedicated sandbox repo (recommended)** — keeps real PR noise out of project history. `gh` is already authenticated as `tkdtaylor`, so this is copy-paste:
   ```bash
   gh repo create tkdtaylor/agent-builder-l6-sandbox --private
   git remote add l6 git@github.com:tkdtaylor/agent-builder-l6-sandbox.git
-  # then pass AGENT_BUILDER_PUBLISH_REMOTE=l6 to the publication probes
+  # then pass AGENT_BUILDER_PUBLISH_REMOTE=l6 to the publication probes (tasks 028/032/034)
   ```
 - **A private origin for this repo** — if you want the L6 PRs against the real project:
   ```bash
   gh repo create tkdtaylor/agent-builder --private --source=. --remote=origin
+  # then pass AGENT_BUILDER_PUBLISH_REMOTE=origin
   ```
 
 **Verify:**
 
 ```bash
 git remote -v
-# expect: at least one remote with a fetch+push URL.
+# expect: at least one remote with a fetch (and push) URL, e.g.
+#   l6   git@github.com:tkdtaylor/agent-builder-l6-sandbox.git (fetch)
+#   l6   git@github.com:tkdtaylor/agent-builder-l6-sandbox.git (push)
 ```
 
 ---
