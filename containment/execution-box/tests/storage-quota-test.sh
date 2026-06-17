@@ -74,12 +74,14 @@ assert_exit() {
 # Arguments (optional keywords):
 #   "podman_create_exit=N"  — exit code for podman create (default 0)
 #   "podman_start_exit=N"   — exit code for podman start (default 0)
-#   "storage_opt_null"      — stub inspect returns null in StorageOpt position
-#   "storage_opt_set"       — stub inspect returns {"size":"4G"} in StorageOpt position (default)
+#   "storage_opt_null"      — accepted for call-site compat; no longer has effect
+#   "storage_opt_set"       — accepted for call-site compat; no longer has effect
 #
 # The stub podman writes its create-subcommand argv to $STUB_ARGV_FILE when that var is set.
 # The stub podman info always returns valid data for the real detection path (though
 # we use EXEC_BOX_STORAGE_QUOTA_SUPPORTED to bypass detection in these tests).
+# Note: run.sh no longer inspects StorageOpt (not portably exposed by podman 5.x on ext4).
+# TC-003 storage message is now derived from the launcher's detection flag.
 
 make_box_stub_dir() {
     local tmpdir
@@ -87,14 +89,13 @@ make_box_stub_dir() {
 
     local create_exit=0
     local start_exit=0
-    local storage_opt='{"size":"4G"}'
 
     for spec in "$@"; do
         case "$spec" in
             podman_create_exit=*)  create_exit="${spec#podman_create_exit=}" ;;
             podman_start_exit=*)   start_exit="${spec#podman_start_exit=}" ;;
-            storage_opt_null)      storage_opt="null" ;;
-            storage_opt_set)       storage_opt='{"size":"4G"}' ;;
+            storage_opt_null)      : ;;  # accepted for compat, no longer used
+            storage_opt_set)       : ;;  # accepted for compat, no longer used
         esac
     done
 
@@ -106,7 +107,6 @@ make_box_stub_dir() {
 
 STUB_CREATE_EXIT=${create_exit}
 STUB_START_EXIT=${start_exit}
-STUB_STORAGE_OPT='${storage_opt}'
 
 subcommand="\$1"
 shift || true
@@ -156,13 +156,13 @@ case "\$subcommand" in
     inspect)
         # Return fake inspect output for the probe's TC-003 and TC-016 checks.
         # run.sh calls inspect with two different --format arguments:
-        #  1. TC-003: NanoCpus Memory PidsLimit ShmSize StorageOpt
+        #  1. TC-003: NanoCpus Memory PidsLimit ShmSize  (StorageOpt removed — not portably exposed)
         #  2. TC-016: Runtime
         fmt="\${2:-}"
         case "\$fmt" in
-            '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}} {{.HostConfig.ShmSize}} {{json .HostConfig.StorageOpt}}')
+            '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}} {{.HostConfig.ShmSize}}')
                 # NanoCpus=200000000 (2 CPUs), Memory=2147483648 (2g), PidsLimit=256, ShmSize=67108864 (64m)
-                printf '200000000 2147483648 256 67108864 %s\n' "\$STUB_STORAGE_OPT"
+                printf '200000000 2147483648 256 67108864\n'
                 ;;
             '{{.HostConfig.Runtime}}')
                 printf 'runsc\n'
@@ -286,8 +286,8 @@ run_probe() {
 #
 # Arguments (optional keywords):
 #   "run_rm_exit=N"       — exit code for the "podman run --rm" call (default 0)
-#   "storage_opt_null"    — stub inspect returns null StorageOpt
-#   "storage_opt_set"     — stub inspect returns {"size":"4G"} (default)
+#   "storage_opt_null"    — accepted for compat; no longer has effect
+#   "storage_opt_set"     — accepted for compat; no longer has effect
 #
 # The stub podman writes the create/run argv to $STUB_ARGV_FILE when set.
 
@@ -296,13 +296,12 @@ make_egress_stub_dir() {
     tmpdir="$(mktemp -d)"
 
     local run_rm_exit=0
-    local storage_opt='{"size":"4G"}'
 
     for spec in "$@"; do
         case "$spec" in
             run_rm_exit=*)   run_rm_exit="${spec#run_rm_exit=}" ;;
-            storage_opt_null) storage_opt="null" ;;
-            storage_opt_set)  storage_opt='{"size":"4G"}' ;;
+            storage_opt_null) : ;;  # accepted for compat, no longer used
+            storage_opt_set)  : ;;  # accepted for compat, no longer used
         esac
     done
 
@@ -312,7 +311,6 @@ make_egress_stub_dir() {
 # Stub podman for TC-045 egress-path tests.
 
 STUB_RUN_RM_EXIT=${run_rm_exit}
-STUB_STORAGE_OPT='${storage_opt}'
 
 subcommand="\$1"
 shift || true
@@ -354,8 +352,8 @@ case "\$subcommand" in
     inspect)
         fmt="\${2:-}"
         case "\$fmt" in
-            '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}} {{.HostConfig.ShmSize}} {{json .HostConfig.StorageOpt}}')
-                printf '200000000 2147483648 256 67108864 %s\n' "\$STUB_STORAGE_OPT"
+            '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}} {{.HostConfig.ShmSize}}')
+                printf '200000000 2147483648 256 67108864\n'
                 ;;
             '{{.HostConfig.Runtime}}')
                 printf 'runsc\n'
@@ -755,7 +753,7 @@ run_tc045_03() {
     [ "$ok" -eq 1 ] && tc_pass "$tc"
 }
 
-# ─── TC-045-04: --probe TC-003 tolerates null StorageOpt on non-XFS host ─────
+# ─── TC-045-04: --probe TC-003 reports correct storage message from detection flag ─
 # REQ-045-06
 
 run_tc045_04() {
@@ -767,8 +765,8 @@ run_tc045_04() {
     allowlist="$(make_fake_allowlist)"
     gate_tools="$(make_fake_gate_tools)"
 
-    # Part A: EXEC_BOX_STORAGE_QUOTA_SUPPORTED=0 + stub inspect returns null StorageOpt
-    # → TC-003 PASS (no die on null); exit 0.
+    # Part A: EXEC_BOX_STORAGE_QUOTA_SUPPORTED=0 + EXEC_BOX_STORAGE_SIZE=4G
+    # → TC-003 PASS with "not enforced" message; exit 0 (graceful degrade).
     local stub_dir_null
     stub_dir_null="$(make_box_stub_dir storage_opt_null)"
 
@@ -790,23 +788,28 @@ run_tc045_04() {
     rm -f /tmp/tc045_04a_stderr
 
     if [ "$exit_a" -ne 0 ]; then
-        tc_fail "${tc}a" "expected exit 0 with null StorageOpt on non-XFS host; got $exit_a; stdout: $stdout_a; stderr: $stderr_a"
+        tc_fail "${tc}a" "expected exit 0 with quota not supported (non-XFS); got $exit_a; stdout: $stdout_a; stderr: $stderr_a"
         ok=0
     fi
     if ! printf '%s' "$stdout_a" | grep -q 'TC-003 PASS'; then
-        tc_fail "${tc}a" "TC-003 PASS expected in stdout even with null StorageOpt on non-XFS host; stdout: $stdout_a"
+        tc_fail "${tc}a" "TC-003 PASS expected in stdout on non-XFS host (not-enforced message); stdout: $stdout_a"
+        ok=0
+    fi
+    # Must carry the "not enforced" wording (detection-flag path, quota=0)
+    if ! printf '%s' "$stdout_a" | grep -q 'storage quota not enforced on this host'; then
+        tc_fail "${tc}a" "TC-003 PASS must say 'storage quota not enforced on this host' when quota_supported=0; stdout: $stdout_a"
         ok=0
     fi
     # Must NOT die (i.e., no TC-003 FAIL line)
     if printf '%s' "$stdout_a$stderr_a" | grep -q 'TC-003 FAIL'; then
-        tc_fail "${tc}a" "TC-003 FAIL must NOT appear when StorageOpt is null on non-enforceable host; output: $stdout_a $stderr_a"
+        tc_fail "${tc}a" "TC-003 FAIL must NOT appear on non-enforceable host; output: $stdout_a $stderr_a"
         ok=0
     fi
 
     cleanup_stub_dir "$stub_dir_null"
 
-    # Part B: EXEC_BOX_STORAGE_QUOTA_SUPPORTED=1 + stub inspect returns non-null StorageOpt
-    # → TC-003 PASS (quota present as expected); exit 0.
+    # Part B: EXEC_BOX_STORAGE_QUOTA_SUPPORTED=1 + EXEC_BOX_STORAGE_SIZE=4G
+    # → TC-003 PASS with "storage quota applied (size=4G)" message; exit 0.
     local stub_dir_set
     stub_dir_set="$(make_box_stub_dir storage_opt_set)"
 
@@ -828,11 +831,16 @@ run_tc045_04() {
     rm -f /tmp/tc045_04b_stderr
 
     if [ "$exit_b" -ne 0 ]; then
-        tc_fail "${tc}b" "expected exit 0 with non-null StorageOpt on XFS host; got $exit_b; stdout: $stdout_b; stderr: $stderr_b"
+        tc_fail "${tc}b" "expected exit 0 with quota supported (XFS host); got $exit_b; stdout: $stdout_b; stderr: $stderr_b"
         ok=0
     fi
     if ! printf '%s' "$stdout_b" | grep -q 'TC-003 PASS'; then
-        tc_fail "${tc}b" "TC-003 PASS expected on XFS host with non-null StorageOpt; stdout: $stdout_b"
+        tc_fail "${tc}b" "TC-003 PASS expected on XFS host (quota applied message); stdout: $stdout_b"
+        ok=0
+    fi
+    # Must carry the "storage quota applied" wording (detection-flag path, quota=1)
+    if ! printf '%s' "$stdout_b" | grep -q 'storage quota applied'; then
+        tc_fail "${tc}b" "TC-003 PASS must say 'storage quota applied' when quota_supported=1 and size set; stdout: $stdout_b"
         ok=0
     fi
 

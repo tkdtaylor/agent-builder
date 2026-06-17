@@ -82,7 +82,13 @@ func TestExecutionBoxLauncherProfile_TC001_TC002_TC003_TC006(t *testing.T) {
 	assertContains(t, run, "--shm-size")
 	assertContains(t, run, "--storage-opt")
 	assertContains(t, run, "size=$storage_size")
-	assertContains(t, run, "TC-003 PASS: host inspect shows explicit cpu/memory/pids/shm/storage limits")
+	// TC-003 PASS has two variants depending on storage-quota enforceability (ADR 027):
+	//   applied  → "... storage quota applied (size=...)"
+	//   degraded → "... (storage quota not enforced on this host)"
+	// Both carry the shared prefix; check the prefix plus each unique suffix.
+	assertContains(t, run, "TC-003 PASS: host inspect shows explicit cpu/memory/pids/shm limits")
+	assertContains(t, run, "storage quota applied (size=")
+	assertContains(t, run, "storage quota not enforced on this host")
 
 	// TC-006: missing runtime behavior is explicit and fails closed.
 	assertContains(t, run, "command -v podman")
