@@ -1404,9 +1404,13 @@ EOF
             printf '%s\n%s\n' "$task_root" "$worktree"
         }
 
-        # NOTE: this inline definition mirrors seed_live_fixture in scripts/l6-probe.sh
-        # (kept in sync deliberately). The assertions below verify the same filesystem
-        # contract the shipped helper produces.
+        # Override the inline definition above with the REAL shipped function from
+        # scripts/l6-probe.sh. The function is now awk-extractable (its only column-0
+        # '}' is its own closing brace), so this verifies the shipped seed_live_fixture
+        # rather than a divergent copy. REPO_ROOT is exported so the function can
+        # resolve the l6 remote URL via `git -C "$REPO_ROOT" remote get-url l6`.
+        export REPO_ROOT
+        eval "$(awk '/^seed_live_fixture\(\) \{/,/^\}/' "$PROBE")"
         seed_live_fixture
     ) > "$fixture_output" 2>&1
 
@@ -1453,6 +1457,22 @@ EOF
     if ! (cd "$fixture_worktree" && git rev-parse --verify HEAD > /dev/null 2>&1); then
         tc_fail "$tc" "fixture worktree does not have a commit on the current branch"
         ok=0
+    fi
+
+    # TC-057 (non-Claude clone validation): when the l6 remote IS configured, the
+    # worktree must be a real clone of it — assert the "l6" remote is present (the
+    # publisher's push target) AND HEAD descends from l6/main (so gh pr create --fill
+    # resolves). When l6 is not configured (e.g. CI), the bare-init fallback is used
+    # and these l6-specific assertions are skipped.
+    if git -C "$REPO_ROOT" remote get-url l6 > /dev/null 2>&1; then
+        if ! (cd "$fixture_worktree" && git remote get-url l6 > /dev/null 2>&1); then
+            tc_fail "$tc" "l6 configured but cloned worktree has no 'l6' remote (publisher push target missing)"
+            ok=0
+        fi
+        if ! (cd "$fixture_worktree" && git merge-base --is-ancestor l6/main HEAD > /dev/null 2>&1); then
+            tc_fail "$tc" "cloned worktree HEAD does not descend from l6/main (gh pr create --fill would fail)"
+            ok=0
+        fi
     fi
 
     # Assert both paths are distinct temp directories (not the main repo)

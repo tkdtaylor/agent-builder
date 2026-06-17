@@ -296,49 +296,31 @@ package main
 import "testing"
 
 func TestFixture(t *testing.T) {
-    t.Skip("fixture test — not meant to run")
-}
+	t.Skip("fixture test — not meant to run")
+	}
 EOF
 
         PATH="$real_path" git add -A > /dev/null 2>&1
         PATH="$real_path" git commit -m "initial" > /dev/null 2>&1
         cd "$old_pwd"
     else
-        # Clone the l6 remote (full clone, no shallow depth)
-        # This ensures shared history with l6/main so gh pr create --fill resolves the base.
-        PATH="$real_path" git clone "$remote_url" "$worktree" > /dev/null 2>&1 || {
-            # If clone fails, fall back to bare init (test environment may not have network)
-            local old_pwd
-            old_pwd="$(pwd)"
-            cd "$worktree"
-            PATH="$real_path" git init > /dev/null 2>&1
-
-            cat > "$worktree/go.mod" <<'EOF'
-module example.com/fixture
-
-go 1.23
-EOF
-
-            cat > "$worktree/main.go" <<'EOF'
-package main
-
-func main() {}
-EOF
-
-            cat > "$worktree/main_test.go" <<'EOF'
-package main
-
-import "testing"
-
-func TestFixture(t *testing.T) {
-    t.Skip("fixture test — not meant to run")
-}
-EOF
-
-            PATH="$real_path" git add -A > /dev/null 2>&1
-            PATH="$real_path" git commit -m "initial" > /dev/null 2>&1
-            cd "$old_pwd"
-        }
+        # Clone the l6 remote (full clone, no shallow depth) so the worktree's
+        # branch descends from l6/main and `gh pr create --fill` resolves the base.
+        #
+        # NO silent fallback here: when the remote IS configured, a clone failure
+        # must fail loudly. Silently falling back to a bare `git init` would
+        # re-introduce the exact `ambiguous argument 'l6/main...<branch>'`
+        # publish failure this fixture exists to prevent — and would do so only
+        # after the live probe had already spent Claude quota. Fail fast instead.
+        if ! PATH="$real_path" git clone "$remote_url" "$worktree" > /dev/null 2>&1; then
+            printf 'seed_live_fixture: ERROR: git clone of %s into %s failed; cannot produce an l6-based worktree for live publish\n' "$remote_url" "$worktree" >&2
+            return 1
+        fi
+        # `git clone` names the remote "origin", but the orchestrator's publisher
+        # pushes to "l6" (AGENT_BUILDER_PUBLISH_REMOTE). Rename so the push target
+        # exists in the worktree; otherwise `git push l6 <branch>` fails.
+        PATH="$real_path" git -C "$worktree" remote rename origin l6 > /dev/null 2>&1 || \
+            PATH="$real_path" git -C "$worktree" remote add l6 "$remote_url" > /dev/null 2>&1
     fi
 
     # Output paths and set shell variables
@@ -539,13 +521,18 @@ if [ "$HAS_ANTHROPIC_API_KEY" -eq 0 ] && [ -z "$SKIP_022" ]; then
     SKIP_022="ANTHROPIC_API_KEY unset"
 fi
 
-# Seed fixture for 022/028 probes (reused by both) — but only if PATH isn't restricted
-# (in test mode with L6_PROBE_PATH, mktemp won't be available, so skip fixture seeding)
+# Seed fixture for 022/028 probes (reused by both). Only seed when:
+#   - PATH is not restricted to stubs (L6_PROBE_PATH unset), and
+#   - this is NOT a --dry-run.
+# Seeding now CLONES the l6 remote (real network + a `return 1` on failure), so it
+# must not run during a dry-run or a unit-test trace — those would otherwise hang or
+# abort on the clone. In dry-run/stub mode the probe argv is never executed, so the
+# empty placeholders below are fine.
 FIXTURE_TASK_ROOT=""
 FIXTURE_WORKTREE=""
 AGENT_BUILDER_RUN_RECORD=""
 
-if [ -z "${L6_PROBE_PATH:-}" ]; then
+if [ -z "${L6_PROBE_PATH:-}" ] && [ "${DRY_RUN:-0}" -eq 0 ]; then
     fixture_output="$(seed_live_fixture)"
     FIXTURE_TASK_ROOT="$(printf '%s\n' "$fixture_output" | head -1)"
     FIXTURE_WORKTREE="$(printf '%s\n' "$fixture_output" | tail -1)"

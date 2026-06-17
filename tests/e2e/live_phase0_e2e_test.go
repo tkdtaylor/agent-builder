@@ -140,12 +140,26 @@ Create the file LIVE_OK.txt in the worktree with exactly one line: "live probe o
 	// This ensures the worktree has shared history with <remote>/main so the
 	// publisher can open a PR via gh pr create --fill.
 	remoteURL := getRemoteURL(t, repoRoot, remote)
-	if remoteURL != "" && cloneWorktree(t, remoteURL, worktree) {
-		// Clone succeeded; the worktree already has the Go module and gate-passing content
-		// from the remote (agent-builder repo).
+	if remoteURL != "" {
+		// Remote configured (the live capstone path): the worktree MUST be a clone
+		// of it so the produced branch descends from <remote>/main and the publisher
+		// can open a PR via `gh pr create --fill`. A clone failure here is fatal —
+		// silently falling back to `git init` would re-introduce the
+		// "ambiguous argument '<remote>/main...<branch>'" publish failure, and only
+		// after the run had already spent Claude quota. Fail fast instead.
+		if !cloneWorktree(t, remoteURL, worktree) {
+			t.Fatalf("TC-057 clone of remote %q (%s) into the worktree failed; the live capstone requires an l6-based worktree (no silent git-init fallback)", remote, remoteURL)
+		}
+		// `git clone` names the remote "origin", but the publisher pushes to
+		// <remote> (e.g. "l6"). Rename so the push target exists in the worktree.
+		if err := exec.Command("git", "-C", worktree, "remote", "rename", "origin", remote).Run(); err != nil {
+			if err := exec.Command("git", "-C", worktree, "remote", "add", remote, remoteURL).Run(); err != nil {
+				t.Fatalf("TC-057 could not set remote %q on cloned worktree: %v", remote, err)
+			}
+		}
 	} else {
-		// Clone failed or remote not configured; fall back to bare git init with minimal module.
-		// This allows the fixture to degrade gracefully in test environments without the remote.
+		// Remote not configured (e.g. CI without l6): fall back to a minimal
+		// gate-passing module. This path never reaches live publish.
 		if err := os.MkdirAll(worktree, 0o755); err != nil {
 			t.Fatalf("mkdir worktree: %v", err)
 		}
