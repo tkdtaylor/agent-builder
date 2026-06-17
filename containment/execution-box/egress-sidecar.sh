@@ -3,7 +3,7 @@ set -eu
 
 allowlist="${EXEC_BOX_RESOLVED_EGRESS_ALLOWLIST:-/etc/agent-builder/egress.resolved}"
 state_dir="${EXEC_BOX_EGRESS_STATE_DIR:-/egress-state}"
-rules="/scratch/agent-builder-egress.nft"
+rules="${EXEC_BOX_EGRESS_RULES:-/scratch/agent-builder-egress.nft}"
 
 fail() {
     printf 'TC-001 FAIL: %s\n' "$*" >&2
@@ -22,6 +22,8 @@ need nft
 mkdir -p "$state_dir"
 
 {
+    # Declare empty table first so flush targets an existing table (idempotent on fresh netns)
+    printf 'table inet agent_builder_egress { }\n'
     printf 'flush table inet agent_builder_egress\n'
     printf 'table inet agent_builder_egress {\n'
     printf '  set allowed_tcp4 {\n'
@@ -61,6 +63,9 @@ nft -f "$rules" || fail 'nftables default-deny egress rules failed to apply'
 
 printf 'TC-001 PASS: egress sidecar installed nftables default-deny output policy\n'
 printf 'ready\n' > "$state_dir/ready"
+
+# Exit immediately if EXEC_BOX_EGRESS_SIDECAR_TEST_EXIT is set (for testing)
+[ -n "${EXEC_BOX_EGRESS_SIDECAR_TEST_EXIT:-}" ] && exit 0
 
 while :; do
     sleep 3600

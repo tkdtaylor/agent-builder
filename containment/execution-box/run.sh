@@ -579,6 +579,11 @@ if [ "$probe" = true ]; then
 fi
 
 egress_state="$(mktemp -d)"
+# Under --userns=keep-id, sidecar root maps to a host subuid (e.g., 100000) that
+# cannot write a host-owned 0700 dir. Make world-writable so the mapped sidecar can
+# write ready/fail markers; host and workload read via other-read perms. The egress-state
+# dir is a per-run secret-free mktemp, rm -rf'd on exit — see ADR 029.
+chmod 0777 "$egress_state"
 resolved_allowlist="$egress_state/resolved-egress.allowlist"
 add_hosts_file="$egress_state/add-hosts"
 resolve_egress_plan "$parsed_allowlist" "$resolved_allowlist" "$add_hosts_file"
