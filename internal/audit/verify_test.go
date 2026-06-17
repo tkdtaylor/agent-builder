@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -153,8 +154,8 @@ func TestVerifyChainMissingBinaryIsError(t *testing.T) {
 }
 
 // TC-040-04: non-existent logfile path with real binary produces a hard named error.
-// (The block exits non-zero when the logfile doesn't exist; we treat non-parseable
-// non-JSON output from the block as an infra error.)
+// REQ-040-03: an unreadable/missing logfile must return ErrVerifierUnavailable (cannot-verify),
+// never a clean Valid==false (which would indicate a genuine block-reported tamper verdict).
 func TestVerifyChainUnreadableLogfileIsError(t *testing.T) {
 	binPath := findAuditTrailBinary()
 	if binPath == "" {
@@ -162,29 +163,78 @@ func TestVerifyChainUnreadableLogfileIsError(t *testing.T) {
 	}
 
 	result, err := audit.VerifyChain(binPath, "/nonexistent/path/audit-040-missing.log")
-	// When the logfile doesn't exist the block exits non-zero and prints an error
-	// (not valid JSON). We expect a hard error, not result.Valid==true.
+	// When the logfile doesn't exist the block exits non-zero and writes an error
+	// to stderr (not parseable JSON). We must surface a hard named error, not nil.
 	if result.Valid {
 		t.Error("result.Valid = true for non-existent logfile; must be false or error")
 	}
-	// The error distinguishes "cannot verify" (infra) from "verified and tampered".
-	if err != nil {
-		if !errors.Is(err, audit.ErrVerifierUnavailable) && !strings.Contains(err.Error(), "no such file") {
-			// Accept ErrVerifierUnavailable OR an error mentioning the missing file.
-			// Either is an acceptable "cannot verify" signal.
-			t.Logf("TC-040-04 logfile error (acceptable): %v", err)
-		}
+	// REQ-040-03: cannot-verify must surface as a non-nil error, not a clean Valid==false.
+	if err == nil {
+		t.Fatal("unreadable logfile must return a non-nil error, not a clean Valid==false")
+	}
+	// The error must be ErrVerifierUnavailable so callers can distinguish infra errors
+	// from genuine tamper verdicts.
+	if !errors.Is(err, audit.ErrVerifierUnavailable) {
+		t.Errorf("expected ErrVerifierUnavailable, got %v", err)
 	}
 	t.Logf("TC-040-04 PASS (unreadable logfile): err=%v Valid=%v", err, result.Valid)
 }
 
-// TC-040-05: VerifyChain dependency check is exercised via go list in the Makefile
-// (fitness F-005, task 042). This test asserts the ExecRunner seam compiles and
-// that no audit-trail Go package import is needed at the call site.
+// TC-040-05: VerifyChain uses os/exec only — the internal/audit package must not
+// import forbidden packages (executor, LLM/web token paths, or the audit-trail Go
+// module itself). This makes the leaf invariant self-enforced now rather than
+// deferring entirely to task 042's F-005 fitness check.
 func TestVerifyChainUsesExecRunnerSeamOnly(t *testing.T) {
-	// If this test compiles without importing the audit-trail module, the seam is correct.
-	// The actual import-graph check is `go list -deps ./internal/audit/...` → stdlib only.
-	t.Log("TC-040-05: VerifyChain seam compiles with os/exec-only dependencies")
+	// Skip gracefully if go is not on PATH (won't happen in this repo, but be safe).
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go not on PATH; skipping import-graph leaf check")
+	}
+
+	cmd := exec.Command("go", "list", "-deps", "./internal/audit/...")
+	cmd.Dir = findModuleRoot(t)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("go list -deps ./internal/audit/... failed: %v", err)
+	}
+
+	// Forbidden package segments: executor code, LLM/web token packages (F-003
+	// convention), or a direct Go import of the audit-trail block.
+	forbidden := []string{
+		"/executor",
+		"audit-trail",
+		"/llm",
+		"/web",
+		"/token",
+	}
+	deps := string(out)
+	for _, seg := range forbidden {
+		if strings.Contains(deps, seg) {
+			t.Errorf("TC-040-05 FAIL: internal/audit imports forbidden package segment %q\n"+
+				"  Full deps:\n%s", seg, deps)
+		}
+	}
+	t.Log("TC-040-05 PASS: internal/audit leaf deps contain no forbidden package segments")
+}
+
+// findModuleRoot walks up from this test file's package directory to find the
+// go.mod root so exec.Command("go", "list", ...) runs in the right module.
+func findModuleRoot(t *testing.T) string {
+	t.Helper()
+	// os.Getwd() inside a test returns the package directory.
+	dir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			t.Fatal("could not find go.mod walking up from package dir")
+		}
+		dir = parent
+	}
 }
 
 // TC-040-06 (L5): real-block round trip.
