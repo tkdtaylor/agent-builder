@@ -638,18 +638,27 @@ while read -r add_host; do
 done < "$add_hosts_file"
 
 if [ "$egress_probe" = true ]; then
+    _egress_probe_rc=0
     podman run --rm \
         "${workload_args[@]}" \
         --env "EXEC_BOX_EGRESS_PROBE_ALLOW_HOST=$egress_allow_host" \
         --env "EXEC_BOX_EGRESS_PROBE_DENY_HOST=$egress_deny_host" \
         --env "EXEC_BOX_EGRESS_PROBE_DENY_IP=$egress_deny_ip" \
-        "$image" /usr/local/bin/execution-box-egress-probe
-    exit $?
+        "$image" /usr/local/bin/execution-box-egress-probe \
+        || _egress_probe_rc=$?
+    if [ "$_egress_probe_rc" -eq 125 ]; then
+        die "podman run (egress-probe) failed: container did not start (exit 125)"
+    fi
+    exit "$_egress_probe_rc"
 fi
 
 if [ "$#" -eq 0 ]; then
     set -- /bin/sh
 fi
 
-podman run --rm -it "${workload_args[@]}" "$image" "$@"
-exit $?
+_workload_rc=0
+podman run --rm -it "${workload_args[@]}" "$image" "$@" || _workload_rc=$?
+if [ "$_workload_rc" -eq 125 ]; then
+    die "podman run failed: container did not start (exit 125)"
+fi
+exit "$_workload_rc"

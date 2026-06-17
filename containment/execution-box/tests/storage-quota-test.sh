@@ -278,6 +278,226 @@ run_probe() {
     rm -f "$stdout_file" "$stderr_file"
 }
 
+# make_egress_stub_dir creates stub binaries needed by the non-probe (workload /
+# egress-probe) paths in run.sh.  The key difference from make_box_stub_dir:
+#
+#   "podman run -d …" (sidecar)  → always succeeds; writes the ready file
+#   "podman run --rm …" (workload/egress-probe) → exits with STUB_RUN_RM_EXIT
+#
+# Arguments (optional keywords):
+#   "run_rm_exit=N"       — exit code for the "podman run --rm" call (default 0)
+#   "storage_opt_null"    — stub inspect returns null StorageOpt
+#   "storage_opt_set"     — stub inspect returns {"size":"4G"} (default)
+#
+# The stub podman writes the create/run argv to $STUB_ARGV_FILE when set.
+
+make_egress_stub_dir() {
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+
+    local run_rm_exit=0
+    local storage_opt='{"size":"4G"}'
+
+    for spec in "$@"; do
+        case "$spec" in
+            run_rm_exit=*)   run_rm_exit="${spec#run_rm_exit=}" ;;
+            storage_opt_null) storage_opt="null" ;;
+            storage_opt_set)  storage_opt='{"size":"4G"}' ;;
+        esac
+    done
+
+    # Write stub podman binary.
+    cat > "$tmpdir/podman" <<PODMAN_EGRESS_STUB
+#!/bin/bash
+# Stub podman for TC-045 egress-path tests.
+
+STUB_RUN_RM_EXIT=${run_rm_exit}
+STUB_STORAGE_OPT='${storage_opt}'
+
+subcommand="\$1"
+shift || true
+
+case "\$subcommand" in
+    info)
+        if [ "\${1:-}" = "--format" ]; then
+            fmt="\$2"
+            case "\$fmt" in
+                '{{json .Host.OCIRuntimes}}')
+                    printf '{"runsc":"/usr/bin/runsc","runc":"/usr/bin/runc"}\n'
+                    ;;
+                '{{.Store.GraphDriverName}}')
+                    printf 'overlay\n'
+                    ;;
+                '{{.Store.GraphRoot}}')
+                    printf '/tmp/containers/storage\n'
+                    ;;
+                *)
+                    printf 'true\n'
+                    ;;
+            esac
+        else
+            printf 'true\n'
+        fi
+        exit 0
+        ;;
+    build)
+        exit 0
+        ;;
+    create)
+        # Record argv to STUB_ARGV_FILE if set.
+        if [ -n "\${STUB_ARGV_FILE:-}" ]; then
+            printf '%s\n' "\$*" > "\$STUB_ARGV_FILE"
+        fi
+        printf 'stub-container-id-045\n'
+        exit 0
+        ;;
+    inspect)
+        fmt="\${2:-}"
+        case "\$fmt" in
+            '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}} {{.HostConfig.ShmSize}} {{json .HostConfig.StorageOpt}}')
+                printf '200000000 2147483648 256 67108864 %s\n' "\$STUB_STORAGE_OPT"
+                ;;
+            '{{.HostConfig.Runtime}}')
+                printf 'runsc\n'
+                ;;
+            *)
+                printf 'runsc\n'
+                ;;
+        esac
+        exit 0
+        ;;
+    start)
+        exit 0
+        ;;
+    rm)
+        exit 0
+        ;;
+    pod)
+        # handle pod create and pod rm
+        exit 0
+        ;;
+    logs)
+        exit 0
+        ;;
+    run)
+        # Record argv to STUB_ARGV_FILE if set.
+        if [ -n "\${STUB_ARGV_FILE:-}" ]; then
+            printf '%s\n' "\$*" > "\$STUB_ARGV_FILE"
+        fi
+
+        # Detect: is this the background sidecar run (-d flag) or the foreground run?
+        # The sidecar is always invoked with "-d" as the first arg.
+        if [ "\${1:-}" = "-d" ]; then
+            # Sidecar run: must succeed and write the "ready" file so the loop exits.
+            # Extract the egress-state path from the --mount argument:
+            #   --mount type=bind,source=<path>,target=/egress-state,...
+            for arg in "\$@"; do
+                case "\$arg" in
+                    type=bind,source=*,target=/egress-state,*)
+                        _egress_state="\${arg#type=bind,source=}"
+                        _egress_state="\${_egress_state%%,target=*}"
+                        touch "\$_egress_state/ready"
+                        break
+                        ;;
+                esac
+            done
+            exit 0
+        fi
+
+        # Foreground/probe run (--rm path): use configured exit code.
+        if [ \$STUB_RUN_RM_EXIT -ne 0 ]; then
+            printf 'Error: stub podman run --rm failed (simulated failure, exit %d)\n' \$STUB_RUN_RM_EXIT >&2
+            exit \$STUB_RUN_RM_EXIT
+        fi
+        exit 0
+        ;;
+    *)
+        exit 0
+        ;;
+esac
+PODMAN_EGRESS_STUB
+    chmod +x "$tmpdir/podman"
+
+    # Stub runsc
+    printf '#!/bin/sh\nexit 0\n' > "$tmpdir/runsc"
+    chmod +x "$tmpdir/runsc"
+
+    printf '%s' "$tmpdir"
+}
+
+# run_egress_path invokes run.sh with the egress pod path (no --probe flag) using
+# an empty allowlist so no DNS resolution occurs.
+# Usage: run_egress_path STUB_DIR WORKTREE GATE_TOOLS EXTRA_ARGS...
+# Sets: _rp_exit, _rp_stdout, _rp_stderr (caller's locals must be declared first)
+run_egress_path() {
+    local stub_dir="$1" worktree="$2" gate_tools="$3"
+    shift 3
+
+    local stdout_file stderr_file empty_allowlist
+    stdout_file="$(mktemp)"
+    stderr_file="$(mktemp)"
+    empty_allowlist="$(mktemp)"
+    # Empty allowlist — valid (no entries) so no DNS resolution happens.
+    printf '' > "$empty_allowlist"
+
+    _rp_exit=0
+    env PATH="$stub_dir:$PATH" \
+        EXEC_BOX_EGRESS_ALLOWLIST="$empty_allowlist" \
+        "$@" \
+        bash "$RUN_SH" \
+            --worktree "$worktree" \
+            --gate-tools "$gate_tools" \
+            --image "stub-image:test" \
+            --runtime "runsc" \
+            -- /bin/true \
+        > "$stdout_file" 2> "$stderr_file" \
+        || _rp_exit=$?
+
+    _rp_stdout="$(cat "$stdout_file")"
+    _rp_stderr="$(cat "$stderr_file")"
+
+    rm -f "$stdout_file" "$stderr_file" "$empty_allowlist"
+}
+
+# run_egress_probe_path invokes run.sh with --egress-probe (not --probe).
+# Usage: run_egress_probe_path STUB_DIR WORKTREE GATE_TOOLS EXTRA_ARGS...
+# Callers may set STUB_ARGV_FILE before calling to capture the podman run argv.
+run_egress_probe_path() {
+    local stub_dir="$1" worktree="$2" gate_tools="$3"
+    shift 3
+
+    local stdout_file stderr_file empty_allowlist
+    stdout_file="$(mktemp)"
+    stderr_file="$(mktemp)"
+    empty_allowlist="$(mktemp)"
+    printf '' > "$empty_allowlist"
+
+    # Build optional STUB_ARGV_FILE env assignment so the stub can record run argv.
+    local stub_argv_env=()
+    if [ -n "${STUB_ARGV_FILE:-}" ]; then
+        stub_argv_env=("STUB_ARGV_FILE=${STUB_ARGV_FILE}")
+    fi
+
+    _rp_exit=0
+    env PATH="$stub_dir:$PATH" \
+        EXEC_BOX_EGRESS_ALLOWLIST="$empty_allowlist" \
+        "${stub_argv_env[@]}" \
+        "$@" \
+        bash "$RUN_SH" \
+            --egress-probe \
+            --worktree "$worktree" \
+            --gate-tools "$gate_tools" \
+            --image "stub-image:test" \
+            --runtime "runsc" \
+        > "$stdout_file" 2> "$stderr_file" \
+        || _rp_exit=$?
+
+    _rp_stdout="$(cat "$stdout_file")"
+    _rp_stderr="$(cat "$stderr_file")"
+
+    rm -f "$stdout_file" "$stderr_file" "$empty_allowlist"
+}
+
 # ─── TC-045-01: quota applied when host is enforceable ───────────────────────
 # REQ-045-01, REQ-045-04
 
@@ -622,6 +842,137 @@ run_tc045_04() {
     [ "$ok" -eq 1 ] && tc_pass "$tc"
 }
 
+# ─── TC-045-03b/c/d: podman run launch-failure vs workload exit propagation ───
+# REQ-045-05
+#
+# TC-045-03b: podman run --rm exits 125 (workload path) → run.sh exits non-zero,
+#             named error "container did not start" emitted.
+# TC-045-03c: podman run --rm exits 1  (workload path) → run.sh exits 1,
+#             NO "container did not start" named error (not a launch failure).
+# TC-045-03d: podman run --rm exits 125 (egress-probe path) → run.sh exits non-zero,
+#             named error "container did not start" emitted.
+
+run_tc045_03b() {
+    local tc="TC-045-03b"
+    local ok=1
+
+    local stub_dir worktree gate_tools
+    stub_dir="$(make_egress_stub_dir run_rm_exit=125 storage_opt_set)"
+    worktree="$(make_fake_worktree)"
+    gate_tools="$(make_fake_gate_tools)"
+
+    local _rp_exit _rp_stdout _rp_stderr
+    run_egress_path "$stub_dir" "$worktree" "$gate_tools" \
+        EXEC_BOX_STORAGE_QUOTA_SUPPORTED=1 EXEC_BOX_STORAGE_SIZE=4G
+
+    if [ "$_rp_exit" -eq 0 ]; then
+        tc_fail "$tc" "expected non-zero exit when podman run exits 125 (workload path); got exit 0"
+        ok=0
+    fi
+    if ! printf '%s' "$_rp_stderr" | grep -qiE 'container did not start|podman run failed'; then
+        tc_fail "$tc" "expected named error about failed podman run; stderr: $_rp_stderr"
+        ok=0
+    fi
+
+    cleanup_stub_dir "$stub_dir"
+    rm -rf "$worktree" "$gate_tools"
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
+run_tc045_03c() {
+    local tc="TC-045-03c"
+    local ok=1
+
+    local stub_dir worktree gate_tools
+    stub_dir="$(make_egress_stub_dir run_rm_exit=1 storage_opt_set)"
+    worktree="$(make_fake_worktree)"
+    gate_tools="$(make_fake_gate_tools)"
+
+    local _rp_exit _rp_stdout _rp_stderr
+    run_egress_path "$stub_dir" "$worktree" "$gate_tools" \
+        EXEC_BOX_STORAGE_QUOTA_SUPPORTED=1 EXEC_BOX_STORAGE_SIZE=4G
+
+    # run.sh must propagate exit 1 unchanged
+    if [ "$_rp_exit" -ne 1 ]; then
+        tc_fail "$tc" "expected exit 1 propagated from workload; got $_rp_exit"
+        ok=0
+    fi
+    # Must NOT emit the named launch-failure error
+    if printf '%s' "$_rp_stderr" | grep -qiE 'container did not start'; then
+        tc_fail "$tc" "must NOT emit 'container did not start' for normal workload exit 1; stderr: $_rp_stderr"
+        ok=0
+    fi
+
+    cleanup_stub_dir "$stub_dir"
+    rm -rf "$worktree" "$gate_tools"
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
+run_tc045_03d() {
+    local tc="TC-045-03d"
+    local ok=1
+
+    local stub_dir worktree gate_tools
+    stub_dir="$(make_egress_stub_dir run_rm_exit=125 storage_opt_set)"
+    worktree="$(make_fake_worktree)"
+    gate_tools="$(make_fake_gate_tools)"
+
+    local _rp_exit _rp_stdout _rp_stderr
+    run_egress_probe_path "$stub_dir" "$worktree" "$gate_tools" \
+        EXEC_BOX_STORAGE_QUOTA_SUPPORTED=1 EXEC_BOX_STORAGE_SIZE=4G
+
+    if [ "$_rp_exit" -eq 0 ]; then
+        tc_fail "$tc" "expected non-zero exit when podman run exits 125 (egress-probe path); got exit 0"
+        ok=0
+    fi
+    if ! printf '%s' "$_rp_stderr" | grep -qiE 'container did not start|podman run.*egress.probe.*failed'; then
+        tc_fail "$tc" "expected named error about failed egress-probe podman run; stderr: $_rp_stderr"
+        ok=0
+    fi
+
+    cleanup_stub_dir "$stub_dir"
+    rm -rf "$worktree" "$gate_tools"
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
+# ─── TC-045-02c: egress-probe path omits --storage-opt on non-XFS host ────────
+# REQ-045-02, REQ-045-04
+# When EXEC_BOX_STORAGE_QUOTA_SUPPORTED=0, the egress-probe podman run must NOT
+# carry --storage-opt (the quota flag is only ever part of common_args/create, not
+# the egress-probe argv, so this confirms the quota logic does not bleed through).
+
+run_tc045_02c() {
+    local tc="TC-045-02c"
+    local ok=1
+
+    local stub_dir worktree gate_tools argv_file
+    stub_dir="$(make_egress_stub_dir run_rm_exit=0 storage_opt_null)"
+    worktree="$(make_fake_worktree)"
+    gate_tools="$(make_fake_gate_tools)"
+    argv_file="$(mktemp)"
+
+    local _rp_exit _rp_stdout _rp_stderr
+    STUB_ARGV_FILE="$argv_file" \
+    run_egress_probe_path "$stub_dir" "$worktree" "$gate_tools" \
+        EXEC_BOX_STORAGE_QUOTA_SUPPORTED=0 EXEC_BOX_STORAGE_SIZE=4G
+
+    local captured_argv=""
+    [ -f "$argv_file" ] && captured_argv="$(cat "$argv_file")" || true
+
+    if [ "$_rp_exit" -ne 0 ]; then
+        tc_fail "$tc" "expected exit 0 for egress-probe with non-XFS host; got $_rp_exit; stderr: $_rp_stderr"
+        ok=0
+    fi
+    if printf '%s' "$captured_argv" | grep -qF -- '--storage-opt'; then
+        tc_fail "$tc" "--storage-opt must NOT appear in egress-probe podman run argv on non-XFS host; argv: $captured_argv"
+        ok=0
+    fi
+
+    cleanup_stub_dir "$stub_dir"
+    rm -rf "$worktree" "$gate_tools" "$argv_file"
+    [ "$ok" -eq 1 ] && tc_pass "$tc"
+}
+
 # ─── main ─────────────────────────────────────────────────────────────────────
 
 printf '\n=== storage-quota test harness ===\n\n'
@@ -635,6 +986,10 @@ run_tc045_01
 run_tc045_02
 run_tc045_03
 run_tc045_04
+run_tc045_03b
+run_tc045_03c
+run_tc045_03d
+run_tc045_02c
 
 printf '\n=== Results: %d passed, %d failed ===\n' "$PASS_COUNT" "$FAIL_COUNT"
 
