@@ -1,7 +1,17 @@
 # ADR 025: audit-trail v0 — hash-chained reader over the RunRecord stream
 
 **Date:** 2026-06-16
-**Status:** Accepted
+**Status:** Superseded by [ADR 026](026-audit-trail-consume-shipped-block.md)
+
+> **Superseded.** This ADR accepted Option B — build a hash-chained `internal/audit`
+> `ChainWriter` + `Verify` in-repo. A subsequent survey found the canonical
+> `audit-trail` block (`github.com/tkdtaylor/audit-trail`) already ships that exact
+> capability — frozen v1 emit/verify, RFC 8785 canonicalization, plus signed
+> checkpoints, Rekor anchoring, and rotation that this ADR deferred. ADR 026 reverses
+> the build-in-repo decision: agent-builder **consumes** the shipped block via its
+> CLI/IPC seam instead of reimplementing it. The problem framing below stands; the
+> `AuditEvent` taxonomy + `Sink` seam (task 038) survive; the `ChainWriter`/`Verify`
+> implementation decision is replaced. Read ADR 026 for the current direction.
 
 ## Context
 
