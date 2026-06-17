@@ -246,6 +246,14 @@ func filteredEnv() []string {
 		runtimewiring.EnvGitToken:        {},
 		runtimewiring.EnvGitHubToken:     {},
 		"ANTHROPIC_API_KEY":              {},
+		// TC-057-03: Block live test gating flags so the gate (go test ./...) can
+		// safely set them without causing recursion when the binary runs go test internally.
+		// The outer test gates whether to run (e.g., AGENT_BUILDER_LIVE_E2E=1), but the
+		// binary never needs or should receive these flags.
+		"AGENT_BUILDER_LIVE_E2E":       {},
+		"AGENT_BUILDER_LIVE_PUBLISH":   {},
+		"AGENT_BUILDER_LIVE_PODMAN":    {},
+		"AGENT_BUILDER_LIVE_SRT":       {},
 	}
 	filtered := []string{}
 	for _, entry := range os.Environ() {

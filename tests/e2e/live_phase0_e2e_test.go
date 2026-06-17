@@ -106,6 +106,9 @@ type liveCapstoneFixture struct {
 
 // newLiveCapstoneFixture creates a real git worktree and a task-root with a
 // ready-status task that instructs Claude to create LIVE_OK.txt with one line.
+// The worktree is a full clone of the configured AGENT_BUILDER_LIVE_E2E_REMOTE
+// (default: l6) so that when the executor creates a task branch, it descends
+// from <remote>/main and gh pr create --fill can resolve the merge base.
 func newLiveCapstoneFixture(t *testing.T, repoRoot string) liveCapstoneFixture {
 	t.Helper()
 
@@ -127,18 +130,33 @@ func newLiveCapstoneFixture(t *testing.T, repoRoot string) liveCapstoneFixture {
 Create the file LIVE_OK.txt in the worktree with exactly one line: "live probe ok".
 `)
 
-	// Seed the worktree as a real git repo with a gate-passing Go module.
-	if err := os.MkdirAll(worktree, 0o755); err != nil {
-		t.Fatalf("mkdir worktree: %v", err)
-	}
-	if err := exec.Command("git", "init", worktree).Run(); err != nil {
-		t.Fatalf("git init worktree: %v", err)
+	// Determine the publish remote from env or default to l6.
+	remote := os.Getenv("AGENT_BUILDER_LIVE_E2E_REMOTE")
+	if remote == "" {
+		remote = "l6"
 	}
 
-	// Write the minimal Go module that passes go test.
-	writeFile(t, filepath.Join(worktree, "go.mod"), "module example.com/live\n\ngo 1.26.3\n")
-	writeFile(t, filepath.Join(worktree, "live.go"), "package live\n\nfunc Probe() int { return 1 }\n")
-	writeFile(t, filepath.Join(worktree, "live_test.go"), `package live
+	// Clone the worktree from the configured remote (full clone, no shallow depth).
+	// This ensures the worktree has shared history with <remote>/main so the
+	// publisher can open a PR via gh pr create --fill.
+	remoteURL := getRemoteURL(t, repoRoot, remote)
+	if remoteURL != "" && cloneWorktree(t, remoteURL, worktree) {
+		// Clone succeeded; the worktree already has the Go module and gate-passing content
+		// from the remote (agent-builder repo).
+	} else {
+		// Clone failed or remote not configured; fall back to bare git init with minimal module.
+		// This allows the fixture to degrade gracefully in test environments without the remote.
+		if err := os.MkdirAll(worktree, 0o755); err != nil {
+			t.Fatalf("mkdir worktree: %v", err)
+		}
+		if err := exec.Command("git", "init", worktree).Run(); err != nil {
+			t.Fatalf("git init worktree: %v", err)
+		}
+
+		// Write the minimal Go module that passes go test.
+		writeFile(t, filepath.Join(worktree, "go.mod"), "module example.com/live\n\ngo 1.26.3\n")
+		writeFile(t, filepath.Join(worktree, "live.go"), "package live\n\nfunc Probe() int { return 1 }\n")
+		writeFile(t, filepath.Join(worktree, "live_test.go"), `package live
 
 import "testing"
 
@@ -149,22 +167,17 @@ func TestProbe(t *testing.T) {
 }
 `)
 
-	// Commit the initial state so the publisher has a clean tree.
-	cmd := exec.Command("git", "add", "-A")
-	cmd.Dir = worktree
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("git add: %v", err)
-	}
-	cmd = exec.Command("git", "commit", "-m", "initial")
-	cmd.Dir = worktree
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("git commit: %v", err)
-	}
-
-	// Determine the publish remote from env or default to l6.
-	remote := os.Getenv("AGENT_BUILDER_LIVE_E2E_REMOTE")
-	if remote == "" {
-		remote = "l6"
+		// Commit the initial state so the publisher has a clean tree.
+		cmd := exec.Command("git", "add", "-A")
+		cmd.Dir = worktree
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git add: %v", err)
+		}
+		cmd = exec.Command("git", "commit", "-m", "initial")
+		cmd.Dir = worktree
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git commit: %v", err)
+		}
 	}
 
 	fixture := liveCapstoneFixture{
@@ -175,6 +188,30 @@ func TestProbe(t *testing.T) {
 	}
 
 	return fixture
+}
+
+// getRemoteURL resolves the git remote URL for the given remote name in repoRoot.
+// Returns the URL if successful, or empty string if the remote is not found or
+// git command fails. This allows the fixture to degrade gracefully.
+func getRemoteURL(t *testing.T, repoRoot string, remoteName string) string {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repoRoot, "remote", "get-url", remoteName)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		// Remote not found or git command failed; return empty string.
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+// cloneWorktree clones the given remoteURL into worktreeDir (full clone, no shallow depth).
+// Returns true if the clone succeeded, false otherwise. The caller should fall back to
+// bare git init if this returns false.
+func cloneWorktree(t *testing.T, remoteURL string, worktreeDir string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "clone", remoteURL, worktreeDir)
+	err := cmd.Run()
+	return err == nil
 }
 
 // env returns the environment map for running agent-builder with the

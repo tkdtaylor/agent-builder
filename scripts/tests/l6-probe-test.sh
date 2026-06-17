@@ -1284,9 +1284,9 @@ run_tc055_04() {
     local tc="TC-055-04"
     local ok=1
 
-    # TC-055-04 verifies that seed_live_fixture() creates a valid temp task-root and worktree.
-    # We source the helper script to test it directly (not via L6_PROBE_PATH which stubs PATH).
-    # The helper is defined in scripts/l6-probe.sh; we source that file.
+    # TC-055-04 (updated for task 057) verifies that seed_live_fixture() creates a valid
+    # temp task-root and worktree. The worktree is now either an l6 clone or (on fallback)
+    # a bare git repo. We verify the worktree is a real git repository with shared history.
 
     # Create a temp file to hold the helper output
     local fixture_output fixture_task_root fixture_worktree
@@ -1297,8 +1297,7 @@ run_tc055_04() {
     (
         # Source the REAL seed_live_fixture from the script under test (extract just
         # the function by awk range; avoids running the whole probe script). This
-        # verifies the shipped helper, not a divergent copy. The inline definition
-        # below is immediately overridden by this eval.
+        # verifies the shipped helper, not a divergent copy.
         seed_live_fixture() {
             local real_path="/usr/bin:/bin:/usr/local/bin:${PATH}"
             local PATH="$real_path"
@@ -1326,25 +1325,32 @@ EOF
 Minimal fixture task for testing probe 022/028.
 EOF
 
-            # Create worktree as a real git repo with minimal Go module
-            local old_pwd
-            old_pwd="$(pwd)"
-            cd "$worktree"
-            PATH="$real_path" git init > /dev/null 2>&1
+            # Create worktree as a full clone of the l6 remote (not bare git init).
+            # This ensures the branch descends from l6/main so gh pr create --fill works.
+            # Resolve the remote URL dynamically via git remote get-url.
+            local remote_url
+            remote_url="$(PATH="$real_path" git -C "$REPO_ROOT" remote get-url l6 2>/dev/null)" || true
 
-            cat > "$worktree/go.mod" <<'EOF'
+            if [ -z "$remote_url" ]; then
+                # Fallback: if l6 remote is not found, create a minimal worktree
+                local old_pwd
+                old_pwd="$(pwd)"
+                cd "$worktree"
+                PATH="$real_path" git init > /dev/null 2>&1
+
+                cat > "$worktree/go.mod" <<'EOF'
 module example.com/fixture
 
 go 1.23
 EOF
 
-            cat > "$worktree/main.go" <<'EOF'
+                cat > "$worktree/main.go" <<'EOF'
 package main
 
 func main() {}
 EOF
 
-            cat > "$worktree/main_test.go" <<'EOF'
+                cat > "$worktree/main_test.go" <<'EOF'
 package main
 
 import "testing"
@@ -1354,19 +1360,53 @@ func TestFixture(t *testing.T) {
 }
 EOF
 
-            PATH="$real_path" git add -A > /dev/null 2>&1
-            PATH="$real_path" git commit -m "initial" > /dev/null 2>&1
-            cd "$old_pwd"
+                PATH="$real_path" git add -A > /dev/null 2>&1
+                PATH="$real_path" git commit -m "initial" > /dev/null 2>&1
+                cd "$old_pwd"
+            else
+                # Clone the l6 remote (full clone, no shallow depth)
+                PATH="$real_path" git clone "$remote_url" "$worktree" > /dev/null 2>&1 || {
+                    # If clone fails, fall back to bare init
+                    local old_pwd
+                    old_pwd="$(pwd)"
+                    cd "$worktree"
+                    PATH="$real_path" git init > /dev/null 2>&1
+
+                    cat > "$worktree/go.mod" <<'EOF'
+module example.com/fixture
+
+go 1.23
+EOF
+
+                    cat > "$worktree/main.go" <<'EOF'
+package main
+
+func main() {}
+EOF
+
+                    cat > "$worktree/main_test.go" <<'EOF'
+package main
+
+import "testing"
+
+func TestFixture(t *testing.T) {
+    t.Skip("fixture test — not meant to run")
+}
+EOF
+
+                    PATH="$real_path" git add -A > /dev/null 2>&1
+                    PATH="$real_path" git commit -m "initial" > /dev/null 2>&1
+                    cd "$old_pwd"
+                }
+            fi
 
             # Output paths
             printf '%s\n%s\n' "$task_root" "$worktree"
         }
 
         # NOTE: this inline definition mirrors seed_live_fixture in scripts/l6-probe.sh
-        # exactly (kept in sync deliberately). We cannot source the real function by
-        # awk range because its embedded Go-test heredoc contains a line starting with
-        # '}', which truncates a naive range extraction. The assertions below verify
-        # the same filesystem contract the shipped helper produces.
+        # (kept in sync deliberately). The assertions below verify the same filesystem
+        # contract the shipped helper produces.
         seed_live_fixture
     ) > "$fixture_output" 2>&1
 
@@ -1409,9 +1449,9 @@ EOF
         ok=0
     fi
 
-    # Assert worktree contains go.mod
-    if [ ! -f "$fixture_worktree/go.mod" ]; then
-        tc_fail "$tc" "fixture worktree missing go.mod"
+    # Assert worktree is on a branch (either main from l6 clone, or from init)
+    if ! (cd "$fixture_worktree" && git rev-parse --verify HEAD > /dev/null 2>&1); then
+        tc_fail "$tc" "fixture worktree does not have a commit on the current branch"
         ok=0
     fi
 

@@ -264,25 +264,33 @@ EOF
 Minimal fixture task for testing probe 022/028.
 EOF
 
-    # Create worktree as a real git repo with minimal Go module
-    local old_pwd
-    old_pwd="$(pwd)"
-    cd "$worktree"
-    PATH="$real_path" git init > /dev/null 2>&1
+    # Create worktree as a full clone of the l6 remote (not bare git init)
+    # This ensures the branch descends from l6/main so gh pr create --fill works.
+    # Resolve the remote URL dynamically via git remote get-url.
+    local remote_url
+    remote_url="$(PATH="$real_path" git -C "$REPO_ROOT" remote get-url l6 2>/dev/null)" || true
 
-    cat > "$worktree/go.mod" <<'EOF'
+    if [ -z "$remote_url" ]; then
+        # Fallback: if l6 remote is not found, create a minimal worktree
+        # (this allows the fixture to degrade gracefully in test environments)
+        local old_pwd
+        old_pwd="$(pwd)"
+        cd "$worktree"
+        PATH="$real_path" git init > /dev/null 2>&1
+
+        cat > "$worktree/go.mod" <<'EOF'
 module example.com/fixture
 
 go 1.23
 EOF
 
-    cat > "$worktree/main.go" <<'EOF'
+        cat > "$worktree/main.go" <<'EOF'
 package main
 
 func main() {}
 EOF
 
-    cat > "$worktree/main_test.go" <<'EOF'
+        cat > "$worktree/main_test.go" <<'EOF'
 package main
 
 import "testing"
@@ -292,9 +300,46 @@ func TestFixture(t *testing.T) {
 }
 EOF
 
-    PATH="$real_path" git add -A > /dev/null 2>&1
-    PATH="$real_path" git commit -m "initial" > /dev/null 2>&1
-    cd "$old_pwd"
+        PATH="$real_path" git add -A > /dev/null 2>&1
+        PATH="$real_path" git commit -m "initial" > /dev/null 2>&1
+        cd "$old_pwd"
+    else
+        # Clone the l6 remote (full clone, no shallow depth)
+        # This ensures shared history with l6/main so gh pr create --fill resolves the base.
+        PATH="$real_path" git clone "$remote_url" "$worktree" > /dev/null 2>&1 || {
+            # If clone fails, fall back to bare init (test environment may not have network)
+            local old_pwd
+            old_pwd="$(pwd)"
+            cd "$worktree"
+            PATH="$real_path" git init > /dev/null 2>&1
+
+            cat > "$worktree/go.mod" <<'EOF'
+module example.com/fixture
+
+go 1.23
+EOF
+
+            cat > "$worktree/main.go" <<'EOF'
+package main
+
+func main() {}
+EOF
+
+            cat > "$worktree/main_test.go" <<'EOF'
+package main
+
+import "testing"
+
+func TestFixture(t *testing.T) {
+    t.Skip("fixture test — not meant to run")
+}
+EOF
+
+            PATH="$real_path" git add -A > /dev/null 2>&1
+            PATH="$real_path" git commit -m "initial" > /dev/null 2>&1
+            cd "$old_pwd"
+        }
+    fi
 
     # Output paths and set shell variables
     printf '%s\n%s\n' "$task_root" "$worktree"
