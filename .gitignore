@@ -25,3 +25,6 @@ docs/plans/l6-evidence.txt
 # Operator-provisioned Gate toolchain binaries (host-specific, large; never commit) — runbook 1b
 containment/execution-box/gate-tools/*
 !containment/execution-box/gate-tools/.gitkeep
+
+# execution-box --probe worktree write-test artifact (regenerated each real probe run)
+.execution-box-probe/
