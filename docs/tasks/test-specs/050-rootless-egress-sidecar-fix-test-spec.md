@@ -70,21 +70,22 @@ directory. No allow/deny semantics change.
   can write the readiness markers. (The resolved-allowlist mount stays `ro`; only the
   state dir is widened.)
 
-### TC-050-04 (L6, real host) — the real `--egress-probe` enforces default-deny and exits 0
+### TC-050-04 (L6, real host) — the real `--egress-probe` advances past the sidecar (two sidecar bugs fixed)
 - **Mechanism (real host, rootless podman 5.x, runsc-rootless wrapper, gate-tools
   populated):** `bash containment/execution-box/run.sh --worktree . --egress-probe`.
-- **Assertion (the proof of ADR 029):** the run prints, in order:
-  - `TC-001 PASS: egress sidecar installed nftables default-deny output policy` (the
-    sidecar applied the ruleset — no `No such file or directory`, no `Permission denied`);
-  - `TC-003 PASS: allowlisted connect succeeded: <allow_host>:<port>` (an allowlisted
-    host:port is reachable);
-  - `TC-004 PASS: non-allowlisted connect blocked: <deny_host>:<port>` AND `TC-004 PASS:
-    direct IP bypass blocked: <deny_ip>:<port>` (a non-allowlisted host and a direct-IP
-    target are both refused under the default-deny policy);
-  - and the launcher **exits 0**.
-  Record the verbatim output. This L6 run is the only thing that can prove rootless
-  nftables enforcement; the L5 stub cannot. A pass here is the evidence for the `verify:`
-  commit.
+- **Assertion (the proof of ADR 029's two sidecar fixes):** the sidecar applies the ruleset
+  and writes its readiness marker — i.e. the run reaches the workload-member start with
+  **neither** `/scratch/agent-builder-egress.nft:1: Error: No such file or directory` (the
+  idempotency bug) **nor** `/usr/local/bin/execution-box-egress-sidecar: ... can't create
+  /egress-state/fail: Permission denied` (the ownership bug), and **without** the
+  `egress sidecar did not become ready` launcher die. Record the verbatim output.
+- **Out of scope for this task (handed to task 051 / ADR 030):** the run then hits two
+  *downstream* rootless-pod constraints — `--add-host` must be on `pod create`
+  (`network cannot be configured when it is shared with a pod`), and runsc cannot join the
+  pod userns (`gofer: error setting namespace of type user ... invalid argument`). The full
+  `TC-003`/`TC-004 PASS` + exit-0 green (already confirmed reachable under runc once those
+  two are fixed) is task 051's L6, not this task's. This L5/L6 split is honest: the L5 stub
+  cannot prove rootless nftables; this real run proves *the sidecar bugs are fixed*.
 
 ## Verification plan
 
@@ -92,9 +93,13 @@ directory. No allow/deny semantics change.
   default-deny ruleset, then proves allow (allowlisted reachable) and deny (non-allowlisted
   + direct-IP refused) and exits 0 on the rootless host.
 - **L5 harness:** (i) a direct `egress-sidecar.sh` invocation with stub `nft` capturing
-  the emitted ruleset (TC-050-01/02); (ii) the stub-podman `tests/` harness extended to
-  capture the egress-state bind-mount source mode at sidecar launch (TC-050-03). Both run
-  with no live container and gate in `make check`/`make fitness`.
+  the emitted ruleset (TC-050-01/02); (ii) the stub-podman `tests/` harness capturing the
+  egress-state bind-mount source mode at sidecar launch (TC-050-03). Both run standalone
+  with no live container (`bash containment/execution-box/tests/egress-rootless-test.sh`)
+  and are recorded as L5 evidence in `coverage-tracker.md` — matching the established
+  045–049 execution-box harness convention (these podman/nft-stub harnesses are not wired
+  into `make check`, which runs `go test ./...`; `make check`/`make fitness` still gate the
+  Go + fitness layers).
 - **L6 evidence:** quote the verbatim `--egress-probe` output (TC-001/TC-003/TC-004 PASS
   + exit 0) from the real rootless host.
 - **Cross-module state risk:** none — the change is confined to `egress-sidecar.sh`

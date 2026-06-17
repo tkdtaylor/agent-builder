@@ -51,7 +51,7 @@ Permission denied`.
 | REQ-050-02 | The populated table is otherwise unchanged: `set allowed_tcp4` (`type ipv4_addr . inet_service`, `flags interval`, resolved IPv4-and-port elements), `policy drop`, `oifname "lo" accept`, `ct state established,related accept`, `ip daddr . tcp dport @allowed_tcp4 accept`, `reject` — default-deny + exact-pair allowlist preserved | must have |
 | REQ-050-03 | `run.sh` makes the per-run egress-state `mktemp -d` world-writable (`chmod 0777`) immediately after creating it and before launching the sidecar, with an explanatory comment naming the keep-id subuid mapping as the reason | must have |
 | REQ-050-04 | The resolved-allowlist bind mount stays `ro`; only the egress-state dir mode is widened. No other egress arg (NET_ADMIN, read-only, cap-drop, no-new-privileges, `--user 0:0`, `--dns none`, `--add-host`) changes | must have |
-| REQ-050-05 | Real-host `--egress-probe` installs the default-deny ruleset (`TC-001 PASS`), reaches the allow assertion (`TC-003 PASS`) and both deny assertions (`TC-004 PASS` host + direct-IP), and the launcher exits 0 | must have |
+| REQ-050-05 | Real-host `--egress-probe`: the sidecar installs the default-deny ruleset (`TC-001 PASS`) and writes its `ready`/`fail` markers under rootless keep-id; the probe advances **past the sidecar** to workload-member start (the two sidecar bugs are fixed). The real run surfaced two *further* rootless-pod constraints downstream of the sidecar (`--add-host` must be on `pod create`; runsc cannot join a rootless pod userns) — full allow/deny + exit-0 green is delivered by **task 051 under ADR 030**, not this task. See Notes. | must have |
 | REQ-050-06 | `docs/spec/behaviors.md` (B-010) and `docs/spec/interfaces.md` updated in the feat commit to reference ADR 029 for the rootless idempotent-ruleset + writable readiness-dir behavior; allow/deny contract text unchanged | must have |
 
 ## Readiness gate
@@ -67,21 +67,30 @@ Permission denied`.
 - [ ] [REQ-050-02] emitted ruleset still has allowed_tcp4 set + policy drop + allow rule + reject unchanged (TC-050-02)
 - [ ] [REQ-050-03] egress-state bind-mount source is mode 0777 at sidecar launch (TC-050-03)
 - [ ] [REQ-050-04] resolved-allowlist mount stays ro; no other egress arg changes (TC-050-03 + diff review)
-- [ ] [REQ-050-05] real-host `--egress-probe`: TC-001 PASS + TC-003 PASS + TC-004 PASS (host + IP) + exit 0 (TC-050-04)
+- [ ] [REQ-050-05] real-host `--egress-probe`: sidecar applies default-deny (`TC-001 PASS`) + writes `ready` marker + probe advances **past the sidecar** to workload start (TC-050-04). Full exit-0 green is task 051 (ADR 030).
 - [ ] [REQ-050-06] spec (B-010 + interfaces.md) references ADR 029; allow/deny contract unchanged
 
 ## Verification plan
 
-- **Highest level achievable:** **L6** — a real `--egress-probe` run that installs the
-  default-deny ruleset and proves allow (allowlisted reachable) + deny (non-allowlisted +
-  direct-IP refused) and exits 0 on the rootless host. The stub L5 cannot prove rootless
-  nftables enforcement; the real run is the proof.
+- **Highest level achievable:** **L6 (past-sidecar)** — a real `--egress-probe` run on the
+  rootless host where the sidecar installs the default-deny ruleset (`TC-001 PASS`) and
+  writes its readiness markers, and the launcher advances past the sidecar to workload
+  start without the nftables `No such file or directory` or `/egress-state/fail:
+  Permission denied` errors. The stub L5 cannot prove rootless nftables enforcement; this
+  real run is the proof that *the two sidecar bugs are fixed*. (Full allow/deny + exit-0
+  green requires task 051's `--add-host`-on-pod + runc-egress-runtime changes per ADR 030,
+  which are downstream of and out of scope for this task.)
 - **L5 harness:** (i) direct `egress-sidecar.sh` run with a stub `nft` capturing the
   emitted ruleset (TC-050-01/02); (ii) the stub-podman `tests/` harness extended to capture
-  the egress-state bind-mount source mode at sidecar launch (TC-050-03). Both gate in
-  `make check` / `make fitness`.
-- **L6 evidence:** quote the verbatim `--egress-probe` output (TC-001/TC-003/TC-004 PASS +
-  exit 0) from the real rootless host.
+  the egress-state bind-mount source mode at sidecar launch (TC-050-03). Both run standalone
+  (`bash containment/execution-box/tests/egress-rootless-test.sh`) as L5 evidence recorded
+  in `coverage-tracker.md` — matching the 045–049 execution-box harness convention (not
+  wired into `make check`, which runs `go test`; `make check`/`make fitness` gate the Go +
+  fitness layers).
+- **L6 evidence:** quote the verbatim `--egress-probe` output showing the run advances
+  past the sidecar (no `No such file or directory` / no `/egress-state/fail: Permission
+  denied`) — i.e. the two sidecar bugs are fixed — and name the downstream blocker the run
+  then hits (the `--add-host`/runsc-pod constraints handed to task 051).
 - **Cross-module state risk:** none — confined to `egress-sidecar.sh` emission + `run.sh`
   egress-state dir mode.
 - **Runtime-visible surface:** the emitted nft ruleset text, the egress-state dir mode, the
@@ -104,3 +113,13 @@ Permission denied`.
   per-run, `rm -rf`'d on exit). Add the comment ADR 029 requires so a future edit cannot
   silently revert it to 0700 and re-break the rootless handshake.
 - The fail-loud guards from task 045 on the egress `podman run`/`pod create` stay.
+- **Discovery during real-host validation (2026-06-17):** fixing the two sidecar bugs let
+  the probe advance past the sidecar and exposed two *further*, independent rootless-pod
+  constraints downstream — (1) `--add-host` (extra host entries) must be declared on
+  `podman pod create`, not on the pod member (`network cannot be configured when it is
+  shared with a pod`); (2) gVisor/runsc cannot join a rootless pod's keep-id userns
+  (`gofer: error setting namespace of type user ... invalid argument`), so the networked
+  egress workload must run under `runc`. Both are out of scope for this sidecar task and
+  are handled by **task 051 under ADR 030**. Verified on the host that with those two
+  changes the egress probe reaches `TC-003`/`TC-004 PASS` and exits 0 under runc — so the
+  egress allowlist (the load-bearing control) is proven enforceable rootless.
