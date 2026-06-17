@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** agent-builder
-**Last updated:** 2026-06-16
+**Last updated:** 2026-06-16 (task 044 — l6-probe harness)
 
 The system's contact surface — everything that calls into the system, everything the system calls out to, and the public boundaries within the system. Each interface is a stable contract: changes here are breaking changes.
 
@@ -512,6 +512,28 @@ make l6-preflight
 - **srt snap-confine detection:** if `srt --version` exits non-zero with the string `snap-confine has elevated permissions and is not confined`, the `srt` row reports `FAIL` with a snap-specific hint (install srt outside snap). Any other non-zero exit produces a generic `FAIL`.
 - **rootless-Podman detection:** if `podman info` exits non-zero or prints a value other than `true`, the `podman-rootless` row reports `FAIL` with a rootless configuration hint.
 - **Testability seam (REQ-043-05):** setting `L6_PREFLIGHT_PATH` to a directory of stub binaries replaces PATH entirely for the script's duration. This allows TC-043-01 through TC-043-04 to run with only stub binaries and no live host tooling.
+
+### Executable artifact: L6 probe harness and evidence collector
+
+```bash
+scripts/l6-probe.sh [--dry-run] [--help]
+make l6-probe
+```
+
+- Operator-invoked evidence collector. Runs (or in `--dry-run` simulates) all 10 Phase 0 L6 probe steps in the closing order from `docs/plans/phase0-l6-verification-checklist.md`: 014 → 015 → 016 → 021 → 030 (ledger) → 022 → 028 → 033 → 034 → 032.
+- **Not a gate prerequisite.** `make l6-probe` is in `.PHONY` but is not listed as a prerequisite of `make check` or `make fitness`.
+- **Preflight gate:** calls `scripts/l6-preflight.sh` before running any real probes and exits non-zero with an informative message (referencing `make l6-preflight`) if preflight is NOT READY. `--dry-run` bypasses the preflight gate.
+- **Gating rules (per-probe prerequisites):**
+  - 014, 015, 016, 033: require `podman` on PATH and rootless Podman; 016 also requires `runsc`.
+  - 021: requires `srt`. The snap-confine blocker is a SKIP reason, not FAIL.
+  - 022, 028: require authenticated `claude` CLI.
+  - 034: requires `gh` (authenticated) and a configured git remote.
+  - 032: requires all of the above (capstone).
+  - 030 (ledger update): requires 014, 015, 016, and 021 to have all completed without SKIP or FAIL; if any are SKIP, 030 is also SKIP.
+- **SKIP semantics:** a missing prerequisite marks the probe as `SKIP` with a recorded reason; execution continues; exit 0. A SKIP is not a FAIL.
+- **Evidence file:** written after each run (real or `--dry-run`) to a fixed path: `docs/plans/l6-evidence.txt` (override with `L6_EVIDENCE_FILE`). Contains 10 rows (one per closing-order step), pipe-delimited: `TASK-<id> | <command> | <output-line> | <status> [| SKIP-REASON: <reason>]`. Paste-ready for the `Verified by` column of `docs/tasks/test-specs/coverage-tracker.md`.
+- **Output format (stdout):** one line per probe: `[<id>] <STATUS>   <detail>`.
+- **Testability seam (REQ-044-05):** setting `L6_PROBE_PATH` to a directory of stub binaries replaces PATH entirely for the script's duration. `L6_EVIDENCE_FILE` overrides the evidence file path. `--dry-run` exercises all ordering, gating, and evidence-file logic without invoking real probe commands. TC-044-01 through TC-044-04 run with only stub binaries and no live host tooling.
 
 ### Executable artifact: execution-box launcher
 
