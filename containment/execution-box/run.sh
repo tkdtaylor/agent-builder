@@ -24,6 +24,12 @@ Options:
   --print-toolchain-plan   validate and print the Gate toolchain plan without requiring Podman
   --name NAME              container name prefix (default: agent-builder-execution-box)
   --image IMAGE            image tag to build/use (default: localhost/agent-builder/execution-box:033)
+
+Environment (storage quota):
+  EXEC_BOX_STORAGE_SIZE    size string (default: 4G); empty string disables the quota silently (operator opt-out)
+  EXEC_BOX_STORAGE_QUOTA_SUPPORTED  testability seam: set to "1" to force quota enforcement (XFS path),
+                           set to "0" to force the graceful-degrade path (non-XFS), or leave unset to
+                           run real detection via 'podman info'. Never set this in production.
 EOF
 }
 
@@ -253,6 +259,46 @@ validate_runtime_available() {
     die "OCI runtime unavailable to Podman or PATH: $runtime_name"
 }
 
+# detect_storage_quota_supported: returns 0 (supported) or 1 (not supported).
+# Checks whether the rootless overlay container store's backing filesystem
+# can enforce per-container size quotas via --storage-opt size=...
+#
+# Testability seam: if EXEC_BOX_STORAGE_QUOTA_SUPPORTED is set to "1" or "0",
+# that value short-circuits the real detection. Never set this in production.
+detect_storage_quota_supported() {
+    # Testability seam: override real detection if the env var is set.
+    case "${EXEC_BOX_STORAGE_QUOTA_SUPPORTED:-}" in
+        1)
+            return 0
+            ;;
+        0)
+            return 1
+            ;;
+    esac
+
+    # Real detection: parse the graph-driver name and backing FS from podman info.
+    # Podman's overlay driver only supports --storage-opt size= on XFS backing stores.
+    local graph_driver graph_root backing_fs
+    graph_driver="$(podman info --format '{{.Store.GraphDriverName}}' 2>/dev/null || true)"
+    graph_root="$(podman info --format '{{.Store.GraphRoot}}' 2>/dev/null || true)"
+
+    # If we can't determine the driver, err on the side of omitting the flag.
+    [ -n "$graph_driver" ] || return 1
+    [ "$graph_driver" = "overlay" ] || return 1
+
+    # Determine the backing filesystem of the graph root.
+    if [ -n "$graph_root" ]; then
+        backing_fs="$(stat -f -c '%T' "$graph_root" 2>/dev/null || true)"
+        case "$backing_fs" in
+            xfs)
+                return 0
+                ;;
+        esac
+    fi
+
+    return 1
+}
+
 runtime="$(resolve_runtime)"
 
 if [ "$print_runtime_plan" = true ]; then
@@ -430,9 +476,17 @@ memory="${EXEC_BOX_MEMORY:-2g}"
 pids_limit="${EXEC_BOX_PIDS_LIMIT:-256}"
 scratch_size="${EXEC_BOX_SCRATCH_SIZE:-512m}"
 shm_size="${EXEC_BOX_SHM_SIZE:-64m}"
-storage_size="${EXEC_BOX_STORAGE_SIZE:-4G}"
+storage_size="${EXEC_BOX_STORAGE_SIZE-4G}"
 host_uid="$(id -u)"
 host_gid="$(id -g)"
+
+# Determine whether the per-container overlay size quota is enforceable on this host.
+# See ADR 027: the quota is a secondary anti-DoS control; it degrades gracefully on
+# non-XFS backing stores rather than preventing the box from starting.
+storage_quota_supported=false
+if detect_storage_quota_supported; then
+    storage_quota_supported=true
+fi
 
 podman build \
     --tag "$image" \
@@ -456,7 +510,6 @@ common_args=(
     --memory "$memory"
     --pids-limit "$pids_limit"
     --shm-size "$shm_size"
-    --storage-opt "size=$storage_size"
     --env HOME=/scratch/home
     --env TMPDIR=/scratch
     --env XDG_CACHE_HOME=/scratch/cache
@@ -468,8 +521,20 @@ common_args=(
     --tmpfs "/scratch:rw,noexec,nosuid,nodev,mode=1777,size=$scratch_size"
 )
 
+# Conditionally add the per-container writable-layer disk quota (ADR 027).
+# - Enforceable host AND non-empty EXEC_BOX_STORAGE_SIZE: apply the quota exactly.
+# - Non-enforceable host AND non-empty EXEC_BOX_STORAGE_SIZE: omit the flag,
+#   emit a WARNING naming the degraded control, continue (box still launches).
+# - Empty EXEC_BOX_STORAGE_SIZE (operator opt-out): omit silently, no WARNING.
+if [ "$storage_quota_supported" = true ] && [ -n "$storage_size" ]; then
+    common_args+=(--storage-opt "size=$storage_size")
+elif [ "$storage_quota_supported" = false ] && [ -n "$storage_size" ]; then
+    printf 'execution-box: WARNING: per-container writable-layer disk quota (--storage-opt size) unavailable on this host (backing filesystem does not support overlay size enforcement); running without disk quota.\n' >&2
+fi
+
 if [ "$probe" = true ]; then
-    cid="$(podman create "${common_args[@]}" "$image" /usr/local/bin/execution-box-probe)"
+    cid="$(podman create "${common_args[@]}" "$image" /usr/local/bin/execution-box-probe)" \
+        || die "podman create failed: container did not start (exit $?)"
     cleanup_probe() {
         podman rm -f "$cid" >/dev/null 2>&1 || true
         cleanup_tmp
@@ -478,16 +543,33 @@ if [ "$probe" = true ]; then
 
     inspect="$(podman inspect --format '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}} {{.HostConfig.ShmSize}} {{json .HostConfig.StorageOpt}}' "$cid")"
     printf 'TC-003 HOST: %s\n' "$inspect"
-    case "$inspect" in
-        0\ *|*\ 0\ *|*\ -1\ *|*\ null*)
-            die "TC-003 FAIL: host inspect does not show explicit limits: $inspect"
-            ;;
-    esac
-    printf 'TC-003 PASS: host inspect shows explicit cpu/memory/pids/shm/storage limits\n'
+    # Validate the load-bearing numeric limits (NanoCpus, Memory, PidsLimit, ShmSize).
+    # These must be set (non-zero) and PidsLimit must not be -1 (unlimited).
+    # StorageOpt is the 5th field and may be null on non-XFS hosts (ADR 027);
+    # we only check it when quota enforcement is expected.
+    _ncpus="$(printf '%s' "$inspect" | awk '{print $1}')"
+    _mem="$(printf '%s' "$inspect" | awk '{print $2}')"
+    _pids="$(printf '%s' "$inspect" | awk '{print $3}')"
+    _shm="$(printf '%s' "$inspect" | awk '{print $4}')"
+    _storage="$(printf '%s' "$inspect" | awk '{for(i=5;i<=NF;i++) printf "%s%s",$i,(i<NF?" ":""); print ""}')"
+
+    [ "$_ncpus" != "0" ] || die "TC-003 FAIL: host inspect NanoCpus is 0 (CPU quota not set): $inspect"
+    [ "$_mem"   != "0" ] || die "TC-003 FAIL: host inspect Memory is 0 (memory quota not set): $inspect"
+    [ "$_pids"  != "-1" ] || die "TC-003 FAIL: host inspect PidsLimit is -1 (no PID limit): $inspect"
+    [ "$_shm"   != "0" ] || die "TC-003 FAIL: host inspect ShmSize is 0 (shm size not set): $inspect"
+
+    if [ "$storage_quota_supported" = true ] && [ -n "$storage_size" ]; then
+        # Quota is expected: StorageOpt must not be null.
+        [ "$_storage" != "null" ] || die "TC-003 FAIL: host inspect StorageOpt is null but quota is expected: $inspect"
+        printf 'TC-003 PASS: host inspect shows explicit cpu/memory/pids/shm/storage limits\n'
+    else
+        # Quota not enforced on this host (non-XFS or operator opt-out) — StorageOpt null is acceptable.
+        printf 'TC-003 PASS: host inspect shows explicit cpu/memory/pids/shm limits (storage quota not enforced on this host)\n'
+    fi
     runtime_inspect="$(podman inspect --format '{{.HostConfig.Runtime}}' "$cid")"
     printf 'TC-016 HOST: workload=%s runtime=%s\n' "$workload" "$runtime_inspect"
     [ "$runtime_inspect" = "$runtime" ] || die "TC-016 FAIL: host inspect runtime=$runtime_inspect expected $runtime"
-    podman start --attach "$cid"
+    podman start --attach "$cid" || die "podman start failed: container did not run (exit $?)"
     exit 0
 fi
 
@@ -508,7 +590,8 @@ trap cleanup_egress EXIT
 podman pod create \
     --name "$pod_name" \
     --label agent-builder.profile=execution-box \
-    --label agent-builder.egress=default-deny >/dev/null
+    --label agent-builder.egress=default-deny >/dev/null \
+    || die "podman pod create failed: egress pod did not start (exit $?)"
 
 podman run -d \
     --name "$sidecar_name" \
@@ -523,7 +606,8 @@ podman run -d \
     --mount "type=bind,source=$resolved_allowlist,target=/etc/agent-builder/egress.resolved,ro,relabel=private" \
     --mount "type=bind,source=$egress_state,target=/egress-state,rw,relabel=private" \
     --tmpfs "/scratch:rw,noexec,nosuid,nodev,mode=1777,size=16m" \
-    "$image" /usr/local/bin/execution-box-egress-sidecar >/dev/null
+    "$image" /usr/local/bin/execution-box-egress-sidecar >/dev/null \
+    || die "podman run failed: egress sidecar did not start (exit $?)"
 
 for _ in $(seq 1 100); do
     if [ -f "$egress_state/ready" ]; then
@@ -554,18 +638,27 @@ while read -r add_host; do
 done < "$add_hosts_file"
 
 if [ "$egress_probe" = true ]; then
+    _egress_probe_rc=0
     podman run --rm \
         "${workload_args[@]}" \
         --env "EXEC_BOX_EGRESS_PROBE_ALLOW_HOST=$egress_allow_host" \
         --env "EXEC_BOX_EGRESS_PROBE_DENY_HOST=$egress_deny_host" \
         --env "EXEC_BOX_EGRESS_PROBE_DENY_IP=$egress_deny_ip" \
-        "$image" /usr/local/bin/execution-box-egress-probe
-    exit $?
+        "$image" /usr/local/bin/execution-box-egress-probe \
+        || _egress_probe_rc=$?
+    if [ "$_egress_probe_rc" -eq 125 ]; then
+        die "podman run (egress-probe) failed: container did not start (exit 125)"
+    fi
+    exit "$_egress_probe_rc"
 fi
 
 if [ "$#" -eq 0 ]; then
     set -- /bin/sh
 fi
 
-podman run --rm -it "${workload_args[@]}" "$image" "$@"
-exit $?
+_workload_rc=0
+podman run --rm -it "${workload_args[@]}" "$image" "$@" || _workload_rc=$?
+if [ "$_workload_rc" -eq 125 ]; then
+    die "podman run failed: container did not start (exit 125)"
+fi
+exit "$_workload_rc"
