@@ -12,9 +12,10 @@ import (
 // Gated by AGENT_BUILDER_LIVE_E2E=1. It drives the real agent-builder binary
 // end to end with a real Claude executor, real git/gh, and real Podman
 // containment against the live Publish remote. Skipped when any prerequisite
-// (claude, git, gh, podman) is absent or ANTHROPIC_API_KEY is unset; FAILS
-// when the Gate-toolchain directory is missing (a configuration error, not
-// an availability gap).
+// (claude, git, gh, podman) is absent or BOTH executor credentials
+// (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN) are unset; FAILS when the
+// Gate-toolchain directory is missing (a configuration error, not an
+// availability gap).
 //
 // TC-054-01, TC-054-02, TC-054-03.
 func TestLivePhase0EndToEndAcceptance_TC032(t *testing.T) {
@@ -31,10 +32,14 @@ func TestLivePhase0EndToEndAcceptance_TC032(t *testing.T) {
 		}
 	}
 
-	// TC-054-02: Skip when ANTHROPIC_API_KEY is unset or empty.
+	// TC-060-01: Skip only when BOTH executor credentials are unset/blank.
+	// The executor (ADR 033) accepts either ANTHROPIC_API_KEY or the subscription
+	// CLAUDE_CODE_OAUTH_TOKEN and applies its own OAuth-preferred precedence; the
+	// fixture forwards whichever is present rather than pre-selecting.
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
-	if strings.TrimSpace(apiKey) == "" {
-		t.Skipf("TC-054-02 ANTHROPIC_API_KEY unset or empty")
+	oauthToken := os.Getenv("CLAUDE_CODE_OAUTH_TOKEN")
+	if strings.TrimSpace(apiKey) == "" && strings.TrimSpace(oauthToken) == "" {
+		t.Skipf("TC-060-01 both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN unset or empty")
 	}
 
 	root := projectRoot(t)
@@ -237,6 +242,7 @@ func (f liveCapstoneFixture) env(t *testing.T) map[string]string {
 
 	return map[string]string{
 		"ANTHROPIC_API_KEY":               os.Getenv("ANTHROPIC_API_KEY"),
+		"CLAUDE_CODE_OAUTH_TOKEN":         os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"),
 		"AGENT_BUILDER_TASK_ROOT":         f.taskRoot,
 		"AGENT_BUILDER_WORKTREE":          f.worktree,
 		"AGENT_BUILDER_PUBLISH_REMOTE":    f.remote,

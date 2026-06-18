@@ -245,7 +245,10 @@ func filteredEnv() []string {
 		runtimewiring.EnvGitHubCLI:       {},
 		runtimewiring.EnvGitToken:        {},
 		runtimewiring.EnvGitHubToken:     {},
-		"ANTHROPIC_API_KEY":              {},
+		// Executor credentials (ADR 033): block ambient values so the fixture
+		// forwards exactly what its env map sets, not whatever the shell exports.
+		"ANTHROPIC_API_KEY":       {},
+		"CLAUDE_CODE_OAUTH_TOKEN": {},
 		// TC-057-03: Block live test gating flags so the gate (go test ./...) can
 		// safely set them without causing recursion when the binary runs go test internally.
 		// The outer test gates whether to run (e.g., AGENT_BUILDER_LIVE_E2E=1), but the
