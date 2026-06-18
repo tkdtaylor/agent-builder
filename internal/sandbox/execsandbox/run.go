@@ -168,6 +168,93 @@ func validateWorktree(worktree string) (string, error) {
 	return abs, nil
 }
 
+// discoverGoroot finds the Go toolchain root via `go env GOROOT`, falling back to
+// AGENT_BUILDER_EXEC_SANDBOX_GOROOT env var if set.
+func discoverGoroot() (string, error) {
+	if envPath := os.Getenv("AGENT_BUILDER_EXEC_SANDBOX_GOROOT"); envPath != "" {
+		return envPath, nil
+	}
+	// Query go env GOROOT
+	cmd := exec.Command("go", "env", "GOROOT")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("discoverGoroot: %w", err)
+	}
+	goroot := strings.TrimSpace(string(out))
+	if goroot == "" {
+		return "", errors.New("discoverGoroot: go env GOROOT returned empty")
+	}
+	return goroot, nil
+}
+
+// discoverGateTools finds the gate-tools directory via AGENT_BUILDER_GATE_TOOLS env var,
+// falling back to containment/execution-box/gate-tools relative to the repo root.
+func discoverGateTools(repoRoot string) (string, error) {
+	if envPath := os.Getenv("AGENT_BUILDER_GATE_TOOLS"); envPath != "" {
+		// Verify it exists
+		if info, err := os.Stat(envPath); err == nil && info.IsDir() {
+			return envPath, nil
+		}
+		// If env var is set but path doesn't exist, don't silently fall back
+		return "", fmt.Errorf("AGENT_BUILDER_GATE_TOOLS set to %q but path does not exist or is not readable", envPath)
+	}
+	// Default path: containment/execution-box/gate-tools
+	defaultPath := filepath.Join(repoRoot, "containment", "execution-box", "gate-tools")
+	if info, err := os.Stat(defaultPath); err == nil && info.IsDir() {
+		return defaultPath, nil
+	}
+	// If default doesn't exist, return it anyway (gate-tools is optional for base functionality)
+	return defaultPath, nil
+}
+
+// parseEgressAllowlist converts ["host:port", ...] to map[host] -> [host, port]
+func parseEgressAllowlist(allowlist []string) (map[string][2]string, error) {
+	result := make(map[string][2]string)
+	for _, entry := range allowlist {
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+			return nil, fmt.Errorf("invalid egress allowlist entry: %q (expected host:port)", entry)
+		}
+		host := parts[0]
+		port := parts[1]
+		result[host] = [2]string{host, port}
+	}
+	return result, nil
+}
+
+// findRepoRoot searches for the agent-builder repo root by looking for containment/execution-box.
+// It starts from the current working directory and walks up the tree.
+func findRepoRoot() (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+
+	// Try up to 10 levels up the directory tree
+	path := cwd
+	for i := 0; i < 10; i++ {
+		marker := filepath.Join(path, "containment", "execution-box")
+		if info, err := os.Stat(marker); err == nil && info.IsDir() {
+			return path, nil
+		}
+		// Also check for CLAUDE.md as another marker of the repo root
+		if info, err := os.Stat(filepath.Join(path, "CLAUDE.md")); err == nil && !info.IsDir() {
+			// Verify it's the agent-builder repo by checking for containment subdir nearby
+			if info, err := os.Stat(filepath.Join(path, "containment")); err == nil && info.IsDir() {
+				return path, nil
+			}
+		}
+
+		parent := filepath.Dir(path)
+		if parent == path {
+			break // Reached filesystem root
+		}
+		path = parent
+	}
+
+	return "", errors.New("could not find agent-builder repo root (no containment/execution-box marker)")
+}
+
 // buildRunRequest constructs the JSON RunRequest from the typed Request.
 // The worktree parameter is the validated absolute path; "" means no mount.
 func buildRunRequest(req sandbox.Request, worktree string) runRequest {
@@ -191,23 +278,61 @@ func buildRunRequest(req sandbox.Request, worktree string) runRequest {
 		},
 	}
 
-	// Build capabilities (egress allowlist).
-	if len(req.Limits.EgressAllowlist) > 0 {
-		profile.Capabilities = []capabilityData{
-			{
-				Type:      "NetConnect",
-				Allowlist: req.Limits.EgressAllowlist,
-			},
+	// Discover toolchain and gate-tools for FileRead capability.
+	var fileReadPaths []string
+	if goroot, err := discoverGoroot(); err == nil {
+		fileReadPaths = append(fileReadPaths, goroot)
+	}
+	if repoRoot, err := findRepoRoot(); err == nil {
+		if gateTools, err := discoverGateTools(repoRoot); err == nil {
+			fileReadPaths = append(fileReadPaths, gateTools)
 		}
 	}
 
-	// Build the wiring (deferred fields are sent empty per ADR 035).
+	// Build environment (PATH) for the payload.
+	env := make(map[string]string)
+	if len(fileReadPaths) > 0 {
+		// Construct PATH to include discovered toolchain and gate-tools dirs
+		pathDirs := fileReadPaths
+		pathDirs = append(pathDirs, "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
+		env["PATH"] = strings.Join(pathDirs, ":")
+	}
+
+	// Build capabilities.
+	var capabilities []capabilityData
+
+	// Add FileRead capability if we have paths to mount
+	if len(fileReadPaths) > 0 {
+		capabilities = append(capabilities, capabilityData{
+			Type:  "FileRead",
+			Paths: fileReadPaths,
+		})
+	}
+
+	// Add NetConnect capability for egress allowlist
+	if len(req.Limits.EgressAllowlist) > 0 {
+		capabilities = append(capabilities, capabilityData{
+			Type:      "NetConnect",
+			Allowlist: req.Limits.EgressAllowlist,
+		})
+	}
+
+	profile.Capabilities = capabilities
+
+	// Build the wiring.
 	wiring := wiringData{
 		VaultSocket:   "",
 		AuditSocket:   "",
 		OriginMap:     map[string][2]string{},
 		RequestID:     generateRequestID(),
 		InjectionMode: "",
+	}
+
+	// Populate origin_map from EgressAllowlist
+	if len(req.Limits.EgressAllowlist) > 0 {
+		if originMap, err := parseEgressAllowlist(req.Limits.EgressAllowlist); err == nil {
+			wiring.OriginMap = originMap
+		}
 	}
 
 	return runRequest{
@@ -217,6 +342,7 @@ func buildRunRequest(req sandbox.Request, worktree string) runRequest {
 			Tier:       tier,
 			SecretRefs: []string{},
 			Workdir:    worktree,
+			Env:        env,
 		},
 		Wiring: wiring,
 	}
@@ -249,12 +375,28 @@ func extractDegraded(limitsObj any) []string {
 	return result
 }
 
-// renderCommand converts a command slice into a shell script string.
+// renderCommand converts a command slice into a shell script string for the
+// block's payload (which runs as `/usr/bin/sh /payload.sh`).
+//
+// agent-builder commands target a /bin/sh entrypoint (ADR 032): they are
+// arguments to sh, most commonly `-c <script>`. Because the block already wraps
+// the payload in sh, the `sh -c <script>` form must become just <script> — not
+// a quoted `'-c' '<script>'` line, which sh would try to run as a command named
+// "-c" (exit 127).
 func renderCommand(cmd []string) string {
 	if len(cmd) == 0 {
 		return ""
 	}
-	// Simple shell escaping: wrap args in single quotes and escape single quotes.
+	rest := cmd
+	// Skip an optional leading shell token (sh, /bin/sh, /usr/bin/sh, bash).
+	if base := filepath.Base(rest[0]); base == "sh" || base == "bash" {
+		rest = rest[1:]
+	}
+	// `sh -c <script> [name [args...]]` → the script body is the single arg after -c.
+	if len(rest) >= 2 && rest[0] == "-c" {
+		return rest[1]
+	}
+	// Fallback: treat as a direct command line, shell-quote each arg.
 	parts := make([]string, len(cmd))
 	for i, arg := range cmd {
 		parts[i] = shellQuote(arg)
@@ -296,11 +438,12 @@ type runRequest struct {
 }
 
 type runData struct {
-	Payload    string             `json:"payload"`
-	Profile    profileData        `json:"profile"`
-	Tier       string             `json:"tier"`
-	SecretRefs []string           `json:"secret_refs"`
-	Workdir    string             `json:"workdir"`
+	Payload    string              `json:"payload"`
+	Profile    profileData         `json:"profile"`
+	Tier       string              `json:"tier"`
+	SecretRefs []string            `json:"secret_refs"`
+	Workdir    string              `json:"workdir"`
+	Env        map[string]string   `json:"env,omitempty"`
 }
 
 type profileData struct {
@@ -309,8 +452,9 @@ type profileData struct {
 }
 
 type capabilityData struct {
-	Type      string   `json:"type"`
-	Allowlist []string `json:"allowlist"`
+	Type      string        `json:"type"`
+	Allowlist []string      `json:"allowlist,omitempty"`
+	Paths     []string      `json:"paths,omitempty"`
 }
 
 type limitsData struct {

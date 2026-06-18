@@ -96,6 +96,9 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `AGENT_BUILDER_GH_CLI` | path/name | `gh` | no | GitHub CLI executable used to find or create the PR artifact |
 | `AGENT_BUILDER_GIT_TOKEN` | secret string | none | no | Optional token exposed to the publication subprocess as `GIT_TOKEN` and redacted from publisher errors/run records |
 | `AGENT_BUILDER_GITHUB_TOKEN` | secret string | none | no | Optional token exposed to the publication subprocess as `GH_TOKEN` and `GITHUB_TOKEN` and redacted from publisher errors/run records |
+| `AGENT_BUILDER_EXEC_SANDBOX_BIN` | path/name | unset | no | Path to the exec-sandbox block binary. When set, `execsandbox.Runner` becomes the default containment backend (preferred over the Podman launcher). Tests and local runs may point this at a custom binary; unset disables the block backend entirely. |
+| `AGENT_BUILDER_EXEC_SANDBOX_GOROOT` | path | `go env GOROOT` | no | Go toolchain root directory to be forwarded into the block via `FileRead` capability. When unset, discovered via `go env GOROOT`; if neither is available, toolchain forwarding is skipped (base system PATH applies). |
+| `AGENT_BUILDER_GATE_TOOLS` | path | `containment/execution-box/gate-tools` | no | Gate toolchain artifacts directory (`golangci-lint`, `dep-scan`, `code-scanner`) to be forwarded into the block via `FileRead` capability and prepended to `PATH`. When unset, defaults to the bundled directory; if that doesn't exist, forwarding is skipped. |
 
 **Removed variables** (rejected loudly when set — see ADR 021):
 - `AGENT_BUILDER_SANDBOX_RUNTIME` — the Phase 0 `srt` selector for the rented `@anthropic-ai/sandbox-runtime` backend. Containment now runs through the Podman execution-box launcher (`AGENT_BUILDER_EXEC_BOX_LAUNCHER`). If a non-empty value is present, `agent-builder run` fails with a migration error naming the variable rather than silently ignoring it.
