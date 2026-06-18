@@ -6,7 +6,7 @@ It is the first concrete consumer of those blocks, and the bootstrap that resolv
 
 **North star:** agent-builder starts as *the agent that builds the blocks* and evolves into *a tool to build agents from the blocks* — the ecosystem's front door.
 
-> **Status:** scaffolding. Not yet runnable. Design is pinned in `autonomous-builder.md`.
+> **Status:** Phase 0 working — verified live (L6) end-to-end on a real Claude subscription against rootless Podman + gVisor: pick task → sandboxed Claude executor → full verification gate (build/vet/test/gofmt/golangci-lint/dep-scan/code-scanner) → real PR. Supervised (human reviews/merges each PR). Design is pinned in `autonomous-builder.md`.
 
 ## How it works (target architecture)
 
@@ -21,14 +21,39 @@ See [docs/architecture/overview.md](docs/architecture/overview.md) and [docs/spe
 
 `exec-sandbox` → `audit-trail` → `policy-engine` → `vault`. Tracked in [docs/plans/roadmap.md](docs/plans/roadmap.md).
 
-## Run locally
+## Develop locally
 
 ```bash
 go test ./...                 # tests
 go build ./...                # compile
-go run ./cmd/agent-builder    # run the orchestrator (entrypoint — not yet implemented)
 make check                    # the verification gate: lint + test + fitness
+go run ./cmd/agent-builder version
 ```
+
+## Usage — running it on a real project
+
+`agent-builder run` dispatches **one ready task**: pick task → sandbox → Claude executor → verification gate → open a PR on pass (escalate on fail). You review and merge the PR, then run again for the next task. It is configured entirely through environment variables.
+
+**Prerequisites** (one-time, see the [operator guide](docs/operating.md) for setup): rootless Podman + a runtime (`runc`/`runsc`); the gate toolchain in `containment/execution-box/gate-tools/` (`golangci-lint`, `dep-scan` ≥ 1.3.1, `code-scanner`); `git` + `gh` authenticated; and a Claude credential — your **subscription** token `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or an `ANTHROPIC_API_KEY`.
+
+**Run one task against a target repo** (the target carries its own `docs/plans/roadmap.md` + `docs/tasks/backlog/NNN-*.md`):
+
+```bash
+cd /path/to/agent-builder
+export CLAUDE_CODE_OAUTH_TOKEN=...           # subscription credential
+TARGET=/path/to/target-repo-clone           # has a git remote (e.g. origin)
+
+env AGENT_BUILDER_TASK_ROOT="$TARGET" \
+    AGENT_BUILDER_WORKTREE="$TARGET" \
+    AGENT_BUILDER_PUBLISH_REMOTE=origin \
+    AGENT_BUILDER_RUN_TIMEOUT=900s \
+    AGENT_BUILDER_MAX_ATTEMPTS=2 \
+    AGENT_BUILDER_RUN_RECORD=/tmp/run.ndjson \
+    AGENT_BUILDER_EXEC_BOX_LAUNCHER="$(pwd)/containment/execution-box/run.sh" \
+    go run ./cmd/agent-builder run
+```
+
+Other subcommands: `agent-builder version`; `agent-builder verify <repo>` (run just the gate against a checkout). Full environment reference and prerequisites: **[docs/operating.md](docs/operating.md)** and [docs/spec/configuration.md](docs/spec/configuration.md).
 
 ## Tech stack
 
