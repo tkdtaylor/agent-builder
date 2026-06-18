@@ -240,7 +240,7 @@ func (f liveCapstoneFixture) env(t *testing.T) map[string]string {
 	root := projectRoot(t)
 	launcherPath := filepath.Join(root, "containment/execution-box/run.sh")
 
-	return map[string]string{
+	env := map[string]string{
 		"ANTHROPIC_API_KEY":               os.Getenv("ANTHROPIC_API_KEY"),
 		"CLAUDE_CODE_OAUTH_TOKEN":         os.Getenv("CLAUDE_CODE_OAUTH_TOKEN"),
 		"AGENT_BUILDER_TASK_ROOT":         f.taskRoot,
@@ -251,6 +251,13 @@ func (f liveCapstoneFixture) env(t *testing.T) map[string]string {
 		"AGENT_BUILDER_RUN_RECORD":        f.recordPath,
 		"AGENT_BUILDER_EXEC_BOX_LAUNCHER": launcherPath,
 	}
+
+	// Pass through the exec-sandbox binary if configured, so the runtime can use it as the default backend.
+	if bin := os.Getenv("AGENT_BUILDER_EXEC_SANDBOX_BIN"); bin != "" {
+		env["AGENT_BUILDER_EXEC_SANDBOX_BIN"] = bin
+	}
+
+	return env
 }
 
 // extractBranchFromEvents scans the run record events for a

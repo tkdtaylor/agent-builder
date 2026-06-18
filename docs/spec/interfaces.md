@@ -292,10 +292,10 @@ type Result struct {
 }
 ```
 
-- **Implementors:** `podman.Runner` for the rootless Podman execution-box is the production backend wired into the default `agent-builder run` pipeline (ADR 021); in-process `sandbox.FakeRunner` for tests; `sandboxruntime.Runner` for the retired rented `@anthropic-ai/sandbox-runtime` adapter remains in the tree for reference but is no longer wired into the run pipeline.
+- **Implementors:** `podman.Runner` for the rootless Podman execution-box (ADR 021) and `execsandbox.Runner` for the exec-sandbox block (ADR 035) are production backends wired into the default `agent-builder run` pipeline (runtime selects one based on binary availability); in-process `sandbox.FakeRunner` for tests; `sandboxruntime.Runner` for the retired rented `@anthropic-ai/sandbox-runtime` adapter remains in the tree for reference but is no longer wired into the run pipeline.
 - **Consumers:** supervisor construction accepts the interface. Dispatch lifecycle code uses the interface when task execution is implemented.
 - **Stability:** governed by ADR 020 and updated with any task that changes contained-run inputs, outputs, or error semantics.
-- **Required behavior:** `Command` is argv-style and must contain a non-blank executable at index 0. `Worktree` is the target repo worktree path mounted or made available to the backend. `Limits` is a typed struct, not a map, and carries wall-clock timeout, memory limit, CPU count, process ID limit, and egress allowlist values. `Result` captures stdout, stderr, and duration. The integer return is the process exit code. A non-zero exit code is returned with nil error when the backend ran the command; non-nil error means adapter/backend failure or invalid request.
+- **Required behavior:** `Command` is argv-style and must contain a non-blank executable at index 0. `Worktree` is the target repo worktree path mounted or made available to the backend (non-empty, must exist, must be a directory). `Limits` is a typed struct, not a map, and carries wall-clock timeout, memory limit, CPU count, process ID limit, and egress allowlist values. `Result` captures stdout, stderr, and duration. The integer return is the process exit code. A non-zero exit code is returned with nil error when the backend ran the command; non-nil error means adapter/backend failure or invalid request.
 
 ### Concrete backend: `sandboxruntime.Runner`
 
@@ -323,6 +323,18 @@ func (r *Runner) Run(sandbox.Request) (sandbox.Result, int, error)
 - **Outbound call:** `containment/execution-box/run.sh --worktree <path> [--egress-allowlist <tmpfile>] [--] <Command...>` with resource limits passed via environment variables `EXEC_BOX_CPUS`, `EXEC_BOX_MEMORY`, and `EXEC_BOX_PIDS_LIMIT`.
 - **Egress allowlist contract:** each allowlist entry is written to a temporary file in `host:port # comment` format; non-commented entries cause the launcher to reject the allowlist. Zero values for memory, CPU, or process ID leave the corresponding env var unset (launcher uses its defaults).
 - **Failure contract:** invalid command, blank/missing worktree, and wall-clock timeout return non-nil adapter errors. A launcher that exits non-zero returns that exit code with nil adapter error.
+
+### Concrete backend: `execsandbox.Runner`
+
+```go
+func New(binPath string) *Runner
+func (r *Runner) Run(sandbox.Request) (sandbox.Result, int, error)
+```
+
+- **Outbound call:** `<binary> run` with a JSON RunRequest struct on stdin containing `run.payload` (shell script), `run.profile` (limits and capabilities), `run.tier`, `run.workdir` (absolute host worktree path or "" for no mount), and `wiring` (vault socket, audit socket, etc.).
+- **Worktree mapping contract:** `Request.Worktree` is validated to be an absolute existing directory, then forwarded to `run.workdir` on the block's JSON contract. The block mounts it read-write at `/work` inside the sandbox with the payload's initial working directory set to `/work` (so absolute paths and relative paths starting from repo root both work). An empty `Request.Worktree` is an error (matching Podman backend semantics).
+- **Sandbox status contract:** the block returns `sandbox_status` containing `sandbox_id`, `tier`, `duration_ms`, `status` (clean/timeout/degraded/error), and `limits` with optional `degraded` field listing degraded resources. These are surfaced on `Result.SandboxID`, `Result.Tier`, `Result.Status`, and `Result.Degraded` respectively.
+- **Failure contract:** invalid command, missing/non-directory worktree, non-executable binary, missing `AGENT_BUILDER_EXEC_SANDBOX_BIN`, malformed JSON, and block errors return non-nil adapter errors. A block that exits non-zero or returns an error field in its JSON output is a loud error. A wrapped command that exits non-zero is returned as exit code with nil adapter error.
 
 ### Interface: `tasksource.Source`
 

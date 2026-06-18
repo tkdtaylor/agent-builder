@@ -17,7 +17,8 @@ import (
 )
 
 var (
-	ErrMissingBinary = errors.New("execsandbox: binary not configured or not found")
+	ErrMissingBinary   = errors.New("execsandbox: binary not configured or not found")
+	ErrInvalidWorktree = errors.New("execsandbox: invalid worktree")
 )
 
 // Runner invokes the exec-sandbox block binary behind the sandbox.Runner interface.
@@ -66,8 +67,18 @@ func (r *Runner) Run(req sandbox.Request) (sandbox.Result, int, error) {
 		return sandbox.Result{}, 0, fmt.Errorf("%w: %q is not executable", ErrMissingBinary, absPath)
 	}
 
+	// Validate worktree if non-empty (must be an absolute existing directory).
+	worktree := ""
+	if strings.TrimSpace(req.Worktree) != "" {
+		validatedWorktree, err := validateWorktree(req.Worktree)
+		if err != nil {
+			return sandbox.Result{}, 0, err
+		}
+		worktree = validatedWorktree
+	}
+
 	// Build the RunRequest JSON.
-	runReq := buildRunRequest(req)
+	runReq := buildRunRequest(req, worktree)
 
 	// Marshal it to JSON.
 	reqJSON, err := json.Marshal(runReq)
@@ -137,8 +148,29 @@ func (r *Runner) Run(req sandbox.Request) (sandbox.Result, int, error) {
 	return result, blockResult.ExitCode, nil
 }
 
+// validateWorktree validates that the worktree is an absolute existing directory.
+// It returns the absolute path if valid, or an error if the path is invalid/nonexistent/not-a-dir.
+func validateWorktree(worktree string) (string, error) {
+	if strings.TrimSpace(worktree) == "" {
+		return "", ErrInvalidWorktree
+	}
+	abs, err := filepath.Abs(worktree)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidWorktree, err)
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidWorktree, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%w: not a directory: %s", ErrInvalidWorktree, abs)
+	}
+	return abs, nil
+}
+
 // buildRunRequest constructs the JSON RunRequest from the typed Request.
-func buildRunRequest(req sandbox.Request) runRequest {
+// The worktree parameter is the validated absolute path; "" means no mount.
+func buildRunRequest(req sandbox.Request, worktree string) runRequest {
 	// Render the command as a shell script string.
 	payload := renderCommand(req.Command)
 
@@ -184,6 +216,7 @@ func buildRunRequest(req sandbox.Request) runRequest {
 			Profile:    profile,
 			Tier:       tier,
 			SecretRefs: []string{},
+			Workdir:    worktree,
 		},
 		Wiring: wiring,
 	}
@@ -267,6 +300,7 @@ type runData struct {
 	Profile    profileData        `json:"profile"`
 	Tier       string             `json:"tier"`
 	SecretRefs []string           `json:"secret_refs"`
+	Workdir    string             `json:"workdir"`
 }
 
 type profileData struct {

@@ -4,6 +4,7 @@ package execsandbox
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -120,6 +121,61 @@ func TestExecSandboxLive(t *testing.T) {
 
 		t.Logf("gvisor_clean_run: status=%s, tier=%s, exit=%d, stdout=%q, SandboxID=%s",
 			result.Status, result.Tier, exitCode, result.Stdout, result.SandboxID)
+	})
+
+	t.Run("bubblewrap_worktree_mount_read_write", func(t *testing.T) {
+		// TC-062-07: bubblewrap with a real temp dir as Worktree.
+		// Seed a file, run a payload that reads it and writes a new file, assert the new file persists on the host.
+		tempDir := t.TempDir()
+
+		// Seed a file in the worktree.
+		seedFilePath := filepath.Join(tempDir, "seed.txt")
+		seedContent := "SEEDED_CONTENT"
+		if err := os.WriteFile(seedFilePath, []byte(seedContent), 0o644); err != nil {
+			t.Fatalf("failed to seed file: %v", err)
+		}
+
+		// Command: read seed file, verify content, write new file.
+		// The payload runs with cwd=/work (where the worktree is mounted).
+		cmd := []string{"sh", "-c", "cat seed.txt && echo 'WROTE_FILE' > output.txt"}
+
+		req := sandbox.Request{
+			Command:  cmd,
+			Worktree: tempDir,
+			Tier:     "bubblewrap",
+			Limits: sandbox.Limits{
+				WallClockTimeout: 10 * time.Second,
+			},
+		}
+
+		result, exitCode, err := runner.Run(req)
+		if err != nil {
+			t.Fatalf("Run() returned error: %v", err)
+		}
+
+		if exitCode != 0 {
+			t.Errorf("Expected exit code 0, got %d; stderr: %q", exitCode, result.Stderr)
+		}
+
+		if result.Status != "clean" {
+			t.Errorf("Expected status 'clean', got %q", result.Status)
+		}
+
+		// Verify the payload read the seeded file (output should contain SEEDED_CONTENT).
+		if !contains(result.Stdout, seedContent) {
+			t.Errorf("Expected stdout to contain seeded content %q, got: %q", seedContent, result.Stdout)
+		}
+
+		// Verify the new file was written to the host's worktree (persisted after the sandbox exited).
+		outputFilePath := filepath.Join(tempDir, "output.txt")
+		outputContent, err := os.ReadFile(outputFilePath)
+		if err != nil {
+			t.Errorf("Expected output.txt to exist and be readable, but got error: %v", err)
+		} else if !contains(string(outputContent), "WROTE_FILE") {
+			t.Errorf("Expected output.txt to contain 'WROTE_FILE', got: %q", string(outputContent))
+		}
+
+		t.Logf("bubblewrap_worktree_mount_read_write: worktree=%s, seed read successfully, output.txt persisted to host", tempDir)
 	})
 }
 

@@ -127,6 +127,15 @@ func TestExecSandboxMarshalRequestFullLimits(t *testing.T) {
 	if !strings.Contains(recordedReq.Run.Payload, "echo") {
 		t.Errorf("payload: expected to contain 'echo', got %q", recordedReq.Run.Payload)
 	}
+
+	// Verify workdir is set to req.Worktree (absolute path).
+	expectedWorkdir, err := filepath.Abs(tempDir)
+	if err != nil {
+		t.Fatalf("failed to get absolute path: %v", err)
+	}
+	if recordedReq.Run.Workdir != expectedWorkdir {
+		t.Errorf("workdir: expected %q, got %q", expectedWorkdir, recordedReq.Run.Workdir)
+	}
 }
 
 // TestExecSandboxMarshalRequestZeroLimits verifies zero/unset Limits produce zero fields in JSON.
@@ -392,6 +401,51 @@ func TestExecSandboxMissingBinary(t *testing.T) {
 		}
 		if !strings.Contains(err.Error(), "not executable") {
 			t.Errorf("Error message: expected to mention executable, got %v", err)
+		}
+	})
+}
+
+// TestExecSandboxWorktreeValidation verifies that invalid worktree paths fail loud.
+// TC-062-07: bad/nonexistent/non-dir worktree paths are rejected with loud errors.
+func TestExecSandboxWorktreeValidation(t *testing.T) {
+	tempDir := t.TempDir()
+	stubBinPath := filepath.Join(tempDir, "stub-exec-sandbox")
+	createStubBinaryWithResult(t, stubBinPath, defaultStubResult())
+
+	runner := New(stubBinPath)
+
+	t.Run("nonexistent_worktree", func(t *testing.T) {
+		req := sandbox.Request{
+			Command:  []string{"echo", "hi"},
+			Worktree: "/nonexistent/path/to/worktree",
+		}
+
+		_, _, err := runner.Run(req)
+		if err == nil {
+			t.Fatalf("Expected error for nonexistent worktree, got nil")
+		}
+		if !strings.Contains(err.Error(), "invalid worktree") && !strings.Contains(err.Error(), "no such file") {
+			t.Errorf("Error message: expected to mention invalid worktree or missing path, got %v", err)
+		}
+	})
+
+	t.Run("worktree_is_file", func(t *testing.T) {
+		filePath := filepath.Join(tempDir, "file-not-dir")
+		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
+			t.Fatalf("failed to create test file: %v", err)
+		}
+
+		req := sandbox.Request{
+			Command:  []string{"echo", "hi"},
+			Worktree: filePath,
+		}
+
+		_, _, err := runner.Run(req)
+		if err == nil {
+			t.Fatalf("Expected error for file as worktree, got nil")
+		}
+		if !strings.Contains(err.Error(), "invalid worktree") && !strings.Contains(err.Error(), "not a directory") {
+			t.Errorf("Error message: expected to mention invalid worktree or not a directory, got %v", err)
 		}
 	})
 }
