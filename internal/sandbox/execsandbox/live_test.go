@@ -215,15 +215,9 @@ func TestExecSandboxLiveToolchain(t *testing.T) {
 		t.Fatalf("Run() returned error: %v", err)
 	}
 
-	// Exit code 127 typically means command not found - this indicates exec-sandbox task 004
-	// (FileRead capability for GOROOT paths) has not been merged yet.
-	if exitCode == 127 {
-		t.Skipf("exit code 127 indicates FileRead capability not yet available; exec-sandbox task 004 must be merged for this test to pass")
-	}
-
-	// Verify exit code is 0
+	// Verify exit code is 0 — go must resolve in-box via the adapter's FileRead+PATH forwarding.
 	if exitCode != 0 {
-		t.Errorf("Expected exit code 0, got %d; stderr: %q", exitCode, result.Stderr)
+		t.Fatalf("Expected exit code 0 (go resolved in-box), got %d; stdout=%q stderr=%q", exitCode, result.Stdout, result.Stderr)
 	}
 
 	// Verify sandbox status is clean

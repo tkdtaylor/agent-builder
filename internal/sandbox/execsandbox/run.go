@@ -294,22 +294,25 @@ func buildRunRequest(req sandbox.Request, worktree string, egressParseErr error)
 		},
 	}
 
-	// Discover toolchain and gate-tools for FileRead capability.
+	// Discover toolchain and gate-tools. FileRead mounts the whole directory
+	// read-only; PATH points at the dir that actually holds the executables —
+	// for GOROOT that is GOROOT/bin (where `go`/`gofmt` live), not GOROOT itself.
 	var fileReadPaths []string
+	var pathDirs []string
 	if goroot, err := discoverGoroot(); err == nil {
 		fileReadPaths = append(fileReadPaths, goroot)
+		pathDirs = append(pathDirs, filepath.Join(goroot, "bin"))
 	}
 	if repoRoot, err := findRepoRoot(); err == nil {
 		if gateTools, err := discoverGateTools(repoRoot); err == nil {
 			fileReadPaths = append(fileReadPaths, gateTools)
+			pathDirs = append(pathDirs, gateTools) // scanners live directly in the gate-tools dir
 		}
 	}
 
 	// Build environment (PATH) for the payload.
 	env := make(map[string]string)
-	if len(fileReadPaths) > 0 {
-		// Construct PATH to include discovered toolchain and gate-tools dirs
-		pathDirs := fileReadPaths
+	if len(pathDirs) > 0 {
 		pathDirs = append(pathDirs, "/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
 		env["PATH"] = strings.Join(pathDirs, ":")
 	}
