@@ -27,6 +27,7 @@ type Request struct {
 	Command  []string
 	Worktree string
 	Limits   Limits
+	Tier     string // "bubblewrap" (default) or "gvisor" — first-class seam as of ADR 035
 }
 
 // Limits is the typed resource and egress contract for contained runs.
