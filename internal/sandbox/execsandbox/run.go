@@ -77,8 +77,17 @@ func (r *Runner) Run(req sandbox.Request) (sandbox.Result, int, error) {
 		worktree = validatedWorktree
 	}
 
+	// Validate egress allowlist early (fail loud before building the request).
+	var egressParseErr error
+	if len(req.Limits.EgressAllowlist) > 0 {
+		_, egressParseErr = parseEgressAllowlist(req.Limits.EgressAllowlist)
+	}
+
 	// Build the RunRequest JSON.
-	runReq := buildRunRequest(req, worktree)
+	runReq, err := buildRunRequest(req, worktree, egressParseErr)
+	if err != nil {
+		return sandbox.Result{}, 0, err
+	}
 
 	// Marshal it to JSON.
 	reqJSON, err := json.Marshal(runReq)
@@ -257,7 +266,14 @@ func findRepoRoot() (string, error) {
 
 // buildRunRequest constructs the JSON RunRequest from the typed Request.
 // The worktree parameter is the validated absolute path; "" means no mount.
-func buildRunRequest(req sandbox.Request, worktree string) runRequest {
+// This function cannot return an error internally, so egress allowlist errors
+// must be caught by the caller (Run method).
+func buildRunRequest(req sandbox.Request, worktree string, egressParseErr error) (runRequest, error) {
+	// Fail loud if egress allowlist parsing failed.
+	if egressParseErr != nil {
+		return runRequest{}, egressParseErr
+	}
+
 	// Render the command as a shell script string.
 	payload := renderCommand(req.Command)
 
@@ -328,7 +344,7 @@ func buildRunRequest(req sandbox.Request, worktree string) runRequest {
 		InjectionMode: "",
 	}
 
-	// Populate origin_map from EgressAllowlist
+	// Populate origin_map from EgressAllowlist (if we get here, parse already succeeded)
 	if len(req.Limits.EgressAllowlist) > 0 {
 		if originMap, err := parseEgressAllowlist(req.Limits.EgressAllowlist); err == nil {
 			wiring.OriginMap = originMap
@@ -345,7 +361,7 @@ func buildRunRequest(req sandbox.Request, worktree string) runRequest {
 			Env:        env,
 		},
 		Wiring: wiring,
-	}
+	}, nil
 }
 
 // extractDegraded extracts the degraded resource list from the limits object.

@@ -772,58 +772,116 @@ func TestOriginMapPopulation(t *testing.T) {
 
 	createStubBinary(t, stubBinPath, recordPath, "")
 
-	runner := New(stubBinPath)
-	req := sandbox.Request{
-		Command:  []string{"-c", "true"},
-		Worktree: tempDir,
-		Limits: sandbox.Limits{
-			EgressAllowlist: []string{
-				"api.github.com:443",
-				"registry.npmjs.org:443",
+	t.Run("valid_entries", func(t *testing.T) {
+		runner := New(stubBinPath)
+		req := sandbox.Request{
+			Command:  []string{"-c", "true"},
+			Worktree: tempDir,
+			Limits: sandbox.Limits{
+				EgressAllowlist: []string{
+					"api.github.com:443",
+					"registry.npmjs.org:443",
+				},
 			},
-		},
-	}
-
-	_, _, err := runner.Run(req)
-	if err != nil {
-		t.Fatalf("Run() returned error: %v", err)
-	}
-
-	recordedData, err := os.ReadFile(recordPath)
-	if err != nil {
-		t.Fatalf("failed to read recorded request: %v", err)
-	}
-
-	var recordedReq runRequest
-	if err := json.Unmarshal(recordedData, &recordedReq); err != nil {
-		t.Fatalf("failed to parse recorded request JSON: %v", err)
-	}
-
-	// Verify origin_map is non-empty
-	if len(recordedReq.Wiring.OriginMap) == 0 {
-		t.Errorf("origin_map: expected non-empty, got empty")
-	} else {
-		// Verify each entry
-		if entry, ok := recordedReq.Wiring.OriginMap["api.github.com"]; !ok {
-			t.Errorf("origin_map: expected entry for 'api.github.com'")
-		} else if entry[0] != "api.github.com" || entry[1] != "443" {
-			t.Errorf("origin_map['api.github.com']: expected ['api.github.com', '443'], got %v", entry)
 		}
 
-		if entry, ok := recordedReq.Wiring.OriginMap["registry.npmjs.org"]; !ok {
-			t.Errorf("origin_map: expected entry for 'registry.npmjs.org'")
-		} else if entry[0] != "registry.npmjs.org" || entry[1] != "443" {
-			t.Errorf("origin_map['registry.npmjs.org']: expected ['registry.npmjs.org', '443'], got %v", entry)
+		_, _, err := runner.Run(req)
+		if err != nil {
+			t.Fatalf("Run() returned error: %v", err)
 		}
-	}
 
-	// Verify NetConnect capability is still present
-	netCap := findCapability(recordedReq, "NetConnect")
-	if netCap == nil {
-		t.Errorf("NetConnect capability not found")
-	} else if len(netCap.Allowlist) != 2 {
-		t.Errorf("NetConnect.allowlist: expected 2 entries, got %d", len(netCap.Allowlist))
-	}
+		recordedData, err := os.ReadFile(recordPath)
+		if err != nil {
+			t.Fatalf("failed to read recorded request: %v", err)
+		}
+
+		var recordedReq runRequest
+		if err := json.Unmarshal(recordedData, &recordedReq); err != nil {
+			t.Fatalf("failed to parse recorded request JSON: %v", err)
+		}
+
+		// Verify origin_map is non-empty
+		if len(recordedReq.Wiring.OriginMap) == 0 {
+			t.Errorf("origin_map: expected non-empty, got empty")
+		} else {
+			// Verify each entry
+			if entry, ok := recordedReq.Wiring.OriginMap["api.github.com"]; !ok {
+				t.Errorf("origin_map: expected entry for 'api.github.com'")
+			} else if entry[0] != "api.github.com" || entry[1] != "443" {
+				t.Errorf("origin_map['api.github.com']: expected ['api.github.com', '443'], got %v", entry)
+			}
+
+			if entry, ok := recordedReq.Wiring.OriginMap["registry.npmjs.org"]; !ok {
+				t.Errorf("origin_map: expected entry for 'registry.npmjs.org'")
+			} else if entry[0] != "registry.npmjs.org" || entry[1] != "443" {
+				t.Errorf("origin_map['registry.npmjs.org']: expected ['registry.npmjs.org', '443'], got %v", entry)
+			}
+		}
+
+		// Verify NetConnect capability is still present
+		netCap := findCapability(recordedReq, "NetConnect")
+		if netCap == nil {
+			t.Errorf("NetConnect capability not found")
+		} else if len(netCap.Allowlist) != 2 {
+			t.Errorf("NetConnect.allowlist: expected 2 entries, got %d", len(netCap.Allowlist))
+		}
+	})
+
+	t.Run("empty_allowlist", func(t *testing.T) {
+		runner := New(stubBinPath)
+		req := sandbox.Request{
+			Command:  []string{"-c", "true"},
+			Worktree: tempDir,
+			Limits:   sandbox.Limits{EgressAllowlist: []string{}},
+		}
+
+		_, _, err := runner.Run(req)
+		if err != nil {
+			t.Fatalf("Run() returned error: %v", err)
+		}
+
+		recordedData, err := os.ReadFile(recordPath)
+		if err != nil {
+			t.Fatalf("failed to read recorded request: %v", err)
+		}
+
+		var recordedReq runRequest
+		if err := json.Unmarshal(recordedData, &recordedReq); err != nil {
+			t.Fatalf("failed to parse recorded request JSON: %v", err)
+		}
+
+		// Verify origin_map is empty
+		if len(recordedReq.Wiring.OriginMap) != 0 {
+			t.Errorf("origin_map: expected empty for empty allowlist, got %v", recordedReq.Wiring.OriginMap)
+		}
+
+		// Verify NetConnect capability is absent
+		netCap := findCapability(recordedReq, "NetConnect")
+		if netCap != nil {
+			t.Errorf("NetConnect capability should not be present for empty allowlist")
+		}
+	})
+
+	t.Run("malformed_entry_no_port", func(t *testing.T) {
+		runner := New(stubBinPath)
+		req := sandbox.Request{
+			Command:  []string{"-c", "true"},
+			Worktree: tempDir,
+			Limits: sandbox.Limits{
+				EgressAllowlist: []string{"api.github.com"}, // Missing :port
+			},
+		}
+
+		_, _, err := runner.Run(req)
+		if err == nil {
+			t.Fatalf("Run() should return error for malformed egress entry, got nil")
+		}
+
+		// Verify the error message mentions the problem
+		if !strings.Contains(err.Error(), "invalid egress allowlist entry") {
+			t.Errorf("Error message should mention invalid egress entry, got: %v", err)
+		}
+	})
 }
 
 // findCapability is a helper to locate a capability by type.
