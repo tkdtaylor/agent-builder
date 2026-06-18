@@ -236,14 +236,14 @@ func (f liveCapstoneFixture) env(t *testing.T) map[string]string {
 	launcherPath := filepath.Join(root, "containment/execution-box/run.sh")
 
 	return map[string]string{
-		"ANTHROPIC_API_KEY":                    os.Getenv("ANTHROPIC_API_KEY"),
-		"AGENT_BUILDER_TASK_ROOT":              f.taskRoot,
-		"AGENT_BUILDER_WORKTREE":               f.worktree,
-		"AGENT_BUILDER_PUBLISH_REMOTE":         f.remote,
-		"AGENT_BUILDER_RUN_TIMEOUT":            "300s",
-		"AGENT_BUILDER_MAX_ATTEMPTS":           "1",
-		"AGENT_BUILDER_RUN_RECORD":             f.recordPath,
-		"AGENT_BUILDER_EXEC_BOX_LAUNCHER":      launcherPath,
+		"ANTHROPIC_API_KEY":               os.Getenv("ANTHROPIC_API_KEY"),
+		"AGENT_BUILDER_TASK_ROOT":         f.taskRoot,
+		"AGENT_BUILDER_WORKTREE":          f.worktree,
+		"AGENT_BUILDER_PUBLISH_REMOTE":    f.remote,
+		"AGENT_BUILDER_RUN_TIMEOUT":       "300s",
+		"AGENT_BUILDER_MAX_ATTEMPTS":      "1",
+		"AGENT_BUILDER_RUN_RECORD":        f.recordPath,
+		"AGENT_BUILDER_EXEC_BOX_LAUNCHER": launcherPath,
 	}
 }
 

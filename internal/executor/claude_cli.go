@@ -18,6 +18,8 @@ import (
 const (
 	// ClaudeCLIAuthEnv is the independently revocable credential passed to Claude Code.
 	ClaudeCLIAuthEnv = "ANTHROPIC_API_KEY"
+	// ClaudeCLIOAuthEnv is the subscription OAuth token alternative to ClaudeCLIAuthEnv.
+	ClaudeCLIOAuthEnv = "CLAUDE_CODE_OAUTH_TOKEN"
 
 	claudeCLIHistoryEnv = "CLAUDE_CODE_SKIP_PROMPT_HISTORY"
 )
@@ -26,6 +28,7 @@ var (
 	ErrBlankCLIPath                     = errors.New("executor: blank Claude CLI path")
 	ErrBlankWorktree                    = errors.New("executor: blank worktree")
 	ErrMissingClaudeToken               = errors.New("executor: missing ANTHROPIC_API_KEY")
+	ErrMissingClaudeCredential          = errors.New("executor: missing both ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN")
 	ErrBlankTaskID                      = errors.New("executor: blank task ID")
 	ErrBlankTaskSpec                    = errors.New("executor: blank task spec")
 	ErrMissingBranch                    = errors.New("executor: Claude CLI did not write produced branch")
@@ -49,6 +52,7 @@ type ClaudeCLIConfig struct {
 	CLIPath          string
 	Worktree         string
 	AuthToken        string
+	OAuthToken       string
 	IngestionPolicy  ClaudeIngestionPolicy
 	IngestionHarness *executorharness.Harness
 }
@@ -58,6 +62,7 @@ type ClaudeCLI struct {
 	cliPath          string
 	worktree         string
 	authToken        string
+	oauthToken       string
 	ingestionPolicy  ClaudeIngestionPolicy
 	ingestionHarness *executorharness.Harness
 }
@@ -68,18 +73,20 @@ func NewClaudeCLI(config ClaudeCLIConfig) *ClaudeCLI {
 		cliPath:          strings.TrimSpace(config.CLIPath),
 		worktree:         strings.TrimSpace(config.Worktree),
 		authToken:        config.AuthToken,
+		oauthToken:       config.OAuthToken,
 		ingestionPolicy:  normalizeClaudeIngestionPolicy(config.IngestionPolicy),
 		ingestionHarness: config.IngestionHarness,
 	}
 }
 
 // NewClaudeCLIFromEnv constructs a Claude Code CLI executor using ANTHROPIC_API_KEY
-// from the process environment. It reads no host-home credential files.
+// or CLAUDE_CODE_OAUTH_TOKEN from the process environment. It reads no host-home credential files.
 func NewClaudeCLIFromEnv(worktree string) *ClaudeCLI {
 	return NewClaudeCLI(ClaudeCLIConfig{
-		CLIPath:   "claude",
-		Worktree:  worktree,
-		AuthToken: os.Getenv(ClaudeCLIAuthEnv),
+		CLIPath:    "claude",
+		Worktree:   worktree,
+		AuthToken:  os.Getenv(ClaudeCLIAuthEnv),
+		OAuthToken: os.Getenv(ClaudeCLIOAuthEnv),
 	})
 }
 
@@ -144,7 +151,7 @@ func (e *ClaudeCLI) RunContext(ctx context.Context, task supervisor.Task) (super
 
 	cmd := exec.CommandContext(ctx, e.cliPath, "-p", prompt)
 	cmd.Dir = e.worktree
-	cmd.Env = claudeEnv(os.Environ(), e.authToken, runDir)
+	cmd.Env = claudeEnv(os.Environ(), e.authToken, e.oauthToken, runDir)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -152,7 +159,7 @@ func (e *ClaudeCLI) RunContext(ctx context.Context, task supervisor.Task) (super
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
-		return supervisor.Result{OK: false}, fmt.Errorf("executor: Claude CLI %q failed: %w: %s", e.cliPath, err, sanitizeCLIOutput(stdout.String(), stderr.String(), e.authToken))
+		return supervisor.Result{OK: false}, fmt.Errorf("executor: Claude CLI %q failed: %w: %s", e.cliPath, err, sanitizeCLIOutput(stdout.String(), stderr.String(), e.authToken, e.oauthToken))
 	}
 
 	branchBytes, err := os.ReadFile(branchPath)
@@ -174,8 +181,9 @@ func (e *ClaudeCLI) validate(task supervisor.Task) error {
 	if strings.TrimSpace(e.worktree) == "" {
 		return ErrBlankWorktree
 	}
-	if strings.TrimSpace(e.authToken) == "" {
-		return ErrMissingClaudeToken
+	// Accept either OAuth token or API key credential
+	if strings.TrimSpace(e.oauthToken) == "" && strings.TrimSpace(e.authToken) == "" {
+		return ErrMissingClaudeCredential
 	}
 	if strings.TrimSpace(task.ID) == "" {
 		return ErrBlankTaskID
@@ -224,11 +232,13 @@ When finished, write only the produced branch name to this file:
 `, task.ID, task.Repo, task.Spec, worktree, branchPath)
 }
 
-func claudeEnv(base []string, token, tempHome string) []string {
+func claudeEnv(base []string, authToken, oauthToken, tempHome string) []string {
 	env := make([]string, 0, len(base)+5)
 	for _, entry := range base {
 		switch {
 		case strings.HasPrefix(entry, ClaudeCLIAuthEnv+"="):
+			continue
+		case strings.HasPrefix(entry, ClaudeCLIOAuthEnv+"="):
 			continue
 		case strings.HasPrefix(entry, "HOME="):
 			continue
@@ -243,8 +253,14 @@ func claudeEnv(base []string, token, tempHome string) []string {
 		}
 	}
 
+	// OAuth token preferred over API key when both present (ADR 033)
+	if strings.TrimSpace(oauthToken) != "" {
+		env = append(env, ClaudeCLIOAuthEnv+"="+oauthToken)
+	} else if strings.TrimSpace(authToken) != "" {
+		env = append(env, ClaudeCLIAuthEnv+"="+authToken)
+	}
+
 	env = append(env,
-		ClaudeCLIAuthEnv+"="+token,
 		"HOME="+filepath.Join(tempHome, "home"),
 		"XDG_CONFIG_HOME="+filepath.Join(tempHome, "xdg-config"),
 		"XDG_CACHE_HOME="+filepath.Join(tempHome, "xdg-cache"),
@@ -254,13 +270,16 @@ func claudeEnv(base []string, token, tempHome string) []string {
 	return env
 }
 
-func sanitizeCLIOutput(stdout, stderr, token string) string {
+func sanitizeCLIOutput(stdout, stderr, authToken, oauthToken string) string {
 	output := strings.TrimSpace(strings.Join([]string{stdout, stderr}, "\n"))
 	if output == "" {
 		return "no output"
 	}
-	if token != "" {
-		output = strings.ReplaceAll(output, token, "[REDACTED]")
+	if authToken != "" {
+		output = strings.ReplaceAll(output, authToken, "[REDACTED]")
+	}
+	if oauthToken != "" {
+		output = strings.ReplaceAll(output, oauthToken, "[REDACTED]")
 	}
 	return output
 }

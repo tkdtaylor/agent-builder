@@ -29,10 +29,10 @@ var _ audit.Sink = (*audit.BlockSink)(nil)
 // recordingRunner captures argv and returns canned responses. It implements
 // the audit.ExecRunner seam injected into BlockSink for unit tests.
 type recordingRunner struct {
-	calls    [][]string // each call's argv slice
-	stdout   string     // canned stdout to return (default: valid JSON)
-	exitErr  error      // non-nil to simulate a failing exec
-	malformed bool      // return non-JSON on success
+	calls     [][]string // each call's argv slice
+	stdout    string     // canned stdout to return (default: valid JSON)
+	exitErr   error      // non-nil to simulate a failing exec
+	malformed bool       // return non-JSON on success
 }
 
 func (r *recordingRunner) Run(args []string) ([]byte, error) {

@@ -115,7 +115,7 @@ func TestClaudeCLIRunRejectsInvalidInputsBeforeSubprocess(t *testing.T) {
 			name: "missing token",
 			exec: executor.NewClaudeCLI(executor.ClaudeCLIConfig{CLIPath: cliPath, Worktree: worktree}),
 			task: supervisor.Task{ID: "022", Spec: "docs/tasks/completed/022-claude-cli-executor.md"},
-			want: executor.ErrMissingClaudeToken,
+			want: executor.ErrMissingClaudeCredential,
 		},
 		{
 			name: "blank task ID",
@@ -137,7 +137,7 @@ func TestClaudeCLIRunRejectsInvalidInputsBeforeSubprocess(t *testing.T) {
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("Run error = %v, want %v", err, tt.want)
 			}
-			if tt.want == executor.ErrMissingClaudeToken && !strings.Contains(err.Error(), executor.ClaudeCLIAuthEnv) {
+			if (tt.want == executor.ErrMissingClaudeToken || tt.want == executor.ErrMissingClaudeCredential) && !strings.Contains(err.Error(), executor.ClaudeCLIAuthEnv) {
 				t.Fatalf("TC-004 missing-token error %q does not name %s", err, executor.ClaudeCLIAuthEnv)
 			}
 			if _, err := os.Stat(recordPath); !errors.Is(err, os.ErrNotExist) {

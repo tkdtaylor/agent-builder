@@ -139,6 +139,7 @@ type ClaudeCLIConfig struct {
 	CLIPath          string
 	Worktree         string
 	AuthToken        string
+	OAuthToken       string
 	IngestionPolicy  ClaudeIngestionPolicy
 	IngestionHarness *executorharness.Harness
 }
@@ -155,7 +156,7 @@ func (e *ClaudeCLI) HandleToolCall(ctx context.Context, event executorharness.To
 - **Outbound call:** `claude -p <prompt>` with `cmd.Dir` set to `ClaudeCLIConfig.Worktree`.
 - **Branch contract:** the prompt names an executor-owned temp file where the CLI must write the produced branch. The executor trims that file and copies it into `supervisor.Result.Branch`.
 - **Web/tool policy:** `IngestionPolicy` defaults to `disabled`. `disabled` fails closed for Claude-facing web/tool events while preserving ordinary subprocess execution. `reviewed` requires `IngestionHarness` and routes web/tool events through it before any continuation or tool executor can run. Unknown policy values and reviewed-without-harness configurations fail before subprocess start.
-- **Auth contract:** the only default credential source is `ANTHROPIC_API_KEY`; the executor injects it into subprocess env, replaces host `HOME`/XDG dirs with temp dirs, and redacts the token from subprocess failure output.
+- **Auth contract:** the executor accepts either `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (OAuth token preferred when both are set). Exactly one credential is injected into subprocess env; the other is stripped. Host `HOME`/XDG dirs are replaced with temp dirs. Both credential values are redacted from subprocess failure output. The executor fails before subprocess start when both are absent.
 
 ### Interface: supervisor dispatch lifecycle seams
 
@@ -194,19 +195,19 @@ type RunStreams struct {
 
 ```go
 type Config struct {
-	TaskRoot       string
-	Worktree       string
-	ClaudeCLI      string
-	ClaudeToken    string
-	SandboxRuntime string
-	RunRecordPath  string
-	RunTimeout     time.Duration
-	MaxAttempts    int
-	PublishRemote  string
-	GitCLI         string
-	GitHubCLI      string
-	GitToken       string
-	GitHubToken    string
+	TaskRoot         string
+	Worktree         string
+	ClaudeCLI        string
+	ClaudeToken      string
+	ClaudeOAuthToken string
+	RunRecordPath    string
+	RunTimeout       time.Duration
+	MaxAttempts      int
+	PublishRemote    string
+	GitCLI           string
+	GitHubCLI        string
+	GitToken         string
+	GitHubToken      string
 }
 
 func ConfigFromEnv(getenv func(string) string) (Config, error)

@@ -250,10 +250,10 @@ func filteredEnv() []string {
 		// safely set them without causing recursion when the binary runs go test internally.
 		// The outer test gates whether to run (e.g., AGENT_BUILDER_LIVE_E2E=1), but the
 		// binary never needs or should receive these flags.
-		"AGENT_BUILDER_LIVE_E2E":       {},
-		"AGENT_BUILDER_LIVE_PUBLISH":   {},
-		"AGENT_BUILDER_LIVE_PODMAN":    {},
-		"AGENT_BUILDER_LIVE_SRT":       {},
+		"AGENT_BUILDER_LIVE_E2E":     {},
+		"AGENT_BUILDER_LIVE_PUBLISH": {},
+		"AGENT_BUILDER_LIVE_PODMAN":  {},
+		"AGENT_BUILDER_LIVE_SRT":     {},
 	}
 	filtered := []string{}
 	for _, entry := range os.Environ() {

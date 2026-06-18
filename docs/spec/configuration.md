@@ -80,7 +80,8 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `EXEC_BOX_EGRESS_PROBE_ALLOW_HOST` | `host:port` | `api.github.com:443` | no | Allowlisted probe target expected to connect during `--egress-probe` |
 | `EXEC_BOX_EGRESS_PROBE_DENY_HOST` | `host:port` | `example.com:443` | no | Non-allowlisted probe target expected to be blocked during `--egress-probe` |
 | `EXEC_BOX_EGRESS_PROBE_DENY_IP` | `host:port` IP literal | `1.1.1.1:443` | no | Direct-IP probe target expected to be blocked during `--egress-probe` |
-| `ANTHROPIC_API_KEY` | secret string | none | yes for `executor.ClaudeCLI` | Independently revocable Claude Code CLI credential injected into the subprocess environment. The executor fails before subprocess start when absent. |
+| `ANTHROPIC_API_KEY` | secret string | none | no (one of two) | Independently revocable Claude Code CLI credential injected into the subprocess environment. The executor accepts this OR `CLAUDE_CODE_OAUTH_TOKEN` (OAuth token preferred when both are set). The executor fails before subprocess start when both are absent. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | secret string | none | no (one of two) | Subscription OAuth token alternative to `ANTHROPIC_API_KEY`. When set, it is preferred over the API key and injected into the subprocess environment. Minted by `claude setup-token` on a Claude Pro/Max subscription. The executor fails before subprocess start when both this and `ANTHROPIC_API_KEY` are absent. |
 | `AGENT_BUILDER_TASK_ROOT` | path | none | yes for `agent-builder run` | Root containing `docs/plans/roadmap.md` and `docs/tasks/{backlog,active,completed}` for task selection and constrained status writes |
 | `AGENT_BUILDER_WORKTREE` | path | none | yes for `agent-builder run` | Target repo worktree passed to the Claude CLI Executor, Gate, and Podman execution-box containment probe |
 | `AGENT_BUILDER_CLAUDE_CLI` | path/name | `claude` | no | Claude Code CLI executable used by default run wiring |
@@ -153,7 +154,8 @@ The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.m
 
 | Secret | Source | Used for |
 |--------|--------|----------|
-| `ANTHROPIC_API_KEY` | Host environment or sandbox secret store | Claude Code CLI executor auth. The value must be independently revocable and is injected only as a subprocess environment variable. The executor does not read arbitrary host-home credential files by default; it runs the CLI with temporary `HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME` directories and does not log token values. |
+| `ANTHROPIC_API_KEY` | Host environment or sandbox secret store | Claude Code CLI executor auth (API key alternative). The value must be independently revocable and is injected only as a subprocess environment variable when `CLAUDE_CODE_OAUTH_TOKEN` is absent. The executor does not read arbitrary host-home credential files by default; it runs the CLI with temporary `HOME`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME` directories and does not log token values. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | Host environment or sandbox secret store | Claude Code CLI executor auth (subscription OAuth token, preferred when both credentials are set). Minted by `claude setup-token` on a Claude Pro/Max subscription. The value is injected only as a subprocess environment variable and is independently revocable from the API key. The executor does not read arbitrary host-home credential files by default. |
 | `AGENT_BUILDER_GIT_TOKEN` | Host environment or sandbox secret store | Optional git publication token copied to publisher subprocesses as `GIT_TOKEN` and redacted from publisher errors/run records. |
 | `AGENT_BUILDER_GITHUB_TOKEN` | Host environment or sandbox secret store | Optional GitHub publication token copied to publisher subprocesses as `GH_TOKEN` and `GITHUB_TOKEN` and redacted from publisher errors/run records. |
 

@@ -49,21 +49,22 @@ const (
 
 // Config is the explicit runtime configuration used by agent-builder run.
 type Config struct {
-	TaskRoot        string
-	Worktree        string
-	ClaudeCLI       string
-	ClaudeToken     string
-	ExecBoxLauncher string
-	RunRecordPath   string
-	AuditRecordPath string
-	AuditBin        string
-	RunTimeout      time.Duration
-	MaxAttempts     int
-	PublishRemote   string
-	GitCLI          string
-	GitHubCLI       string
-	GitToken        string
-	GitHubToken     string
+	TaskRoot         string
+	Worktree         string
+	ClaudeCLI        string
+	ClaudeToken      string
+	ClaudeOAuthToken string
+	ExecBoxLauncher  string
+	RunRecordPath    string
+	AuditRecordPath  string
+	AuditBin         string
+	RunTimeout       time.Duration
+	MaxAttempts      int
+	PublishRemote    string
+	GitCLI           string
+	GitHubCLI        string
+	GitToken         string
+	GitHubToken      string
 }
 
 // RunFromEnv builds and runs one configured Phase 0 pipeline from environment
@@ -85,19 +86,20 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	}
 
 	config := Config{
-		TaskRoot:        cleanPath(getenv(EnvTaskRoot)),
-		Worktree:        cleanPath(getenv(EnvWorktree)),
-		ClaudeCLI:       strings.TrimSpace(getenv(EnvClaudeCLI)),
-		ClaudeToken:     getenv(executor.ClaudeCLIAuthEnv),
-		ExecBoxLauncher: cleanPath(getenv(EnvExecBoxLauncher)),
-		RunRecordPath:   cleanPath(getenv(EnvRunRecord)),
-		AuditRecordPath: cleanPath(getenv(EnvAuditRecord)),
-		AuditBin:        strings.TrimSpace(getenv(EnvAuditBin)),
-		PublishRemote:   strings.TrimSpace(getenv(EnvPublishRemote)),
-		GitCLI:          strings.TrimSpace(getenv(EnvGitCLI)),
-		GitHubCLI:       strings.TrimSpace(getenv(EnvGitHubCLI)),
-		GitToken:        getenv(EnvGitToken),
-		GitHubToken:     getenv(EnvGitHubToken),
+		TaskRoot:         cleanPath(getenv(EnvTaskRoot)),
+		Worktree:         cleanPath(getenv(EnvWorktree)),
+		ClaudeCLI:        strings.TrimSpace(getenv(EnvClaudeCLI)),
+		ClaudeToken:      getenv(executor.ClaudeCLIAuthEnv),
+		ClaudeOAuthToken: getenv(executor.ClaudeCLIOAuthEnv),
+		ExecBoxLauncher:  cleanPath(getenv(EnvExecBoxLauncher)),
+		RunRecordPath:    cleanPath(getenv(EnvRunRecord)),
+		AuditRecordPath:  cleanPath(getenv(EnvAuditRecord)),
+		AuditBin:         strings.TrimSpace(getenv(EnvAuditBin)),
+		PublishRemote:    strings.TrimSpace(getenv(EnvPublishRemote)),
+		GitCLI:           strings.TrimSpace(getenv(EnvGitCLI)),
+		GitHubCLI:        strings.TrimSpace(getenv(EnvGitHubCLI)),
+		GitToken:         getenv(EnvGitToken),
+		GitHubToken:      getenv(EnvGitHubToken),
 	}
 	if config.ClaudeCLI == "" {
 		config.ClaudeCLI = "claude"
@@ -118,8 +120,9 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	if config.Worktree == "" {
 		return Config{}, missingConfig(EnvWorktree)
 	}
-	if strings.TrimSpace(config.ClaudeToken) == "" {
-		return Config{}, missingConfig(executor.ClaudeCLIAuthEnv)
+	// Require at least one credential (OAuth token or API key)
+	if strings.TrimSpace(config.ClaudeToken) == "" && strings.TrimSpace(config.ClaudeOAuthToken) == "" {
+		return Config{}, fmt.Errorf("run config: missing at least one of %s or %s", executor.ClaudeCLIAuthEnv, executor.ClaudeCLIOAuthEnv)
 	}
 	if config.PublishRemote == "" {
 		return Config{}, missingConfig(EnvPublishRemote)
@@ -177,9 +180,10 @@ func Run(config Config, stdout io.Writer) error {
 	}
 
 	exec := executor.NewClaudeCLI(executor.ClaudeCLIConfig{
-		CLIPath:   config.ClaudeCLI,
-		Worktree:  config.Worktree,
-		AuthToken: config.ClaudeToken,
+		CLIPath:    config.ClaudeCLI,
+		Worktree:   config.Worktree,
+		AuthToken:  config.ClaudeToken,
+		OAuthToken: config.ClaudeOAuthToken,
 	})
 	runner := podman.NewWithLauncher(config.ExecBoxLauncher)
 	box := sandboxBox{
