@@ -339,6 +339,9 @@ func TestRuntimeBinaryCLI(t *testing.T) {
 func TestVerifyMissingGateToolFailsBeforeSuccess_TC003(t *testing.T) {
 	binary := buildBinary(t)
 	repo := writeRepo(t, "missingtool", false)
+	// Add go.sum so that dep-scan step is invoked (per ADR 034: no go.sum = pass;
+	// go.sum present = invoke scanner). With dep-scan missing, the step must fail.
+	writeFile(t, filepath.Join(repo, "go.sum"), "example.com/dep v1.0.0 h1:abc=\nexample.com/dep v1.0.0/go.mod h1:def=\n")
 	pathWithHost := writeNamedToolShims(t, map[string]string{
 		"go":            "#!/bin/sh\nexit 0\n",
 		"gofmt":         "#!/bin/sh\nexit 0\n",
@@ -348,7 +351,7 @@ func TestVerifyMissingGateToolFailsBeforeSuccess_TC003(t *testing.T) {
 	path := strings.Split(pathWithHost, string(os.PathListSeparator))[0]
 
 	stdout, stderr, code := runBinary(t, binary, []string{"PATH=" + path}, "verify", repo)
-	t.Logf("agent-builder verify missing gods: stdout=%q stderr=%q exit=%d", stdout, stderr, code)
+	t.Logf("agent-builder verify missing dep-scan: stdout=%q stderr=%q exit=%d", stdout, stderr, code)
 
 	if code != 1 {
 		t.Fatalf("TC-003 runtime exit code = %d, want 1; stdout=%q stderr=%q", code, stdout, stderr)
@@ -360,8 +363,8 @@ func TestVerifyMissingGateToolFailsBeforeSuccess_TC003(t *testing.T) {
 		!strings.Contains(stdout, "PASS golangci-lint run") {
 		t.Fatalf("TC-003 stdout = %q, want earlier Gate steps to pass", stdout)
 	}
-	if !strings.Contains(stdout, "FAIL gods") || !strings.Contains(stdout, "missing tool") {
-		t.Fatalf("TC-003 stdout = %q, want missing gods failure", stdout)
+	if !strings.Contains(stdout, "FAIL dep-scan") || !strings.Contains(stdout, "missing tool") {
+		t.Fatalf("TC-003 stdout = %q, want missing dep-scan failure", stdout)
 	}
 	if strings.Contains(stdout, "verification passed:") {
 		t.Fatalf("TC-003 stdout = %q, must not report verification success", stdout)
@@ -426,7 +429,7 @@ func writeToolShims(t *testing.T) string {
 
 	return writeNamedToolShims(t, map[string]string{
 		"golangci-lint": "#!/bin/sh\nexit 0\n",
-		"gods":          "#!/bin/sh\nexit 0\n",
+		"dep-scan":      "#!/bin/sh\nexit 0\n",
 		"code-scanner":  "#!/bin/sh\nexit 0\n",
 	})
 }

@@ -79,7 +79,7 @@ make_fake_worktree() {
 make_fake_gate_tools() {
     local tmpdir
     tmpdir="$(mktemp -d)"
-    for tool in golangci-lint gods code-scanner; do
+    for tool in golangci-lint dep-scan code-scanner; do
         printf '#!/bin/sh\nexit 0\n' > "$tmpdir/$tool"
         chmod +x "$tmpdir/$tool"
     done

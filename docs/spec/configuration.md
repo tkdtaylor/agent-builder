@@ -29,9 +29,9 @@ The image supplies the Go toolchain, `/work`, `/scratch`, and the in-box probe b
 - **Required vs optional:** required documentation for the execution-box Gate toolchain contract
 - **Reload behavior:** read by contributors/operators as the version/source contract; runtime validation is performed by `containment/execution-box/run.sh`
 
-The manifest records that `go` and `gofmt` are supplied by the execution-box base image. The production Gate scanner/linter tools, `golangci-lint`, `gods`, and `code-scanner`, are supplied by a read-only artifact directory mounted at `/opt/agent-builder/gate-tools`. Those mounted artifacts are version-reported rather than fetched during task execution: `containment/execution-box/run.sh --print-toolchain-plan` validates the host-side directory and prints each mounted executable path plus the first `--version` line when available, and `--probe` repeats path/version reporting from inside the box.
+The manifest records that `go` and `gofmt` are supplied by the execution-box base image. The production Gate scanner/linter tools, `golangci-lint`, `dep-scan`, and `code-scanner`, are supplied by a read-only artifact directory mounted at `/opt/agent-builder/gate-tools`. Those mounted artifacts are version-reported rather than fetched during task execution: `containment/execution-box/run.sh --print-toolchain-plan` validates the host-side directory and prints each mounted executable path plus the first `--version` line when available, and `--probe` repeats path/version reporting from inside the box.
 
-The default host-side artifact directory is `containment/execution-box/gate-tools`; override it with `EXEC_BOX_GATE_TOOLS` or `--gate-tools`. The directory must contain executable files named exactly `golangci-lint`, `gods`, and `code-scanner`. Missing directories or missing executables fail closed before Podman starts. The workload container mounts the directory read-only and prepends it to `PATH`, so the Gate does not need broad network egress to fetch tools during task execution.
+The default host-side artifact directory is `containment/execution-box/gate-tools`; override it with `EXEC_BOX_GATE_TOOLS` or `--gate-tools`. The directory must contain executable files named exactly `golangci-lint`, `dep-scan`, and `code-scanner`. Missing directories or missing executables fail closed before Podman starts. The workload container mounts the directory read-only and prepends it to `PATH`, so the Gate does not need broad network egress to fetch tools during task execution.
 
 ### File: `containment/execution-box/egress.allowlist`
 
@@ -68,7 +68,7 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `EXEC_BOX_IMAGE` | string | `localhost/agent-builder/execution-box:033` | no | Image tag built and run by the execution-box launcher |
 | `EXEC_BOX_WORKLOAD` | enum: `agent`, `dev` | `agent` | no | Workload tier used to choose the default OCI runtime: `agent` -> `runsc`, `dev` -> `runc` |
 | `EXEC_BOX_RUNTIME` | enum: `runc`, `runsc`, `kata` | workload default | no | OCI runtime passed to Podman `--runtime`; overrides `EXEC_BOX_WORKLOAD` default mapping |
-| `EXEC_BOX_GATE_TOOLS` | path | `containment/execution-box/gate-tools` | no | Host artifact directory containing executable `golangci-lint`, `gods`, and `code-scanner`; mounted read-only into the execution-box at `/opt/agent-builder/gate-tools` |
+| `EXEC_BOX_GATE_TOOLS` | path | `containment/execution-box/gate-tools` | no | Host artifact directory containing executable `golangci-lint`, `dep-scan`, and `code-scanner`; mounted read-only into the execution-box at `/opt/agent-builder/gate-tools` |
 | `EXEC_BOX_CPUS` | number/string accepted by Podman | `2` | no | CPU quota passed as `--cpus` |
 | `EXEC_BOX_MEMORY` | size string | `2g` | no | Memory quota passed as `--memory` |
 | `EXEC_BOX_PIDS_LIMIT` | integer | `256` | no | PID quota passed as `--pids-limit` |

@@ -40,7 +40,7 @@ EOF
     fi
 fi
 
-for tool in go gofmt golangci-lint gods code-scanner; do
+for tool in go gofmt golangci-lint dep-scan code-scanner; do
     tool_path="$(command -v "$tool" || true)"
     [ -n "$tool_path" ] || fail TC-001 "Gate tool missing on PATH: $tool"
 

@@ -9,5 +9,5 @@
 go=base-image
 gofmt=base-image
 golangci-lint=mounted-version-reported
-gods=mounted-version-reported
+dep-scan=mounted-version-reported
 code-scanner=mounted-version-reported

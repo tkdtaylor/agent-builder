@@ -322,7 +322,7 @@ PODMAN_STUB
     chmod +x "$stub_dir/podman"
 
     # Create stub gate tools
-    for tool in golangci-lint gods code-scanner; do
+    for tool in golangci-lint dep-scan code-scanner; do
         printf '#!/bin/sh\nexit 0\n' > "$gate_tools/$tool"
         chmod +x "$gate_tools/$tool"
     done

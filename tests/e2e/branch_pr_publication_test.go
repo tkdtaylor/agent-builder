@@ -357,7 +357,7 @@ printf 'https://github.com/acme/e2e/pull/34\n'
 
 func writeGateTools(t *testing.T, dir string, gateFails bool) {
 	t.Helper()
-	for _, tool := range []string{"golangci-lint", "gods", "code-scanner"} {
+	for _, tool := range []string{"golangci-lint", "dep-scan", "code-scanner"} {
 		exit := "0"
 		if tool == "code-scanner" && gateFails {
 			exit = "23"

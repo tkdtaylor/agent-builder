@@ -12,7 +12,7 @@ Options:
   --worktree PATH          host repo worktree to mount at /work (default: current directory)
   --workload agent|dev     workload tier for default runtime mapping (default: agent)
   --runtime NAME           OCI runtime passed to Podman --runtime (overrides workload default)
-  --gate-tools PATH        directory containing golangci-lint, gods, and code-scanner (default: containment/execution-box/gate-tools)
+  --gate-tools PATH        directory containing golangci-lint, dep-scan, and code-scanner (default: containment/execution-box/gate-tools)
   --probe                  run the runtime containment probe instead of an interactive shell
   --egress-probe           run the runtime egress allowlist probe
   --egress-allowlist PATH  plain-text host:port allowlist (default: containment/execution-box/egress.allowlist)
@@ -198,7 +198,9 @@ print_runtime_plan_file() {
 }
 
 required_mounted_gate_tools() {
-    printf '%s\n' golangci-lint gods code-scanner
+    # dep-scan replaced the `gods` go-wrapper as the gate's supply-chain scanner
+    # (ADR 034): the gate calls dep-scan directly rather than the go-drop-in.
+    printf '%s\n' golangci-lint dep-scan code-scanner
 }
 
 resolve_gate_tools() {

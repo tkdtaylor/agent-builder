@@ -58,10 +58,10 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 ### B-005: Run dep-scan against the target worktree
 
 - **Trigger:** A gate is configured with the dep-scan Step and invoked with a target repository worktree path.
-- **Response:** The Step shells out in the supplied worktree to `gods`, the Go dependency CVE scanner, and returns a StepResult. The scanner's exit code represents the high-or-above severity gate.
-- **Side effects:** The Step spawns a local `gods` subprocess with the target worktree as the working directory. It writes no persistent state itself.
-- **Failure modes:** Any non-zero scanner exit fails the Step and surfaces combined stdout/stderr, including CVE findings. A missing `gods` binary on `PATH` is a hard failure that identifies the missing tool.
-- **References:** `docs/tasks/test-specs/005-gate-dep-scan-test-spec.md`.
+- **Response:** If the worktree has no `go.sum` (no third-party dependencies), the Step returns a pass (OK=true) without invoking the scanner. If `go.sum` is present, the Step shells out in the supplied worktree to `dep-scan check --registry go --lockfile go.sum --lockfile-type go` and returns a StepResult. The scanner's exit code represents the high-or-above severity gate.
+- **Side effects:** The Step spawns a local `dep-scan` subprocess with the target worktree as the working directory when `go.sum` is present. It writes no persistent state itself.
+- **Failure modes:** When `go.sum` is absent, the Step passes (no external dependencies to scan). When `go.sum` is present, any non-zero scanner exit fails the Step and surfaces combined stdout/stderr, including CVE findings. A missing `dep-scan` binary with `go.sum` present is a hard failure that identifies the missing tool.
+- **References:** `docs/tasks/test-specs/061-inbox-dep-scan-fix-test-spec.md`.
 
 ### B-006: Run code-scanner against the target worktree
 

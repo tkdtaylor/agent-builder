@@ -2,7 +2,9 @@ package gate
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -12,8 +14,13 @@ const (
 	goTestStepName   = "go test ./..."
 	goFmtStepName    = "gofmt -l ."
 	goLintStepName   = "golangci-lint run"
-	depScanStepName  = "gods"
+	depScanStepName  = "dep-scan"
 	codeScanStepName = "code-scanner"
+
+	// depScanTool is the supply-chain scanner the gate invokes directly. We do
+	// not use the `gods` go-wrapper here: with no package arguments it skips the
+	// scan and falls through to a bare `go`, which exits non-zero (ADR 034).
+	depScanTool = "dep-scan"
 )
 
 // GoBuildStep runs go build across every package in a target worktree.
@@ -84,7 +91,23 @@ func (DepScanStep) Name() string {
 }
 
 func (DepScanStep) Run(repoPath string) StepResult {
-	return runCommandStep(repoPath, "gods")
+	// A module with no go.sum has no third-party dependencies, so there is
+	// nothing to scan. Go requires a go.sum for any `require`, so its absence
+	// reliably means "no external deps" — pass without invoking the scanner
+	// (ADR 034). This is the agent-builder case (no deps).
+	if _, err := os.Stat(filepath.Join(repoPath, "go.sum")); err != nil {
+		if os.IsNotExist(err) {
+			return StepResult{
+				OK:     true,
+				Output: "no go.sum: module has no third-party dependencies; nothing to scan",
+			}
+		}
+		return StepResult{OK: false, Output: fmt.Sprintf("stat go.sum: %v", err)}
+	}
+
+	// go.sum present: scan its locked dependencies with dep-scan directly.
+	return runCommandStep(repoPath, depScanTool,
+		"check", "--registry", "go", "--lockfile", "go.sum", "--lockfile-type", "go")
 }
 
 // CodeScannerStep runs the malware/backdoor scanner in a target worktree.

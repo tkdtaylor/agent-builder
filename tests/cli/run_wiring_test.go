@@ -417,7 +417,7 @@ exec /bin/sh "$@"
 
 func writePassingGateTools(t *testing.T, dir string) {
 	t.Helper()
-	for _, tool := range []string{"golangci-lint", "gods", "code-scanner"} {
+	for _, tool := range []string{"golangci-lint", "dep-scan", "code-scanner"} {
 		writeFile(t, filepath.Join(dir, tool), "#!/bin/sh\nexit 0\n")
 		if err := os.Chmod(filepath.Join(dir, tool), 0o755); err != nil {
 			t.Fatalf("chmod %s: %v", tool, err)
@@ -438,13 +438,13 @@ func writeGateToolShims(t *testing.T, includeCodeScanner bool) string {
 	}
 	writeFile(t, filepath.Join(dir, "go"), "#!/bin/sh\nexec "+shellQuoteForRun(goPath)+" \"$@\"\n")
 	writeFile(t, filepath.Join(dir, "gofmt"), "#!/bin/sh\nexec "+shellQuoteForRun(gofmtPath)+" \"$@\"\n")
-	for _, tool := range []string{"golangci-lint", "gods"} {
+	for _, tool := range []string{"golangci-lint", "dep-scan"} {
 		writeFile(t, filepath.Join(dir, tool), "#!/bin/sh\nexit 0\n")
 	}
 	if includeCodeScanner {
 		writeFile(t, filepath.Join(dir, "code-scanner"), "#!/bin/sh\nexit 0\n")
 	}
-	for _, tool := range []string{"go", "gofmt", "golangci-lint", "gods", "code-scanner"} {
+	for _, tool := range []string{"go", "gofmt", "golangci-lint", "dep-scan", "code-scanner"} {
 		path := filepath.Join(dir, tool)
 		if _, err := os.Stat(path); err == nil {
 			if err := os.Chmod(path, 0o755); err != nil {

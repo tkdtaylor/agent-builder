@@ -11,7 +11,7 @@ import (
 func TestExecutionBoxGateToolchainPlan_TC001_TC002(t *testing.T) {
 	root := repoRoot(t)
 	runPath := filepath.Join(root, "containment", "execution-box", "run.sh")
-	toolDir := writeGateToolchainFixture(t, "golangci-lint", "gods", "code-scanner")
+	toolDir := writeGateToolchainFixture(t, "golangci-lint", "dep-scan", "code-scanner")
 
 	cmd := exec.Command(runPath, "--gate-tools", toolDir, "--print-toolchain-plan")
 	cmd.Dir = root
@@ -23,7 +23,7 @@ func TestExecutionBoxGateToolchainPlan_TC001_TC002(t *testing.T) {
 
 	assertContains(t, output, "TC-001 PLAN: base-image go on PATH")
 	assertContains(t, output, "TC-001 PLAN: base-image gofmt on PATH")
-	for _, tool := range []string{"golangci-lint", "gods", "code-scanner"} {
+	for _, tool := range []string{"golangci-lint", "dep-scan", "code-scanner"} {
 		assertContains(t, output, "TC-001 PLAN: mount "+tool+"="+filepath.Join(toolDir, tool))
 		assertContains(t, output, "TC-002 PLAN: "+tool+" version="+tool+" fixture version")
 	}
@@ -40,11 +40,11 @@ func TestExecutionBoxGateToolchainMissingToolFails_TC003(t *testing.T) {
 	cmd.Dir = root
 	outputBytes, err := cmd.CombinedOutput()
 	if err == nil {
-		t.Fatalf("TC-003 missing gods should fail, got success:\n%s", outputBytes)
+		t.Fatalf("TC-003 missing dep-scan should fail, got success:\n%s", outputBytes)
 	}
 	output := string(outputBytes)
 
-	assertContains(t, output, "missing Gate tool gods")
+	assertContains(t, output, "missing Gate tool dep-scan")
 	if strings.Contains(output, "TC-001 PLAN:") {
 		t.Fatalf("TC-003 missing tool must fail before success plan output, got:\n%s", output)
 	}
@@ -58,7 +58,7 @@ func TestExecutionBoxGateToolchainLauncherContract_TC001_TC003_TC005(t *testing.
 	assertContains(t, run, "gate_tool_mount=\"/opt/agent-builder/gate-tools\"")
 	assertContains(t, run, "--mount \"type=bind,source=$gate_tools,target=$gate_tool_mount,ro")
 	assertContains(t, run, "--env \"PATH=$gate_tool_path\"")
-	assertContains(t, probe, "for tool in go gofmt golangci-lint gods code-scanner")
+	assertContains(t, probe, "for tool in go gofmt golangci-lint dep-scan code-scanner")
 	assertContains(t, probe, "Gate tool $tool path=$tool_path version=$version")
 
 	// TC-003: the launcher validates mounted tools before Podman starts.
@@ -80,13 +80,13 @@ func TestExecutionBoxGateToolchainDocs_TC002_TC004(t *testing.T) {
 	// TC-002: configuration/spec docs identify the tool source and version contract.
 	assertContains(t, config, "File: `containment/execution-box/gate-toolchain.manifest`")
 	assertContains(t, config, "`EXEC_BOX_GATE_TOOLS`")
-	assertContains(t, config, "golangci-lint`, `gods`, and `code-scanner`")
+	assertContains(t, config, "golangci-lint`, `dep-scan`, and `code-scanner`")
 	assertContains(t, config, "version-reported")
 	assertContains(t, interfaces, "--gate-tools PATH")
 	assertContains(t, interfaces, "--print-toolchain-plan")
 	assertContains(t, manifest, "go=base-image")
 	assertContains(t, manifest, "golangci-lint=mounted-version-reported")
-	assertContains(t, manifest, "gods=mounted-version-reported")
+	assertContains(t, manifest, "dep-scan=mounted-version-reported")
 	assertContains(t, manifest, "code-scanner=mounted-version-reported")
 
 	// TC-004: the product containment artifact remains the sole image/profile exception.
