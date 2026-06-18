@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-17
-**Status:** backlog
+**Status:** ✅ (verified — L5 green; L6 live capstone PASSED on subscription auth, real PR l6#4, gate fully green)
 
 ## Goal
 
