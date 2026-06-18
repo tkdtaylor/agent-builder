@@ -239,6 +239,17 @@ func TestExecSandboxParseResult(t *testing.T) {
 	if result.Duration != 42*time.Millisecond {
 		t.Errorf("Duration: expected 42ms, got %v", result.Duration)
 	}
+
+	// Verify sandbox_status fields are surfaced on Result.
+	if result.SandboxID != "sbx-abc123" {
+		t.Errorf("SandboxID: expected 'sbx-abc123', got %q", result.SandboxID)
+	}
+	if result.Tier != "bubblewrap" {
+		t.Errorf("Tier: expected 'bubblewrap', got %q", result.Tier)
+	}
+	if result.Status != "clean" {
+		t.Errorf("Status: expected 'clean', got %q", result.Status)
+	}
 }
 
 // TestExecSandboxBlockError verifies block's {"error":...} response surfaces as loud Go error.

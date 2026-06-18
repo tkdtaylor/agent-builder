@@ -18,26 +18,28 @@ import (
 	agentloop "github.com/tkdtaylor/agent-builder/internal/loop"
 	branchpub "github.com/tkdtaylor/agent-builder/internal/publisher"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox"
+	"github.com/tkdtaylor/agent-builder/internal/sandbox/execsandbox"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox/podman"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 	"github.com/tkdtaylor/agent-builder/internal/tasksource"
 )
 
 const (
-	EnvTaskRoot        = "AGENT_BUILDER_TASK_ROOT"
-	EnvWorktree        = "AGENT_BUILDER_WORKTREE"
-	EnvClaudeCLI       = "AGENT_BUILDER_CLAUDE_CLI"
-	EnvExecBoxLauncher = "AGENT_BUILDER_EXEC_BOX_LAUNCHER"
-	EnvRunRecord       = "AGENT_BUILDER_RUN_RECORD"
-	EnvAuditRecord     = "AGENT_BUILDER_AUDIT_RECORD"
-	EnvAuditBin        = "AGENT_BUILDER_AUDIT_BIN"
-	EnvRunTimeout      = "AGENT_BUILDER_RUN_TIMEOUT"
-	EnvMaxAttempts     = "AGENT_BUILDER_MAX_ATTEMPTS"
-	EnvPublishRemote   = "AGENT_BUILDER_PUBLISH_REMOTE"
-	EnvGitCLI          = "AGENT_BUILDER_GIT_CLI"
-	EnvGitHubCLI       = "AGENT_BUILDER_GH_CLI"
-	EnvGitToken        = "AGENT_BUILDER_GIT_TOKEN"
-	EnvGitHubToken     = "AGENT_BUILDER_GITHUB_TOKEN"
+	EnvTaskRoot          = "AGENT_BUILDER_TASK_ROOT"
+	EnvWorktree          = "AGENT_BUILDER_WORKTREE"
+	EnvClaudeCLI         = "AGENT_BUILDER_CLAUDE_CLI"
+	EnvExecBoxLauncher   = "AGENT_BUILDER_EXEC_BOX_LAUNCHER"
+	EnvExecSandboxBin    = "AGENT_BUILDER_EXEC_SANDBOX_BIN"
+	EnvRunRecord         = "AGENT_BUILDER_RUN_RECORD"
+	EnvAuditRecord       = "AGENT_BUILDER_AUDIT_RECORD"
+	EnvAuditBin          = "AGENT_BUILDER_AUDIT_BIN"
+	EnvRunTimeout        = "AGENT_BUILDER_RUN_TIMEOUT"
+	EnvMaxAttempts       = "AGENT_BUILDER_MAX_ATTEMPTS"
+	EnvPublishRemote     = "AGENT_BUILDER_PUBLISH_REMOTE"
+	EnvGitCLI            = "AGENT_BUILDER_GIT_CLI"
+	EnvGitHubCLI         = "AGENT_BUILDER_GH_CLI"
+	EnvGitToken          = "AGENT_BUILDER_GIT_TOKEN"
+	EnvGitHubToken       = "AGENT_BUILDER_GITHUB_TOKEN"
 
 	// EnvSandboxRuntime is the removed Phase 0 srt selector. It is retained only
 	// to detect and reject a stale value loudly (ADR 021, decision 2).
@@ -55,6 +57,7 @@ type Config struct {
 	ClaudeToken      string
 	ClaudeOAuthToken string
 	ExecBoxLauncher  string
+	ExecSandboxBin   string
 	RunRecordPath    string
 	AuditRecordPath  string
 	AuditBin         string
@@ -92,6 +95,7 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		ClaudeToken:      getenv(executor.ClaudeCLIAuthEnv),
 		ClaudeOAuthToken: getenv(executor.ClaudeCLIOAuthEnv),
 		ExecBoxLauncher:  cleanPath(getenv(EnvExecBoxLauncher)),
+		ExecSandboxBin:   cleanPath(getenv(EnvExecSandboxBin)),
 		RunRecordPath:    cleanPath(getenv(EnvRunRecord)),
 		AuditRecordPath:  cleanPath(getenv(EnvAuditRecord)),
 		AuditBin:         strings.TrimSpace(getenv(EnvAuditBin)),
@@ -185,11 +189,24 @@ func Run(config Config, stdout io.Writer) error {
 		AuthToken:  config.ClaudeToken,
 		OAuthToken: config.ClaudeOAuthToken,
 	})
-	runner := podman.NewWithLauncher(config.ExecBoxLauncher)
+
+	// Select the run backend: if AGENT_BUILDER_EXEC_SANDBOX_BIN is set, use execsandbox
+	// as the default; otherwise fall back to the Podman launcher.
+	var runner sandbox.Runner
+	var backendLabel string
+	if config.ExecSandboxBin != "" {
+		runner = execsandbox.New(config.ExecSandboxBin)
+		backendLabel = "exec-sandbox"
+	} else {
+		runner = podman.NewWithLauncher(config.ExecBoxLauncher)
+		backendLabel = "podman"
+	}
+
 	box := sandboxBox{
 		runner:   runner,
 		worktree: config.Worktree,
 		launcher: config.ExecBoxLauncher,
+		backend:  backendLabel,
 		limits: sandbox.Limits{
 			WallClockTimeout: config.RunTimeout,
 		},
@@ -329,6 +346,7 @@ type sandboxBox struct {
 	runner   sandbox.Runner
 	worktree string
 	launcher string
+	backend  string
 	limits   sandbox.Limits
 }
 
@@ -354,6 +372,7 @@ func (b sandboxBox) Create(task supervisor.Task) (supervisor.BoxHandle, error) {
 	return supervisor.BoxHandle{
 		ID:       "sandbox-" + strings.TrimSpace(task.ID),
 		Worktree: b.worktree,
+		Backend:  b.backend,
 	}, nil
 }
 
@@ -379,7 +398,7 @@ type retryingInBoxLoop struct {
 
 func (l retryingInBoxLoop) RunInside(handle supervisor.BoxHandle, task supervisor.Task, streams supervisor.RunStreams) error {
 	runID := auditRunID(task, handle)
-	writeCommand(streams, "containment=podman launcher=%s", l.launcher)
+	writeCommand(streams, "containment=%s launcher=%s", handle.Backend, l.launcher)
 	emitAudit(streams, audit.AuditEvent{
 		Action: audit.ActionContainment, RunID: runID, TaskID: task.ID,
 		Detail: audit.EventDetail{Launcher: l.launcher},

@@ -41,9 +41,13 @@ type Limits struct {
 
 // Result is the structured output from a contained command run.
 type Result struct {
-	Stdout   string
-	Stderr   string
-	Duration time.Duration
+	Stdout      string
+	Stderr      string
+	Duration    time.Duration
+	SandboxID   string // Unique identifier for the sandbox instance (from exec-sandbox block)
+	Tier        string // Execution tier: "bubblewrap" or "gvisor" (from exec-sandbox block)
+	Status      string // Sandbox execution status: "clean", "timeout", etc. (from exec-sandbox block)
+	Degraded    []string // Resource limits that were degraded (from exec-sandbox block)
 }
 
 // ValidateRequest checks the backend-independent request contract.

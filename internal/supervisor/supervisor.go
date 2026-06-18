@@ -71,6 +71,7 @@ type Gate interface {
 type BoxHandle struct {
 	ID       string
 	Worktree string
+	Backend  string // "podman" or "exec-sandbox"
 }
 
 // ContainmentBox is the fakeable outside-the-box lifecycle seam.

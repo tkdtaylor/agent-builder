@@ -222,6 +222,89 @@ func TestNoSrtInvocation(t *testing.T) {
 	t.Log("TC-036-02 no srt subprocess; AGENT_BUILDER_SANDBOX_RUNTIME absent from run contract")
 }
 
+// TestRuntimeRunWiresExecSandboxBackend (TC-062-06) asserts that when
+// AGENT_BUILDER_EXEC_SANDBOX_BIN is set, the run pipeline uses the exec-sandbox
+// block as the default backend (not the Podman launcher).
+func TestRuntimeRunWiresExecSandboxBackend(t *testing.T) {
+	binary := buildBinary(t)
+	fixture := newRunFixture(t, "ready")
+	env := fixture.env()
+
+	// Create a fake exec-sandbox binary that records invocations and returns success.
+	execSandboxLog := filepath.Join(filepath.Dir(fixture.launcherLog), "exec-sandbox.log")
+	execSandboxBin := filepath.Join(fixture.shimDir, "exec-sandbox")
+	execSandboxScript := fmt.Sprintf(`#!/bin/bash
+# Read the JSON request from stdin and record it.
+cat > /dev/null
+# Write back a minimal valid result JSON.
+printf '{
+  "stdout": "",
+  "stderr": "",
+  "exit_code": 0,
+  "sandbox_status": {
+    "sandbox_id": "sbx-test",
+    "tier": "bubblewrap",
+    "duration_ms": 10,
+    "secrets_injected": [],
+    "status": "clean",
+    "limits": {"cpu_count": 0, "memory_mb": 0, "pids": 0, "disk_mb": 0, "timeout_sec": 0, "degraded": []}
+  }
+}'
+# Record that exec-sandbox was invoked.
+echo "exec-sandbox invoked" >> %s
+`, shellQuoteForRun(execSandboxLog))
+	writeFile(t, execSandboxBin, execSandboxScript)
+	if err := os.Chmod(execSandboxBin, 0o755); err != nil {
+		t.Fatalf("chmod fake exec-sandbox: %v", err)
+	}
+
+	// Set the env var to point to our fake exec-sandbox binary.
+	env[runtimewiring.EnvExecSandboxBin] = execSandboxBin
+
+	stdout, stderr, code := runBinaryExactEnv(t, binary, env, "run")
+	if code != 0 {
+		t.Fatalf("TC-062-06 run exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	// Verify exec-sandbox was invoked (not the Podman launcher).
+	if _, err := os.Stat(execSandboxLog); errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("TC-062-06 exec-sandbox was not invoked; log %s not found", execSandboxLog)
+	}
+
+	// Check the run record to confirm containment=exec-sandbox is logged.
+	events := readRunRecordEvents(t, fixture.recordPath)
+	assertRunRecordContains(t, events, "command", "command", "containment=exec-sandbox")
+	t.Log("TC-062-06 runtime uses exec-sandbox block as default backend when AGENT_BUILDER_EXEC_SANDBOX_BIN is set")
+}
+
+// TestPodmanBackendReachableViaConfig (TC-062-06) asserts that even when
+// AGENT_BUILDER_EXEC_SANDBOX_BIN is set, the Podman backend is still reachable
+// by unsetting the env var (or by explicit configuration).
+func TestPodmanBackendReachableViaConfig(t *testing.T) {
+	binary := buildBinary(t)
+	fixture := newRunFixture(t, "ready")
+	env := fixture.env()
+
+	// Unset the exec-sandbox env var so Podman launcher is used (fallback).
+	delete(env, runtimewiring.EnvExecSandboxBin)
+
+	stdout, stderr, code := runBinaryExactEnv(t, binary, env, "run")
+	if code != 0 {
+		t.Fatalf("TC-062-06 run exit code = %d, want 0; stdout=%q stderr=%q", code, stdout, stderr)
+	}
+
+	// Verify the Podman launcher was invoked.
+	launcherLog := readRuntimeText(t, fixture.launcherLog)
+	if !strings.Contains(launcherLog, "cmd=-c true") {
+		t.Fatalf("TC-062-06 Podman launcher not invoked; launcher log = %q, want `-c true` probe", launcherLog)
+	}
+
+	// Check the run record to confirm containment=podman is logged (not exec-sandbox).
+	events := readRunRecordEvents(t, fixture.recordPath)
+	assertRunRecordContains(t, events, "command", "command", "containment=podman")
+	t.Log("TC-062-06 Podman backend is reachable when AGENT_BUILDER_EXEC_SANDBOX_BIN is unset")
+}
+
 type runFixture struct {
 	taskRoot     string
 	worktree     string
@@ -482,20 +565,21 @@ func runBinaryExactEnv(t *testing.T, binary string, env map[string]string, args 
 
 func filteredBaseEnv() []string {
 	blocked := map[string]struct{}{
-		runtimewiring.EnvTaskRoot:        {},
-		runtimewiring.EnvWorktree:        {},
-		runtimewiring.EnvClaudeCLI:       {},
-		runtimewiring.EnvExecBoxLauncher: {},
-		runtimewiring.EnvSandboxRuntime:  {},
-		runtimewiring.EnvRunRecord:       {},
-		runtimewiring.EnvRunTimeout:      {},
-		runtimewiring.EnvMaxAttempts:     {},
-		runtimewiring.EnvPublishRemote:   {},
-		runtimewiring.EnvGitCLI:          {},
-		runtimewiring.EnvGitHubCLI:       {},
-		runtimewiring.EnvGitToken:        {},
-		runtimewiring.EnvGitHubToken:     {},
-		"ANTHROPIC_API_KEY":              {},
+		runtimewiring.EnvTaskRoot:         {},
+		runtimewiring.EnvWorktree:         {},
+		runtimewiring.EnvClaudeCLI:        {},
+		runtimewiring.EnvExecBoxLauncher:  {},
+		runtimewiring.EnvExecSandboxBin:   {},
+		runtimewiring.EnvSandboxRuntime:   {},
+		runtimewiring.EnvRunRecord:        {},
+		runtimewiring.EnvRunTimeout:       {},
+		runtimewiring.EnvMaxAttempts:      {},
+		runtimewiring.EnvPublishRemote:    {},
+		runtimewiring.EnvGitCLI:           {},
+		runtimewiring.EnvGitHubCLI:        {},
+		runtimewiring.EnvGitToken:         {},
+		runtimewiring.EnvGitHubToken:      {},
+		"ANTHROPIC_API_KEY":               {},
 	}
 	filtered := []string{}
 	for _, entry := range os.Environ() {

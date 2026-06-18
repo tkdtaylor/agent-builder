@@ -10,8 +10,8 @@ test:
 	go test ./...
 
 # Fitness functions — see docs/spec/fitness-functions.md
-fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation
-	@echo "Fitness checks passed."
+fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default
+	@echo "All fitness checks passed."
 
 fitness-no-docker:
 	@word=$$(printf 'dock%s' 'er'); \
@@ -158,6 +158,19 @@ fitness-audit-isolation:
 		exit 1; \
 	fi; \
 	echo "PASS fitness-audit-isolation: internal/audit import graph contains no executor/LLM/web-fetch or audit-trail-block packages and the supervisor's audit dependency drags none in."
+
+# fitness-exec-sandbox-default verifies that internal/runtime wires execsandbox as the
+# default run backend (TC-062-06, TC-062-07). The runtime package must import
+# internal/sandbox/execsandbox in its default path.
+fitness-exec-sandbox-default:
+	@runtime_deps=$$(go list -deps ./internal/runtime/...) || exit $$?; \
+	exec_sandbox=$$(printf '%s\n' "$$runtime_deps" | grep 'internal/sandbox/execsandbox' || true); \
+	if [ -z "$$exec_sandbox" ]; then \
+		echo "FAIL fitness-exec-sandbox-default: internal/runtime does not import internal/sandbox/execsandbox:"; \
+		echo "internal/runtime must wire execsandbox as the default backend (ADR 035, TC-062-06)"; \
+		exit 1; \
+	fi; \
+	echo "PASS fitness-exec-sandbox-default: internal/runtime wires execsandbox as the default run backend"
 
 check: lint test fitness
 	@echo "All checks passed."

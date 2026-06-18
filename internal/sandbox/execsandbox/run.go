@@ -125,15 +125,14 @@ func (r *Runner) Run(req sandbox.Request) (sandbox.Result, int, error) {
 
 	// Surface the sandbox_status and build the Result.
 	result := sandbox.Result{
-		Stdout:   blockResult.Stdout,
-		Stderr:   blockResult.Stderr,
-		Duration: time.Duration(blockResult.SandboxStatus.DurationMs) * time.Millisecond,
+		Stdout:    blockResult.Stdout,
+		Stderr:    blockResult.Stderr,
+		Duration:  time.Duration(blockResult.SandboxStatus.DurationMs) * time.Millisecond,
+		SandboxID: blockResult.SandboxStatus.SandboxID,
+		Tier:      blockResult.SandboxStatus.Tier,
+		Status:    blockResult.SandboxStatus.Status,
+		Degraded:  extractDegraded(blockResult.SandboxStatus.Limits),
 	}
-
-	// Store the sandbox_status on the runner context so it can be inspected by tests/logging.
-	// For now, we surface it through a separate return or as an extended Result field.
-	// The test spec requires it to be surfaced, so we'll return it separately.
-	// We'll modify the interface in a follow-up or extend Result to include it.
 
 	return result, blockResult.ExitCode, nil
 }
@@ -188,6 +187,33 @@ func buildRunRequest(req sandbox.Request) runRequest {
 		},
 		Wiring: wiring,
 	}
+}
+
+// extractDegraded extracts the degraded resource list from the limits object.
+// The limits object is unmarshaled as interface{} and may contain a "degraded" field.
+func extractDegraded(limitsObj any) []string {
+	if limitsObj == nil {
+		return nil
+	}
+	limitsMap, ok := limitsObj.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	degradedRaw, ok := limitsMap["degraded"]
+	if !ok {
+		return nil
+	}
+	degradedSlice, ok := degradedRaw.([]interface{})
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(degradedSlice))
+	for _, item := range degradedSlice {
+		if str, ok := item.(string); ok {
+			result = append(result, str)
+		}
+	}
+	return result
 }
 
 // renderCommand converts a command slice into a shell script string.
