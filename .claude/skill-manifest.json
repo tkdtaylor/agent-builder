@@ -75,8 +75,8 @@
       },
       "scripts/start-task.sh": {
         "template": "assets/templates/common/scripts/start-task.sh",
-        "installed_hash": "d9ad9da0c4ee4c440c28f7254a070da537c20a590e59dd52ef09b29bcc6eec91",
-        "template_hash": "d9ad9da0c4ee4c440c28f7254a070da537c20a590e59dd52ef09b29bcc6eec91"
+        "installed_hash": "921d855c69dc3ad8dc7dfc629577af5df0fc2dc0d99cf649e35ceeb8d4507d59",
+        "template_hash": "921d855c69dc3ad8dc7dfc629577af5df0fc2dc0d99cf649e35ceeb8d4507d59"
       },
       "scripts/verify-worktree-isolation.sh": {
         "template": "assets/templates/common/scripts/verify-worktree-isolation.sh",
@@ -160,13 +160,13 @@
       },
       "scripts/finish-task.sh": {
         "template": "assets/templates/common/scripts/finish-task.sh",
-        "installed_hash": "80d8c989d816664e16d25b4d8f64a30022a6d5e0b31829e7061d33e565da3055",
-        "template_hash": "80d8c989d816664e16d25b4d8f64a30022a6d5e0b31829e7061d33e565da3055"
+        "installed_hash": "199999f2e39684d2ef895fb479f2892fb5356cba171ebd9397a93559cfee72c9",
+        "template_hash": "199999f2e39684d2ef895fb479f2892fb5356cba171ebd9397a93559cfee72c9"
       },
       ".claude/backlog-playbook.md": {
         "template": "assets/templates/tech/.claude/backlog-playbook.md",
-        "installed_hash": "40503ee6c37391ce03a82e9430e06a0a86d94d1627191990206f70b9a85d8f42",
-        "template_hash": "40503ee6c37391ce03a82e9430e06a0a86d94d1627191990206f70b9a85d8f42"
+        "installed_hash": "d51dcc1e413498e18adaad3e1d15cef81893d4eb3914365389cc8d9d634508ed",
+        "template_hash": "d51dcc1e413498e18adaad3e1d15cef81893d4eb3914365389cc8d9d634508ed"
       },
       ".claude/commands/backlog-run.md": {
         "template": "assets/templates/tech/.claude/commands/backlog-run.md",
@@ -187,6 +187,11 @@
         "template": "assets/templates/tech/.claude/commands/backlog-autopilot-parallel.md",
         "installed_hash": "32b2deb82257ecea68495d0abd8485096a4b7ef0d2f9a6c954a7fd2cceb705ed",
         "template_hash": "32b2deb82257ecea68495d0abd8485096a4b7ef0d2f9a6c954a7fd2cceb705ed"
+      },
+      ".claude/commands/autopilot.md": {
+        "template": "assets/templates/tech/.claude/commands/autopilot.md",
+        "installed_hash": "8eb8ff4ec779181501ab6f3ceae8ac69a90a9e4321eaf33323601834386a43ad",
+        "template_hash": "8eb8ff4ec779181501ab6f3ceae8ac69a90a9e4321eaf33323601834386a43ad"
       },
       ".claude/agents/dependency-auditor.md": {
         "template": "assets/templates/tech/.claude/agents/dependency-auditor.md",
