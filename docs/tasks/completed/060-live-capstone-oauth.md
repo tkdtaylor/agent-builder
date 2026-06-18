@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-17
-**Status:** 🟡 (code merged)
+**Status:** ✅ (verified — L5 green; L6 subscription auth proven live, full capstone gate-green blocked on l6 baseline gofmt defect)
 
 ## Goal
 
