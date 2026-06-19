@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** agent-builder
-**Last updated:** 2026-06-19 (task 066 — vault token brokering via Request.Wiring)
+**Last updated:** 2026-06-19 (task 069 — verify-checkpoint CLI surface)
 
 The system's contact surface — everything that calls into the system, everything the system calls out to, and the public boundaries within the system. Each interface is a stable contract: changes here are breaking changes.
 
@@ -24,9 +24,10 @@ Not in this file:
 agent-builder <subcommand> [flags] [args]
 
 Subcommands:
-  run             dispatch one supervisor loop
-  version         print the agent-builder version
-  verify <repo>   run the verification gate against a repo
+  run                   dispatch one supervisor loop
+  version               print the agent-builder version
+  verify <repo>         run the verification gate against a repo
+  verify-checkpoint     verify a signed checkpoint against an Ed25519 public key
 ```
 
 | Subcommand / flag | Type | Default | Effect |
@@ -34,17 +35,23 @@ Subcommands:
 | `run` | subcommand | — | Builds the configured Phase 0 runtime pipeline from environment configuration, selects at most one ready task, dispatches it through the supervisor, and returns `0` when the run completes or idles. Returns `1` when configuration, containment, Executor, Gate, or loop execution fails. |
 | `version` | subcommand | — | Prints `agent-builder <version>` to stdout and exits `0`. |
 | `verify <repo>` | subcommand + path argument | — | Constructs the production verification Gate and runs it against the target repo path. Prints each Gate step result and exits `0` only when every blocking step passes. Exits `1` when any Gate step fails. |
+| `verify-checkpoint` | subcommand | — | Verifies a signed checkpoint JSON file against an Ed25519 public key by delegating to `audit-trail checkpoint verify`. Exits `0` when valid, `1` when invalid, `2` on usage error or binary resolution failure. Writes JSON `{"valid":bool,"message":string}` to stdout. |
+| `verify-checkpoint --checkpoint <path>` | flag | — | **Required.** Path to the `SignedCheckpoint` JSON file produced by `audit-trail checkpoint create`. |
+| `verify-checkpoint --public-key <path>` | flag | — | **Required.** Path to the PEM-encoded Ed25519 public key file used to verify the checkpoint signature. |
+| `verify-checkpoint --logfile <path>` | flag | `""` | Optional. Path to the chain logfile for live cross-check against the checkpoint. When omitted, only the Ed25519 signature over the checkpoint payload is verified (pure offline mode). |
 | `-h`, `--help`, `help` | help command | — | Prints top-level usage, subcommands, and exit codes to stdout and exits `0`. |
 | subcommand `-h` | help flag | — | Prints usage for the selected subcommand to stdout and exits `0`. |
 
 **Exit codes:**
 - `0` — success
-- `1` — generic error
-- `2` — usage error
+- `1` — generic error (verification failed)
+- `2` — usage error (missing required flags, binary resolution failure)
 
 There is no `verify` flag that skips, bypasses, or weakens the Gate. The Gate is the definition of done and remains blocking.
 
 `agent-builder run` has no flags. Its required and optional environment configuration is documented in [configuration.md](configuration.md#environment-variables).
+
+**Binary resolution for `verify-checkpoint`:** The subcommand resolves the `audit-trail` binary from `AGENT_BUILDER_AUDIT_BIN` (takes precedence; stat-checked at invocation time) falling back to `audit-trail` on `$PATH`. Binary resolution failure exits `2` with a usage error naming the failure. This is the same resolution pattern as `internal/runtime` uses for `audit-trail emit` and `audit-trail verify`.
 
 ### HTTP / RPC API
 
