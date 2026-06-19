@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/tkdtaylor/agent-builder/internal/vault"
 )
@@ -40,8 +39,12 @@ func startDaemon(t *testing.T, binPath string) *vault.Daemon {
 	t.Helper()
 	socketPath := filepath.Join(t.TempDir(), "vault.sock")
 	d := &vault.Daemon{BinPath: binPath, SocketPath: socketPath}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// Daemon.Start uses exec.CommandContext, so the daemon process is killed when
+	// ctx is cancelled. Cancel must therefore outlive the test body (not fire when
+	// startDaemon returns) or every post-Start request hits a dead daemon and gets
+	// "connection reset by peer". Bind cancel + Stop to t.Cleanup instead of defer.
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	if err := d.Start(ctx); err != nil {
 		t.Fatalf("daemon.Start err = %v", err)
 	}
