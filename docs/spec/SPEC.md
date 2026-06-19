@@ -29,7 +29,7 @@ agent-builder is a Go orchestrator that runs an autonomous coding agent unattend
 4. **One task = one repo = one branch.** No cross-repo sprawl within a task.
 5. **Containment is rootless Podman + tiered runtime + default-deny egress allowlist.** The allowlist is the load-bearing control for the accepted token-in-box risk.
 6. **Executor seam is `(harness, model) → branch`.** Pluggable; mixing uneven-quality executors is made safe by the gate (fail → escalate to a stronger executor).
-7. **Secrets:** executor auth tokens may live in the box (accepted risk — flat-rate/no-overage + tight allowlist + revocability + scanners). vault is for *task* secrets, not executor auth.
+7. **Secrets:** git/GitHub publication tokens are brokered through vault in proxy mode when vault is enabled (`AGENT_BUILDER_VAULT_BIN` set) — they reach `api.github.com` only via the egress proxy as `Authorization: Bearer` and are never present in the box environment (ADR 036, task 066). The executor provider auth token (`ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`) still lives in the box (accepted risk — flat-rate/no-overage + tight allowlist + revocability + scanners); brokering it through the proxy is deferred pending the feasibility probe (TC-066-07). When vault is disabled, all tokens follow the prior env-forwarding path. vault is the broker for publication tokens and *task* secrets, not (yet) for executor auth.
 
 ## Fitness functions
 

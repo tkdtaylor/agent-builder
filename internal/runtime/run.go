@@ -23,24 +23,31 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/secrets"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 	"github.com/tkdtaylor/agent-builder/internal/tasksource"
+	"github.com/tkdtaylor/agent-builder/internal/vault"
 )
 
 const (
-	EnvTaskRoot          = "AGENT_BUILDER_TASK_ROOT"
-	EnvWorktree          = "AGENT_BUILDER_WORKTREE"
-	EnvClaudeCLI         = "AGENT_BUILDER_CLAUDE_CLI"
-	EnvExecBoxLauncher   = "AGENT_BUILDER_EXEC_BOX_LAUNCHER"
-	EnvExecSandboxBin    = "AGENT_BUILDER_EXEC_SANDBOX_BIN"
-	EnvRunRecord         = "AGENT_BUILDER_RUN_RECORD"
-	EnvAuditRecord       = "AGENT_BUILDER_AUDIT_RECORD"
-	EnvAuditBin          = "AGENT_BUILDER_AUDIT_BIN"
-	EnvRunTimeout        = "AGENT_BUILDER_RUN_TIMEOUT"
-	EnvMaxAttempts       = "AGENT_BUILDER_MAX_ATTEMPTS"
-	EnvPublishRemote     = "AGENT_BUILDER_PUBLISH_REMOTE"
-	EnvGitCLI            = "AGENT_BUILDER_GIT_CLI"
-	EnvGitHubCLI         = "AGENT_BUILDER_GH_CLI"
-	EnvGitToken          = "AGENT_BUILDER_GIT_TOKEN"
-	EnvGitHubToken       = "AGENT_BUILDER_GITHUB_TOKEN"
+	EnvTaskRoot        = "AGENT_BUILDER_TASK_ROOT"
+	EnvWorktree        = "AGENT_BUILDER_WORKTREE"
+	EnvClaudeCLI       = "AGENT_BUILDER_CLAUDE_CLI"
+	EnvExecBoxLauncher = "AGENT_BUILDER_EXEC_BOX_LAUNCHER"
+	EnvExecSandboxBin  = "AGENT_BUILDER_EXEC_SANDBOX_BIN"
+	EnvRunRecord       = "AGENT_BUILDER_RUN_RECORD"
+	EnvAuditRecord     = "AGENT_BUILDER_AUDIT_RECORD"
+	EnvAuditBin        = "AGENT_BUILDER_AUDIT_BIN"
+	EnvRunTimeout      = "AGENT_BUILDER_RUN_TIMEOUT"
+	EnvMaxAttempts     = "AGENT_BUILDER_MAX_ATTEMPTS"
+	EnvPublishRemote   = "AGENT_BUILDER_PUBLISH_REMOTE"
+	EnvGitCLI          = "AGENT_BUILDER_GIT_CLI"
+	EnvGitHubCLI       = "AGENT_BUILDER_GH_CLI"
+	EnvGitToken        = "AGENT_BUILDER_GIT_TOKEN"
+	EnvGitHubToken     = "AGENT_BUILDER_GITHUB_TOKEN"
+
+	// Vault wiring (ADR 036, task 066). Vault is opt-in: when EnvVaultBin is
+	// unset, vault wiring is skipped and the old env-forwarding behavior holds.
+	EnvVaultBin       = "AGENT_BUILDER_VAULT_BIN"
+	EnvVaultSocket    = "AGENT_BUILDER_VAULT_SOCKET"
+	EnvVaultStorePath = "AGENT_BUILDER_VAULT_STORE_PATH"
 
 	// EnvSandboxRuntime is the removed Phase 0 srt selector. It is retained only
 	// to detect and reject a stale value loudly (ADR 021, decision 2).
@@ -69,6 +76,11 @@ type Config struct {
 	GitHubCLI        string
 	GitToken         string
 	GitHubToken      string
+
+	// Vault wiring (ADR 036, task 066). VaultBin empty => vault disabled.
+	VaultBin       string
+	VaultSocket    string
+	VaultStorePath string
 }
 
 // RunFromEnv builds and runs one configured Phase 0 pipeline from environment
@@ -84,7 +96,9 @@ func RunFromEnv(stdout io.Writer) error {
 // ConfigFromEnv reads the explicit run configuration contract from getenv.
 // Token retrieval is delegated to a getenv-backed SecretSource so that the
 // token read-sites are abstracted behind the secrets.SecretSource seam (task 065).
-// Task 066 will introduce ConfigFromEnvWithSource to allow vault injection.
+// Vault token brokering (task 066) is opt-in at Run time via AGENT_BUILDER_VAULT_BIN;
+// it does not change config parsing — the git/GitHub tokens are still read here and
+// handed to vault inside Run when vault is enabled.
 func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	return configFromEnvWithSource(getenv, getenvSecretSource(getenv))
 }
@@ -117,6 +131,9 @@ func configFromEnvWithSource(getenv func(string) string, src secrets.SecretSourc
 		GitHubCLI:        strings.TrimSpace(getenv(EnvGitHubCLI)),
 		GitToken:         gitToken,
 		GitHubToken:      githubToken,
+		VaultBin:         cleanPath(getenv(EnvVaultBin)),
+		VaultSocket:      cleanPath(getenv(EnvVaultSocket)),
+		VaultStorePath:   cleanPath(getenv(EnvVaultStorePath)),
 	}
 	if config.ClaudeCLI == "" {
 		config.ClaudeCLI = "claude"
@@ -215,11 +232,30 @@ func Run(config Config, stdout io.Writer) error {
 		backendLabel = "podman"
 	}
 
+	// Vault token brokering (ADR 036, task 066). Opt-in: when AGENT_BUILDER_VAULT_BIN
+	// is set, start a vault daemon, register the git/GitHub tokens, and pass the
+	// resolved handles + socket + injection_mode="proxy" through Request.Wiring.
+	// When unset, wiring stays the zero value and the old env-forwarding path holds.
+	var wiring sandbox.RunWiring
+	if config.VaultBin != "" {
+		daemon, src, err := startVault(config)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = daemon.Stop() }()
+		wiring = sandbox.RunWiring{
+			VaultSocket:   daemon.SocketPath,
+			SecretRefs:    src.Handles(),
+			InjectionMode: "proxy",
+		}
+	}
+
 	box := sandboxBox{
 		runner:   runner,
 		worktree: config.Worktree,
 		launcher: config.ExecBoxLauncher,
 		backend:  backendLabel,
+		wiring:   wiring,
 		limits: sandbox.Limits{
 			WallClockTimeout: config.RunTimeout,
 		},
@@ -271,6 +307,43 @@ func Run(config Config, stdout io.Writer) error {
 	}
 	_, _ = fmt.Fprintf(stdout, "run completed: task %s\n", task.ID)
 	return nil
+}
+
+// startVault starts the vault daemon and constructs a VaultSecretSource holding
+// the resolved git/GitHub token handles (ADR 036, task 066). It fails loud if the
+// daemon cannot start (missing binary, no master key) or a token cannot be
+// registered. The caller is responsible for calling daemon.Stop() (deferred).
+//
+// The git/GitHub token plaintext is read from config (populated from the host
+// env) and handed to vault exactly once via Put; afterward only opaque handles
+// are retained. The provider token continues to flow via the executor env path.
+func startVault(config Config) (*vault.Daemon, *secrets.VaultSecretSource, error) {
+	socketPath := config.VaultSocket
+	if socketPath == "" {
+		socketPath = filepath.Join(os.TempDir(), fmt.Sprintf("agent-builder-vault-%d.sock", os.Getpid()))
+	}
+
+	daemon := &vault.Daemon{
+		BinPath:    config.VaultBin,
+		SocketPath: socketPath,
+		StorePath:  config.VaultStorePath,
+	}
+	if err := daemon.Start(context.Background()); err != nil {
+		return nil, nil, fmt.Errorf("run: start vault daemon: %w", err)
+	}
+
+	client := vault.NewClient(socketPath)
+	src, err := secrets.NewVaultSecretSource(client, secrets.VaultSourceConfig{
+		AuthToken:   config.ClaudeToken,
+		OAuthToken:  config.ClaudeOAuthToken,
+		GitToken:    config.GitToken,
+		GitHubToken: config.GitHubToken,
+	})
+	if err != nil {
+		_ = daemon.Stop()
+		return nil, nil, fmt.Errorf("run: construct vault secret source: %w", err)
+	}
+	return daemon, src, nil
 }
 
 // newBlockSink resolves the audit-trail binary and verifies the chain logfile
@@ -382,6 +455,7 @@ type sandboxBox struct {
 	worktree string
 	launcher string
 	backend  string
+	wiring   sandbox.RunWiring
 	limits   sandbox.Limits
 }
 
@@ -397,6 +471,7 @@ func (b sandboxBox) Create(task supervisor.Task) (supervisor.BoxHandle, error) {
 		Command:  []string{"-c", "true"},
 		Worktree: b.worktree,
 		Limits:   b.limits,
+		Wiring:   b.wiring,
 	})
 	if err != nil {
 		return supervisor.BoxHandle{}, err

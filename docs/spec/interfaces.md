@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** agent-builder
-**Last updated:** 2026-06-17 (task 045 — host-portable disk quota)
+**Last updated:** 2026-06-19 (task 066 — vault token brokering via Request.Wiring)
 
 The system's contact surface — everything that calls into the system, everything the system calls out to, and the public boundaries within the system. Each interface is a stable contract: changes here are breaking changes.
 
@@ -275,6 +275,14 @@ type Request struct {
 	Command  []string
 	Worktree string
 	Limits   Limits
+	Tier     string    // "bubblewrap" (default) or "gvisor" (ADR 035)
+	Wiring   RunWiring // vault/proxy token-brokering wiring (ADR 036); zero value = empty wiring
+}
+
+type RunWiring struct {
+	VaultSocket   string   // Unix socket path of the running vault daemon
+	SecretRefs    []string // opaque vault handles to inject (never plaintext values)
+	InjectionMode string   // "proxy" when vault wiring is active; "" otherwise
 }
 
 type Limits struct {
@@ -296,6 +304,7 @@ type Result struct {
 - **Consumers:** supervisor construction accepts the interface. Dispatch lifecycle code uses the interface when task execution is implemented.
 - **Stability:** governed by ADR 020 and updated with any task that changes contained-run inputs, outputs, or error semantics.
 - **Required behavior:** `Command` is argv-style and must contain a non-blank executable at index 0. `Worktree` is the target repo worktree path mounted or made available to the backend (non-empty, must exist, must be a directory). `Limits` is a typed struct, not a map, and carries wall-clock timeout, memory limit, CPU count, process ID limit, and egress allowlist values. `Result` captures stdout, stderr, and duration. The integer return is the process exit code. A non-zero exit code is returned with nil error when the backend ran the command; non-nil error means adapter/backend failure or invalid request.
+- **Vault wiring contract (ADR 036, task 066):** `Request.Wiring` carries the vault token-brokering wiring from the trusted host into the box. The **zero-value `RunWiring`** produces empty `wiring.vault_socket`, empty `wiring.injection_mode`, and an empty `run.secret_refs` array — the ADR 035 deferred default, with no behavior change. When populated by `runtime` (only when `AGENT_BUILDER_VAULT_BIN` is set), `Wiring.VaultSocket` is the live vault daemon socket, `Wiring.SecretRefs` are **opaque vault handles** (never plaintext token values), and `Wiring.InjectionMode` is `"proxy"`. The `execsandbox.Runner` maps these onto `wiring.vault_socket`, `run.secret_refs`, and `wiring.injection_mode` in the block's JSON RunRequest; exec-sandbox calls `vault.inject` per handle at spawn time and the egress proxy injects the credential. The raw git/GitHub token values are therefore never present in the RunRequest JSON.
 
 ### Concrete backend: `sandboxruntime.Runner`
 
@@ -331,7 +340,7 @@ func New(binPath string) *Runner
 func (r *Runner) Run(sandbox.Request) (sandbox.Result, int, error)
 ```
 
-- **Outbound call:** `<binary> run` with a JSON RunRequest struct on stdin containing `run.payload` (shell script), `run.profile` (limits and capabilities), `run.tier`, `run.workdir` (absolute host worktree path or "" for no mount), `run.env` (map of environment variables provisioned into the payload), and `wiring` (vault socket, audit socket, origin_map for egress routing, etc.).
+- **Outbound call:** `<binary> run` with a JSON RunRequest struct on stdin containing `run.payload` (shell script), `run.profile` (limits and capabilities), `run.tier`, `run.workdir` (absolute host worktree path or "" for no mount), `run.env` (map of environment variables provisioned into the payload), `run.secret_refs` (opaque vault handles; empty array unless vault is enabled), and `wiring` (vault socket, audit socket, origin_map for egress routing, injection_mode). When vault is configured (`AGENT_BUILDER_VAULT_BIN` set), `wiring.vault_socket`, `run.secret_refs`, and `wiring.injection_mode="proxy"` are non-empty and carry the git/GitHub token brokering (ADR 036); otherwise they remain empty.
 - **Command form contract:** `Request.Command` is processed by the adapter to extract shell-script bodies: the ADR 032 probe form `["-c", "<script>"]` and the `["/bin/sh", "-c", "<script>"]` form both extract `<script>` directly as the payload; all other forms are shell-quoted. This reflects the block's `/usr/bin/sh /payload.sh` execution model (ADR 032).
 - **Toolchain forwarding contract:** when the Go toolchain is discoverable (via `go env GOROOT` or `AGENT_BUILDER_EXEC_SANDBOX_GOROOT`), the adapter adds a `FileRead` capability entry with the toolchain root path. When `AGENT_BUILDER_GATE_TOOLS` is set or the bundled gate-tools directory exists, it is also added to `FileRead.paths`. The adapter populates `run.env["PATH"]` with these directories plus the standard system PATH (`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`), enabling in-box resolution of Go toolchain and gate tools (`go`, `gofmt`, `golangci-lint`, `dep-scan`, `code-scanner`).
 - **Egress routing contract:** `Request.Limits.EgressAllowlist` entries are forwarded both to a `NetConnect` capability in `run.profile.capabilities` (for the block's egress gate) and to `wiring.origin_map`, which maps hostname → `[host, port]` pairs to allow the block's egress proxy to route allowlisted requests.

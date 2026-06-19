@@ -156,7 +156,7 @@ func TestExecSandboxMarshalRequestZeroLimits(t *testing.T) {
 		Command:  []string{"true"},
 		Worktree: tempDir,
 		Limits:   sandbox.Limits{}, // Zero value
-		Tier:     "",                // Empty; should default to "bubblewrap"
+		Tier:     "",               // Empty; should default to "bubblewrap"
 	}
 
 	_, _, err := runner.Run(req)
@@ -892,4 +892,91 @@ func findCapability(req runRequest, capType string) *capabilityData {
 		}
 	}
 	return nil
+}
+
+// recordRunRequest runs req through a stub binary that records the RunRequest
+// JSON to disk, then parses and returns it.
+func recordRunRequest(t *testing.T, req sandbox.Request) runRequest {
+	t.Helper()
+	tempDir := t.TempDir()
+	stubBinPath := filepath.Join(tempDir, "stub-exec-sandbox")
+	recordPath := filepath.Join(tempDir, "request.json")
+	createStubBinary(t, stubBinPath, recordPath, "")
+
+	if req.Worktree == "" {
+		req.Worktree = tempDir
+	}
+	if _, _, err := New(stubBinPath).Run(req); err != nil {
+		t.Fatalf("Run() returned error: %v", err)
+	}
+	data, err := os.ReadFile(recordPath)
+	if err != nil {
+		t.Fatalf("failed to read recorded request: %v", err)
+	}
+	var recorded runRequest
+	if err := json.Unmarshal(data, &recorded); err != nil {
+		t.Fatalf("failed to parse recorded request JSON: %v", err)
+	}
+	return recorded
+}
+
+// TestBuildRunRequestWithVaultWiring verifies Request.Wiring maps to the
+// RunRequest wiring/secret_refs fields, and that a zero-value Wiring preserves
+// the ADR 035 empty-wiring behavior exactly (regression guard).
+// TC-066-03.
+func TestBuildRunRequestWithVaultWiring(t *testing.T) {
+	t.Run("vault wiring populated", func(t *testing.T) {
+		req := sandbox.Request{
+			Command: []string{"sh", "-c", "echo hi"},
+			Tier:    "bubblewrap",
+			Wiring: sandbox.RunWiring{
+				VaultSocket:   "/tmp/vault.sock",
+				SecretRefs:    []string{"handle-abc", "handle-xyz"},
+				InjectionMode: "proxy",
+			},
+		}
+		recorded := recordRunRequest(t, req)
+
+		if recorded.Wiring.VaultSocket != "/tmp/vault.sock" {
+			t.Errorf("vault_socket = %q, want /tmp/vault.sock", recorded.Wiring.VaultSocket)
+		}
+		if recorded.Wiring.InjectionMode != "proxy" {
+			t.Errorf("injection_mode = %q, want proxy", recorded.Wiring.InjectionMode)
+		}
+		if got := recorded.Run.SecretRefs; len(got) != 2 || got[0] != "handle-abc" || got[1] != "handle-xyz" {
+			t.Errorf("secret_refs = %v, want [handle-abc handle-xyz]", got)
+		}
+		// Existing fields unchanged: request_id still generated, origin_map present.
+		if recorded.Wiring.RequestID == "" {
+			t.Errorf("request_id: expected non-empty")
+		}
+		if recorded.Wiring.OriginMap == nil {
+			t.Errorf("origin_map: expected non-nil")
+		}
+		if recorded.Run.Payload == "" {
+			t.Errorf("payload: expected non-empty")
+		}
+	})
+
+	t.Run("zero wiring is empty (regression guard)", func(t *testing.T) {
+		req := sandbox.Request{
+			Command: []string{"sh", "-c", "echo hi"},
+		}
+		recorded := recordRunRequest(t, req)
+
+		if recorded.Wiring.VaultSocket != "" {
+			t.Errorf("vault_socket = %q, want empty", recorded.Wiring.VaultSocket)
+		}
+		if recorded.Wiring.InjectionMode != "" {
+			t.Errorf("injection_mode = %q, want empty", recorded.Wiring.InjectionMode)
+		}
+		// secret_refs must serialize as [] (empty), not null — the existing
+		// contract that the deferred default produces an empty array.
+		if recorded.Run.SecretRefs == nil {
+			t.Errorf("secret_refs = null, want [] (empty array)")
+		}
+		if len(recorded.Run.SecretRefs) != 0 {
+			t.Errorf("secret_refs = %v, want empty", recorded.Run.SecretRefs)
+		}
+	})
 }

@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-19
-**Status:** 🔴 (not started)
+**Status:** 🟡 (code merged; L6 capstone TC-066-05/06/07 pending operator run)
 
 ## Goal
 

@@ -338,13 +338,14 @@ func buildRunRequest(req sandbox.Request, worktree string, egressParseErr error)
 
 	profile.Capabilities = capabilities
 
-	// Build the wiring.
+	// Build the wiring. Vault fields come from Request.Wiring; the zero-value
+	// RunWiring produces the ADR 035 empty wiring unchanged (no regression).
 	wiring := wiringData{
-		VaultSocket:   "",
+		VaultSocket:   req.Wiring.VaultSocket,
 		AuditSocket:   "",
 		OriginMap:     map[string][2]string{},
 		RequestID:     generateRequestID(),
-		InjectionMode: "",
+		InjectionMode: req.Wiring.InjectionMode,
 	}
 
 	// Populate origin_map from EgressAllowlist (if we get here, parse already succeeded)
@@ -354,12 +355,20 @@ func buildRunRequest(req sandbox.Request, worktree string, egressParseErr error)
 		}
 	}
 
+	// Secret refs are the opaque vault handles carried by Request.Wiring. The
+	// raw token values are never present here — only handles (ADR 036). Always
+	// emit a non-nil slice so the regression contract (empty, not null) holds.
+	secretRefs := []string{}
+	if len(req.Wiring.SecretRefs) > 0 {
+		secretRefs = append(secretRefs, req.Wiring.SecretRefs...)
+	}
+
 	return runRequest{
 		Run: runData{
 			Payload:    payload,
 			Profile:    profile,
 			Tier:       tier,
-			SecretRefs: []string{},
+			SecretRefs: secretRefs,
 			Workdir:    worktree,
 			Env:        env,
 		},
@@ -457,12 +466,12 @@ type runRequest struct {
 }
 
 type runData struct {
-	Payload    string              `json:"payload"`
-	Profile    profileData         `json:"profile"`
-	Tier       string              `json:"tier"`
-	SecretRefs []string            `json:"secret_refs"`
-	Workdir    string              `json:"workdir"`
-	Env        map[string]string   `json:"env,omitempty"`
+	Payload    string            `json:"payload"`
+	Profile    profileData       `json:"profile"`
+	Tier       string            `json:"tier"`
+	SecretRefs []string          `json:"secret_refs"`
+	Workdir    string            `json:"workdir"`
+	Env        map[string]string `json:"env,omitempty"`
 }
 
 type profileData struct {
@@ -471,9 +480,9 @@ type profileData struct {
 }
 
 type capabilityData struct {
-	Type      string        `json:"type"`
-	Allowlist []string      `json:"allowlist,omitempty"`
-	Paths     []string      `json:"paths,omitempty"`
+	Type      string   `json:"type"`
+	Allowlist []string `json:"allowlist,omitempty"`
+	Paths     []string `json:"paths,omitempty"`
 }
 
 type limitsData struct {

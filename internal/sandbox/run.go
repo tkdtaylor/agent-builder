@@ -27,7 +27,23 @@ type Request struct {
 	Command  []string
 	Worktree string
 	Limits   Limits
-	Tier     string // "bubblewrap" (default) or "gvisor" — first-class seam as of ADR 035
+	Tier     string    // "bubblewrap" (default) or "gvisor" — first-class seam as of ADR 035
+	Wiring   RunWiring // vault/proxy wiring; zero value = ADR 035 empty wiring (no regression)
+}
+
+// RunWiring carries the vault token-brokering wiring from the trusted host into
+// the execution box (ADR 036, task 066). The zero value produces the empty
+// wiring that ADR 035 specified as the deferred default: no vault socket, no
+// secret refs, no injection mode. When populated, exec-sandbox calls vault.inject
+// per handle at spawn time and the egress proxy injects the credential — the
+// sandbox never sees the plaintext.
+type RunWiring struct {
+	// VaultSocket is the Unix socket path of the running vault daemon.
+	VaultSocket string
+	// SecretRefs are the opaque vault handles to inject (never plaintext values).
+	SecretRefs []string
+	// InjectionMode is "proxy" when vault wiring is active; "" otherwise.
+	InjectionMode string
 }
 
 // Limits is the typed resource and egress contract for contained runs.
@@ -41,13 +57,13 @@ type Limits struct {
 
 // Result is the structured output from a contained command run.
 type Result struct {
-	Stdout      string
-	Stderr      string
-	Duration    time.Duration
-	SandboxID   string // Unique identifier for the sandbox instance (from exec-sandbox block)
-	Tier        string // Execution tier: "bubblewrap" or "gvisor" (from exec-sandbox block)
-	Status      string // Sandbox execution status: "clean", "timeout", etc. (from exec-sandbox block)
-	Degraded    []string // Resource limits that were degraded (from exec-sandbox block)
+	Stdout    string
+	Stderr    string
+	Duration  time.Duration
+	SandboxID string   // Unique identifier for the sandbox instance (from exec-sandbox block)
+	Tier      string   // Execution tier: "bubblewrap" or "gvisor" (from exec-sandbox block)
+	Status    string   // Sandbox execution status: "clean", "timeout", etc. (from exec-sandbox block)
+	Degraded  []string // Resource limits that were degraded (from exec-sandbox block)
 }
 
 // ValidateRequest checks the backend-independent request contract.
@@ -115,5 +131,6 @@ func (f *FakeRunner) CallCount() int {
 func copyRequest(req Request) Request {
 	req.Command = append([]string(nil), req.Command...)
 	req.Limits.EgressAllowlist = append([]string(nil), req.Limits.EgressAllowlist...)
+	req.Wiring.SecretRefs = append([]string(nil), req.Wiring.SecretRefs...)
 	return req
 }
