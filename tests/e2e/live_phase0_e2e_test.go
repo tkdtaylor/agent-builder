@@ -257,6 +257,24 @@ func (f liveCapstoneFixture) env(t *testing.T) map[string]string {
 		env["AGENT_BUILDER_EXEC_SANDBOX_BIN"] = bin
 	}
 
+	// Pass through vault wiring (ADR 036, task 066) when configured, so the
+	// capstone (TC-066-06) exercises git/GitHub token brokering through vault's
+	// proxy. When AGENT_BUILDER_VAULT_BIN is unset, vault is skipped and the
+	// existing env-forwarding path holds — the capstone runs unchanged.
+	for _, name := range []string{
+		"AGENT_BUILDER_VAULT_BIN",
+		"AGENT_BUILDER_VAULT_SOCKET",
+		"AGENT_BUILDER_VAULT_STORE_PATH",
+		"VAULT_MASTER_KEY",
+		"VAULT_MASTER_KEY_FILE",
+		"AGENT_BUILDER_GIT_TOKEN",
+		"AGENT_BUILDER_GITHUB_TOKEN",
+	} {
+		if v := os.Getenv(name); v != "" {
+			env[name] = v
+		}
+	}
+
 	return env
 }
 
