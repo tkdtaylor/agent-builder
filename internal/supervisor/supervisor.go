@@ -92,14 +92,15 @@ type InBoxLoop interface {
 // token-in-box risk (see docs/spec/configuration.md) — will be added here in the
 // containment task (Phase 0.3), when something actually enforces it.
 type Supervisor struct {
-	sandboxRunner sandbox.Runner
-	box           ContainmentBox
-	loop          InBoxLoop
-	task          Task
-	logger        *slog.Logger
-	runRecordPath string
-	sink          audit.Sink
-	runTimeout    time.Duration
+	sandboxRunner     sandbox.Runner
+	box               ContainmentBox
+	loop              InBoxLoop
+	task              Task
+	logger            *slog.Logger
+	runRecordPath     string
+	sink              audit.Sink
+	checkpointSigner  *audit.CheckpointSigner
+	runTimeout        time.Duration
 }
 
 // Option configures a Supervisor.
@@ -161,6 +162,19 @@ func WithSink(sink audit.Sink) Option {
 	}
 }
 
+// WithCheckpointSigner configures the optional checkpoint signer (ADR 037,
+// task 068). When set, the supervisor calls cs.CreateCheckpoint() on the
+// success path after Seal() and VerifyChain returns valid (IsTampered()==false).
+// Checkpoint creation failure is logged but does NOT abort teardown or change
+// the run outcome — the chain is already sealed and verified; the checkpoint is
+// forensic metadata, not a gate condition. A nil signer disables checkpoint
+// creation silently.
+func WithCheckpointSigner(cs *audit.CheckpointSigner) Option {
+	return func(s *Supervisor) {
+		s.checkpointSigner = cs
+	}
+}
+
 // WithRunTimeout configures the wall-clock deadline for one in-box loop run.
 // Non-positive durations leave the timeout disabled.
 func WithRunTimeout(timeout time.Duration) Option {
@@ -211,6 +225,14 @@ func (s *Supervisor) Run() (err error) {
 		// failure paths — same durability ordering as closeRunRecord. A nil
 		// sink seals to a no-op.
 		sealErr := s.sealSink()
+
+		// Checkpoint creation (ADR 037, task 068): only on the success path
+		// (err == nil after loop + recordErr + sealErr), after Seal, after
+		// VerifyChain returns valid. Failure is logged and does NOT change the
+		// run outcome or block teardown.
+		if err == nil && recordErr == nil && sealErr == nil {
+			s.maybeCreateCheckpoint()
+		}
 
 		teardownErr := s.box.Teardown(handle)
 		s.logLifecycle("box.torn_down", handle)
@@ -364,6 +386,35 @@ func (s *Supervisor) closeRunRecord(record *RunRecordWriter, outcome RunOutcome,
 		closeErr = fmt.Errorf("supervisor: close run record: %w", closeErr)
 	}
 	return errors.Join(finishErr, closeErr)
+}
+
+// maybeCreateCheckpoint calls VerifyChain on the checkpoint signer and, only
+// when the chain is valid (IsTampered()==false), calls CreateCheckpoint. This
+// guards against signing a tampered chain. Failure is logged but does NOT abort
+// teardown or change the run outcome — the chain is already sealed and verified;
+// the checkpoint is forensic metadata, not a gate condition.
+//
+// Called only on the success path (loop err == nil, record closed, sink sealed).
+func (s *Supervisor) maybeCreateCheckpoint() {
+	if s.checkpointSigner == nil {
+		return
+	}
+	result, err := s.checkpointSigner.VerifyChain()
+	if err != nil {
+		s.logger.Error("supervisor: checkpoint verify chain error (skipping checkpoint)",
+			"error", err)
+		return
+	}
+	if result.IsTampered() {
+		s.logger.Error("supervisor: chain tampered — checkpoint creation skipped to avoid false attestation",
+			"tampered_at", result.TamperedAt,
+			"message", result.Message)
+		return
+	}
+	if cpErr := s.checkpointSigner.CreateCheckpoint(); cpErr != nil {
+		s.logger.Error("supervisor: checkpoint creation failed (run outcome unchanged)",
+			"error", cpErr)
+	}
 }
 
 // sealSink flushes and closes the optional audit sink. It is the audit-chain

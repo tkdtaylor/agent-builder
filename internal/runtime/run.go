@@ -49,6 +49,13 @@ const (
 	EnvVaultSocket    = "AGENT_BUILDER_VAULT_SOCKET"
 	EnvVaultStorePath = "AGENT_BUILDER_VAULT_STORE_PATH"
 
+	// Checkpoint signing (ADR 037, task 068). Checkpoint is opt-in: when
+	// EnvAuditCheckpointKey is unset, checkpoint creation is skipped.
+	EnvAuditCheckpointKey       = "AGENT_BUILDER_AUDIT_CHECKPOINT_KEY"
+	EnvAuditCheckpointLogID     = "AGENT_BUILDER_AUDIT_CHECKPOINT_LOG_ID"
+	EnvAuditCheckpointOut       = "AGENT_BUILDER_AUDIT_CHECKPOINT_OUT"
+	EnvAuditCheckpointPublicKey = "AGENT_BUILDER_AUDIT_CHECKPOINT_PUBLIC_KEY"
+
 	// EnvSandboxRuntime is the removed Phase 0 srt selector. It is retained only
 	// to detect and reject a stale value loudly (ADR 021, decision 2).
 	EnvSandboxRuntime = "AGENT_BUILDER_SANDBOX_RUNTIME"
@@ -81,6 +88,12 @@ type Config struct {
 	VaultBin       string
 	VaultSocket    string
 	VaultStorePath string
+
+	// Checkpoint signing (ADR 037, task 068). AuditCheckpointKey empty => disabled.
+	AuditCheckpointKey       string // path to Ed25519 PEM signing key
+	AuditCheckpointLogID     string // stable log identifier for the checkpoint
+	AuditCheckpointOut       string // path for checkpoint JSON output (empty = stdout)
+	AuditCheckpointPublicKey string // path to Ed25519 PEM public key (task 069 consume)
 }
 
 // RunFromEnv builds and runs one configured Phase 0 pipeline from environment
@@ -134,6 +147,11 @@ func configFromEnvWithSource(getenv func(string) string, src secrets.SecretSourc
 		VaultBin:         cleanPath(getenv(EnvVaultBin)),
 		VaultSocket:      cleanPath(getenv(EnvVaultSocket)),
 		VaultStorePath:   cleanPath(getenv(EnvVaultStorePath)),
+
+		AuditCheckpointKey:       cleanPath(getenv(EnvAuditCheckpointKey)),
+		AuditCheckpointLogID:     strings.TrimSpace(getenv(EnvAuditCheckpointLogID)),
+		AuditCheckpointOut:       cleanPath(getenv(EnvAuditCheckpointOut)),
+		AuditCheckpointPublicKey: cleanPath(getenv(EnvAuditCheckpointPublicKey)),
 	}
 	if config.ClaudeCLI == "" {
 		config.ClaudeCLI = "claude"
@@ -302,6 +320,18 @@ func Run(config Config, stdout io.Writer) error {
 		options = append(options, supervisor.WithSink(sink))
 	}
 
+	// Optional checkpoint signing (ADR 037, task 068). When
+	// AGENT_BUILDER_AUDIT_CHECKPOINT_KEY is set, a CheckpointSigner is
+	// constructed and wired into the supervisor. Fail-fast validation runs
+	// here (before dispatch), mirroring the newBlockSink pattern.
+	cs, err := newCheckpointSigner(config)
+	if err != nil {
+		return err
+	}
+	if cs != nil {
+		options = append(options, supervisor.WithCheckpointSigner(cs))
+	}
+
 	if err := supervisor.New(options...).Run(); err != nil {
 		return err
 	}
@@ -362,6 +392,72 @@ func newBlockSink(config Config) (audit.Sink, error) {
 		return nil, err
 	}
 	return audit.NewBlockSink(binPath, config.AuditRecordPath), nil
+}
+
+// newCheckpointSigner constructs an audit.CheckpointSigner when the checkpoint
+// signing key env var is set. It fails fast (before dispatch, same as
+// newBlockSink) when:
+//   - The signing key file does not exist.
+//   - The audit-trail binary cannot be resolved.
+//   - The output directory is not writable (when AuditCheckpointOut is set).
+//
+// When AuditCheckpointKey is empty (checkpoint disabled), returns nil, nil.
+func newCheckpointSigner(config Config) (*audit.CheckpointSigner, error) {
+	if config.AuditCheckpointKey == "" {
+		return nil, nil // checkpoint disabled; opt-in
+	}
+	if err := resolveCheckpointConfig(config); err != nil {
+		return nil, err
+	}
+	binPath, err := resolveAuditBin(config.AuditBin)
+	if err != nil {
+		return nil, err
+	}
+	return audit.NewCheckpointSigner(
+		binPath,
+		config.AuditRecordPath,
+		config.AuditCheckpointLogID,
+		config.AuditCheckpointKey,
+		config.AuditCheckpointOut,
+	), nil
+}
+
+// resolveCheckpointConfig validates the checkpoint-specific configuration
+// fields before dispatch, mirroring the resolveAuditBin/requireWritable pattern.
+// It is only called when AuditCheckpointKey is non-empty (checkpoint enabled).
+func resolveCheckpointConfig(config Config) error {
+	// The signing key file must exist.
+	if _, err := os.Stat(config.AuditCheckpointKey); err != nil {
+		return fmt.Errorf("run config: %s %q is not accessible: %w", EnvAuditCheckpointKey, config.AuditCheckpointKey, err)
+	}
+	// When an output path is specified, the parent directory must be writable.
+	if config.AuditCheckpointOut != "" {
+		if err := requireWritableDir(EnvAuditCheckpointOut, filepath.Dir(config.AuditCheckpointOut)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// requireWritableDir confirms the directory at path exists and is writable
+// before dispatch. It is used by resolveCheckpointConfig to validate the
+// output directory for the checkpoint JSON.
+func requireWritableDir(envName, dir string) error {
+	info, err := os.Stat(dir)
+	if err != nil {
+		return fmt.Errorf("run config: %s parent directory %q is not accessible: %w", envName, dir, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("run config: %s parent directory %q is not a directory", envName, dir)
+	}
+	// Probe writability by creating a temp file in the directory.
+	f, err := os.CreateTemp(dir, ".agent-builder-probe-*")
+	if err != nil {
+		return fmt.Errorf("run config: %s parent directory %q is not writable: %w", envName, dir, err)
+	}
+	_ = f.Close()
+	_ = os.Remove(f.Name())
+	return nil
 }
 
 // resolveAuditBin resolves the audit-trail binary path: an explicit
