@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** agent-builder
-**Last updated:** 2026-06-17 (task 045 — host-portable disk quota)
+**Last updated:** 2026-06-19 (task 065 — SecretSource seam)
 
 Every knob the system exposes — env vars, config files, runtime parameters, deployment settings. Each entry is a public contract: changes to defaults or accepted values are observable.
 
@@ -162,6 +162,8 @@ The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.m
 | `CLAUDE_CODE_OAUTH_TOKEN` | Host environment or sandbox secret store | Claude Code CLI executor auth (subscription OAuth token, preferred when both credentials are set). Minted by `claude setup-token` on a Claude Pro/Max subscription. The value is injected only as a subprocess environment variable and is independently revocable from the API key. The executor does not read arbitrary host-home credential files by default. |
 | `AGENT_BUILDER_GIT_TOKEN` | Host environment or sandbox secret store | Optional git publication token copied to publisher subprocesses as `GIT_TOKEN` and redacted from publisher errors/run records. |
 | `AGENT_BUILDER_GITHUB_TOKEN` | Host environment or sandbox secret store | Optional GitHub publication token copied to publisher subprocesses as `GH_TOKEN` and `GITHUB_TOKEN` and redacted from publisher errors/run records. |
+
+**Token retrieval seam:** all four secret values above are read through the `secrets.SecretSource` interface (`internal/secrets/`). The default implementation, `EnvSecretSource`, reads directly from `os.Getenv`. This seam allows task 066 to introduce a `VaultSecretSource` that fetches the same tokens from vault without changing call-site code in `executor` or `runtime`. The dependency direction is one-way: `executor → secrets` and `runtime → secrets`; `internal/secrets` imports no other agent-builder internal packages (leaf package invariant enforced by `go list -deps`).
 
 **Rule:** secrets are never pasted into the chat, never logged, and never written into the repo. The `protect-secrets` hook blocks writes to common credential filenames.
 
