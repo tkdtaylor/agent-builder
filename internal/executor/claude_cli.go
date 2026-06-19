@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/tkdtaylor/agent-builder/internal/executorharness"
+	"github.com/tkdtaylor/agent-builder/internal/secrets"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
 
@@ -82,11 +83,19 @@ func NewClaudeCLI(config ClaudeCLIConfig) *ClaudeCLI {
 // NewClaudeCLIFromEnv constructs a Claude Code CLI executor using ANTHROPIC_API_KEY
 // or CLAUDE_CODE_OAUTH_TOKEN from the process environment. It reads no host-home credential files.
 func NewClaudeCLIFromEnv(worktree string) *ClaudeCLI {
+	return NewClaudeCLIFromSecretSource(worktree, secrets.NewEnvSecretSource())
+}
+
+// NewClaudeCLIFromSecretSource constructs a Claude Code CLI executor using
+// the supplied SecretSource for token retrieval. This is the injection seam
+// used by tests (via a fake) and will be used by task 066 for vault wiring.
+func NewClaudeCLIFromSecretSource(worktree string, src secrets.SecretSource) *ClaudeCLI {
+	authToken, oauthToken := src.ProviderToken()
 	return NewClaudeCLI(ClaudeCLIConfig{
 		CLIPath:    "claude",
 		Worktree:   worktree,
-		AuthToken:  os.Getenv(ClaudeCLIAuthEnv),
-		OAuthToken: os.Getenv(ClaudeCLIOAuthEnv),
+		AuthToken:  authToken,
+		OAuthToken: oauthToken,
 	})
 }
 

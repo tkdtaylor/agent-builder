@@ -20,6 +20,7 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/sandbox"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox/execsandbox"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox/podman"
+	"github.com/tkdtaylor/agent-builder/internal/secrets"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 	"github.com/tkdtaylor/agent-builder/internal/tasksource"
 )
@@ -81,19 +82,31 @@ func RunFromEnv(stdout io.Writer) error {
 }
 
 // ConfigFromEnv reads the explicit run configuration contract from getenv.
+// Token retrieval is delegated to a getenv-backed SecretSource so that the
+// token read-sites are abstracted behind the secrets.SecretSource seam (task 065).
+// Task 066 will introduce ConfigFromEnvWithSource to allow vault injection.
 func ConfigFromEnv(getenv func(string) string) (Config, error) {
+	return configFromEnvWithSource(getenv, getenvSecretSource(getenv))
+}
+
+// configFromEnvWithSource is the internal implementation shared by
+// ConfigFromEnv and future vault-aware constructors.
+func configFromEnvWithSource(getenv func(string) string, src secrets.SecretSource) (Config, error) {
 	// The rented srt selector was removed by ADR 021. A stale non-empty value
 	// must fail loudly rather than be silently ignored (decision 2).
 	if strings.TrimSpace(getenv(EnvSandboxRuntime)) != "" {
 		return Config{}, fmt.Errorf("run config: %s was removed by the Podman containment swap (ADR 021); unset it — containment now runs through %s", EnvSandboxRuntime, defaultExecBoxLauncher)
 	}
 
+	authToken, oauthToken := src.ProviderToken()
+	gitToken, githubToken := src.PublisherTokens()
+
 	config := Config{
 		TaskRoot:         cleanPath(getenv(EnvTaskRoot)),
 		Worktree:         cleanPath(getenv(EnvWorktree)),
 		ClaudeCLI:        strings.TrimSpace(getenv(EnvClaudeCLI)),
-		ClaudeToken:      getenv(executor.ClaudeCLIAuthEnv),
-		ClaudeOAuthToken: getenv(executor.ClaudeCLIOAuthEnv),
+		ClaudeToken:      authToken,
+		ClaudeOAuthToken: oauthToken,
 		ExecBoxLauncher:  cleanPath(getenv(EnvExecBoxLauncher)),
 		ExecSandboxBin:   cleanPath(getenv(EnvExecSandboxBin)),
 		RunRecordPath:    cleanPath(getenv(EnvRunRecord)),
@@ -102,8 +115,8 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		PublishRemote:    strings.TrimSpace(getenv(EnvPublishRemote)),
 		GitCLI:           strings.TrimSpace(getenv(EnvGitCLI)),
 		GitHubCLI:        strings.TrimSpace(getenv(EnvGitHubCLI)),
-		GitToken:         getenv(EnvGitToken),
-		GitHubToken:      getenv(EnvGitHubToken),
+		GitToken:         gitToken,
+		GitHubToken:      githubToken,
 	}
 	if config.ClaudeCLI == "" {
 		config.ClaudeCLI = "claude"
@@ -340,6 +353,28 @@ func cleanPath(path string) string {
 		return ""
 	}
 	return filepath.Clean(path)
+}
+
+// getenvSecretSource wraps a getenv function as a secrets.SecretSource.
+// This lets ConfigFromEnv delegate token reads through the SecretSource seam
+// while preserving the existing getenv-based test contract (tests pass a fake
+// getenv; the SecretSource reads from the same fake getenv, so results match).
+func getenvSecretSource(getenv func(string) string) secrets.SecretSource {
+	return &envFuncSecretSource{getenv: getenv}
+}
+
+// envFuncSecretSource implements secrets.SecretSource backed by an arbitrary
+// getenv function rather than os.Getenv. Used internally by ConfigFromEnv.
+type envFuncSecretSource struct {
+	getenv func(string) string
+}
+
+func (s *envFuncSecretSource) ProviderToken() (authToken, oauthToken string) {
+	return s.getenv(executor.ClaudeCLIAuthEnv), s.getenv(executor.ClaudeCLIOAuthEnv)
+}
+
+func (s *envFuncSecretSource) PublisherTokens() (gitToken, githubToken string) {
+	return s.getenv(EnvGitToken), s.getenv(EnvGitHubToken)
 }
 
 type sandboxBox struct {

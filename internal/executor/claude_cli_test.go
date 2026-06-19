@@ -5,8 +5,28 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/tkdtaylor/agent-builder/internal/secrets"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
+
+// fakeSecretSource is a test double for secrets.SecretSource used in TC-065-04.
+type fakeSecretSource struct {
+	authToken   string
+	oauthToken  string
+	gitToken    string
+	githubToken string
+}
+
+func (f *fakeSecretSource) ProviderToken() (string, string) {
+	return f.authToken, f.oauthToken
+}
+
+func (f *fakeSecretSource) PublisherTokens() (string, string) {
+	return f.gitToken, f.githubToken
+}
+
+// Compile-time assertion: fakeSecretSource satisfies secrets.SecretSource.
+var _ secrets.SecretSource = (*fakeSecretSource)(nil)
 
 func TestNewClaudeCLIWithOAuthTokenOnly(t *testing.T) {
 	// TC-059-01: OAuth token alone authenticates
@@ -258,5 +278,51 @@ func TestNewClaudeCLIFromEnvReadsBothTokens(t *testing.T) {
 	}
 	if cli.authToken != "" {
 		t.Fatalf("authToken = %q, want empty", cli.authToken)
+	}
+}
+
+// TC-065-04: NewClaudeCLIFromSecretSource delegates to SecretSource (not direct os.Getenv)
+func TestNewClaudeCLIFromSecretSourceDelegatesToSecretSource(t *testing.T) {
+	tests := []struct {
+		name           string
+		authToken      string
+		oauthToken     string
+		wantAuthToken  string
+		wantOAuthToken string
+	}{
+		{
+			name:           "API key from fake source",
+			authToken:      "sk-fake",
+			oauthToken:     "",
+			wantAuthToken:  "sk-fake",
+			wantOAuthToken: "",
+		},
+		{
+			name:           "OAuth token from fake source",
+			authToken:      "",
+			oauthToken:     "oauth-fake",
+			wantAuthToken:  "",
+			wantOAuthToken: "oauth-fake",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeSecretSource{
+				authToken:  tt.authToken,
+				oauthToken: tt.oauthToken,
+			}
+			cli := NewClaudeCLIFromSecretSource("/tmp/work", fake)
+
+			if cli == nil {
+				t.Fatal("NewClaudeCLIFromSecretSource() returned nil")
+			}
+			if cli.authToken != tt.wantAuthToken {
+				t.Fatalf("authToken = %q, want %q", cli.authToken, tt.wantAuthToken)
+			}
+			if cli.oauthToken != tt.wantOAuthToken {
+				t.Fatalf("oauthToken = %q, want %q", cli.oauthToken, tt.wantOAuthToken)
+			}
+		})
 	}
 }
