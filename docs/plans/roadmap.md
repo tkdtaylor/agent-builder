@@ -1,7 +1,7 @@
 # Roadmap
 
 **Project:** agent-builder
-**Last updated:** 2026-06-16
+**Last updated:** 2026-06-19
 
 Derived from `autonomous-builder.md` §2, §8. This roadmap doubles as the agent's own work queue once it runs — but during bootstrap it is built by hand (supervised).
 
@@ -31,7 +31,32 @@ Acceptance status: Phase 1 is accepted at **fake-provider L5** by the Task 037 e
 
 ## Phase 2+ — Remaining blocks (self-leveraging order)
 
-`audit-trail` → `policy-engine` → `vault`. Each removes a specific human checkpoint and improves the agent that builds the next.
+`audit-trail` → `policy-engine` → `vault` was the original self-leveraging order; the actual adoption order has been driven by which block shipped first. Each removes a specific human checkpoint and improves the agent that builds the next.
+
+### Block-adoption status (as-built — read this before assuming a block is un-adopted)
+
+This table is the single source of truth for *what agent-builder already consumes*. "Adopted" means wired into the run path behind a seam; "block ready" means the standalone block exists and is consumable but agent-builder does not use it yet.
+
+| Block | Block state | Adoption into agent-builder | Evidence |
+|---|---|---|---|
+| **exec-sandbox** | shipped | **✅ Adopted** — default run backend | ADR 035; tasks 062–063; ran a full Phase-0 capstone on the real block backend (2026-06-18) |
+| **audit-trail** | shipped (signed checkpoints, Rekor anchoring, rotation) | **✅ Adopted at v0** — `emit` + `verify` gate; ⏳ signed-checkpoint upgrade planned (tasks 067–069, *after* vault) | ADR 026; tasks 038–042; upgrade = tasks 067–069 |
+| **vault** | shipped (v1 complete) | ⏳ **Planned — in flight, next up** — broker tokens via exec-sandbox egress proxy | ADR 036; tasks 064–066 |
+| **policy-engine** | shipped (through block task 007, published remote, green gate) | ◻️ **Not yet adopted** — major adoption after vault. ⚠️ The `RetryPolicy`/escalation-policy code in `internal/loop` (task 013) is the agent-loop retry policy and is **unrelated** to the policy-engine block — do not mistake it for adoption. | — |
+| **memory-guard** | v0 (single commit; write-gate + delete-verify deltas built) | ◻️ Deferred — agent-builder has a live memory store to guard, so this leads agent-mesh when pulled in | block exists at `~/Code/Public/memory-guard` |
+| **agent-mesh** | v0 (single commit; Ed25519 envelopes + replay prevention) | ◻️ Deferred — needs a multi-agent / multi-executor substrate that does not exist yet | block exists at `~/Code/Public/agent-mesh` |
+
+### Immediate order (decided 2026-06-19)
+
+1. **vault adoption (tasks 064–066)** — *in flight, next up*. Closes the token-in-box risk, the single most concrete risk agent-builder faces (ADR 036). This is the only remaining *new-block* adoption that addresses an active risk, so it leads.
+2. **audit-trail signed-checkpoint upgrade (tasks 067–069)** — *after vault*. A deepening of already-working machinery, not a gap closing an active risk — so it follows vault rather than jumping the queue.
+3. **policy-engine adoption** — the next un-adopted block after that (not yet planned).
+
+### audit-trail — signed-checkpoint upgrade (tasks 067–069, after vault)
+
+v0 (below) wired `emit` + `verify`. The block has since shipped **Ed25519 signed checkpoints** and Rekor anchoring — the forensic guarantee that turns "tamper-evident *if you trust the file on disk*" into "a signed attestation a third party can verify offline after the agent box is gone." ADR 026 explicitly deferred this ("Surfacing the block's signed-checkpoint / Rekor-anchor verbs … is a later integration"). Tasks 067–069 land it, sequenced **after the vault tasks (064–066)** by decision on 2026-06-19. Shape mirrors the vault adoption arc: ADR → signer seam + config → verify-checkpoint surface. Key management is a file-path signing key for this upgrade; brokering that key through vault is a forward-link to the (now-prior) vault tasks, not a prerequisite.
+
+### audit-trail v0 (done)
 
 **audit-trail v0** (ADR 026, supersedes ADR 025; tasks 038–042) **consumes the shipped `audit-trail` block** (`github.com/tkdtaylor/audit-trail`) rather than reimplementing it — agent-builder's role is the *first concrete consumer* of the blocks, not a re-builder. v0 ships a typed `audit.AuditEvent` taxonomy + `audit.Sink` seam (task 038), a `BlockSink` adapter that maps each event onto the block's `audit-trail emit` CLI (task 039), a `VerifyChain` helper surfacing the block's `audit-trail verify` as a block-severity gate (task 040), supervisor wiring behind `AGENT_BUILDER_AUDIT_RECORD` + `AGENT_BUILDER_AUDIT_BIN` (task 041), and the F-005 `fitness-audit-isolation` check keeping `internal/audit` a leaf that reaches the block over `os/exec` (task 042). v0 captures only the action events the run loop already emits (containment, pick, attempt, verify+verdict, publish, escalate, finish). The block owns the hash chain, RFC 8785 canonicalization, tamper-detection, and the already-shipped signing / Rekor anchoring / rotation.
 
@@ -44,7 +69,7 @@ Acceptance status: Phase 1 is accepted at **fake-provider L5** by the Task 037 e
 ## Deferred (not bootstrap-critical)
 
 - **Multi-provider router** (Claude + Gemini + local LLMs, quota/sensitivity/cost routing) — design the seam now, build as v1.
-- **memory-guard / agent-mesh** — multi-agent / long-horizon memory, out of scope.
+- **memory-guard / agent-mesh** — both now exist as **v0 blocks** (`~/Code/Public/memory-guard`, `~/Code/Public/agent-mesh`), so they are no longer vaporware — but their *adoption into agent-builder* is deferred (see the status table above for why). Of the two, memory-guard leads: agent-builder already runs a live memory store worth guarding, whereas agent-mesh presupposes a multi-agent substrate that does not exist here yet.
 - **The "tool to build agents" product surface** — the north-star evolution, after the blocks are usable.
 
 ## Sequencing note

@@ -60,7 +60,7 @@ risk is the most concrete risk agent-builder faces and vault v1 is already compl
 
 - [ ] Test spec `064-adr036-vault-integration-test-spec.md` exists (written first)
 - [ ] ADR 035 is in `docs/architecture/decisions/` (already done — task 062)
-- [ ] Human has reviewed and approved the scope (this ADR is "Ask-first" per CLAUDE.md)
+- [x] Human has reviewed and approved the scope (this ADR is "Ask-first" per CLAUDE.md) — approved 2026-06-19. Decisions are constraint-forced (proxy-only: env mode is an exec-sandbox v0 stub; git/GitHub tokens first because the Claude-token-via-proxy path is unproven), and the strategic "adopt vault now" call was already made (roadmap + active work). No open product decision remains; the executor may author the ADR autonomously.
 
 ## Acceptance criteria
 
