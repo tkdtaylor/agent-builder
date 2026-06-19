@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-16
-**Last verified against this host:** 2026-06-16
+**Last verified against this host:** 2026-06-16 (host snapshot); Sections 6a + 7 added 2026-06-19 for the vault + signed-checkpoint adoptions
 **Purpose:** The single home for every **hands-on, operator-only** step that promotes Phase 0 and Phase 1 from L5 (fake-provider) to **L6 (live runtime)**. Everything here needs your host, your credentials, or your judgement — it is deliberately *not* in the task backlog. The backlog holds only codeable/automatable work; this runbook holds what a human must do.
 
 > **Automation status — ready.** The two automation tasks this runbook drives are **done and merged**: `make l6-preflight` (task 043) and `make l6-probe` (task 044) exist on `main` now. You no longer fall back to running the per-probe commands by hand — the harness runs them in order and collects evidence. The per-probe reference (exact command + success criterion for each task) lives in [phase0-l6-verification-checklist.md](phase0-l6-verification-checklist.md); use it only to debug a SKIP/FAIL or to run one probe manually.
@@ -298,6 +298,84 @@ audit-trail verify --logfile /tmp/audit.log
 ```
 
 `make fitness` already enforces audit isolation as a standing gate (`PASS fitness-audit-isolation: …`) — no operator action needed for that.
+
+### 6a. Signed checkpoints (tasks 068–069, shipped 2026-06-19)
+
+The Ed25519 signed-checkpoint upgrade (ADR 037) is wired: `internal/audit.CheckpointSigner` creates a checkpoint at supervisor seal (opt-in, after `VerifyChain` passes) and `agent-builder verify-checkpoint` verifies one offline. Both verbs were **already proven against the real `audit-trail` binary on 2026-06-19** — no required L6 residual remains, but the operator-facing path is:
+
+```bash
+# Build the block binary (Go) if not already present:
+( cd ~/Code/Public/audit-trail && go build -o audit-trail ./... )
+export AGENT_BUILDER_AUDIT_BIN=$HOME/Code/Public/audit-trail/audit-trail
+
+# Generate the operator-held Ed25519 keypair (file-path custody per ADR 037):
+openssl genpkey -algorithm ed25519 -out signing-key.pem
+openssl pkey -in signing-key.pem -pubout -out public-key.pem
+
+# Drive a run with checkpointing enabled (created at seal after the chain verifies):
+AGENT_BUILDER_AUDIT_RECORD=/tmp/audit.log \
+AGENT_BUILDER_AUDIT_CHECKPOINT_KEY=$PWD/signing-key.pem \
+AGENT_BUILDER_AUDIT_CHECKPOINT_LOG_ID=agent-builder \
+AGENT_BUILDER_AUDIT_CHECKPOINT_OUT=/tmp/checkpoint.json \
+  <your run command>
+
+# Verify the checkpoint OFFLINE with only the public key (the "survives agent compromise" guarantee):
+agent-builder verify-checkpoint --checkpoint /tmp/checkpoint.json --public-key public-key.pem
+# expect: {"valid":true,"message":"checkpoint signature valid"}  exit 0
+#   wrong key  → {"valid":false,…}  exit 1
+#   missing flag → usage error      exit 2
+```
+
+> Note: the block has **no `keygen` verb** (verbs: `serve|emit|verify|checkpoint|rotate`) — the operator supplies the Ed25519 PEM via `openssl` as above. The gated `TestCheckpointSignerRealBinary` self-skips for this reason; it is not a defect.
+
+---
+
+## Section 7 — Vault token brokering L6 (tasks 064–066, shipped 2026-06-19)
+
+Vault adoption (ADR 036) is wired at **L5** (client put/resolve proven live against the real vault daemon; in-repo wiring + fake-provider capstone green). One operator-gated L6 residual remains: proving git/GitHub tokens are brokered **through** exec-sandbox's egress proxy with the plaintext never entering the box. This needs your host, real tokens, and both block binaries.
+
+**Prerequisites:**
+
+```bash
+# vault binary (Rust):
+( cd ~/Code/Public/vault && cargo build --release )   # → target/release/vault
+# exec-sandbox binary (Go) — already built for the Phase-0 capstone (tasks 062/063):
+ls ~/Code/Public/exec-sandbox/bin/exec-sandbox
+# a 32-byte hex master key (vault refuses to start without one — never auto-generated):
+export VAULT_MASTER_KEY=$(openssl rand -hex 32)
+```
+
+**Probe (TC-066-05/06) — the in-box brokering capstone, opens a real PR on the `l6` sandbox remote:**
+
+```bash
+AGENT_BUILDER_LIVE_E2E=1 \
+AGENT_BUILDER_LIVE_E2E_REMOTE=l6 \
+AGENT_BUILDER_PUBLISH_REMOTE=l6 \
+AGENT_BUILDER_EXEC_SANDBOX_BIN=$HOME/Code/Public/exec-sandbox/bin/exec-sandbox \
+AGENT_BUILDER_VAULT_BIN=$HOME/Code/Public/vault/target/release/vault \
+AGENT_BUILDER_VAULT_SOCKET=/tmp/agent-builder-vault.sock \
+AGENT_BUILDER_GIT_TOKEN=<real token> \
+AGENT_BUILDER_GITHUB_TOKEN=<real token> \
+CLAUDE_CODE_OAUTH_TOKEN=<from .env> \
+  go test -count=1 -v ./tests/e2e -run TestLivePhase0EndToEndAcceptance_TC032
+# expect: --- PASS with a real PR opened+cleaned on l6; RunRequest JSON carries
+#   non-empty wiring.vault_socket + wiring.secret_refs + injection_mode="proxy";
+#   raw git/GitHub token values absent from the run log AND the RunRequest body;
+#   sandbox_status.secrets_injected non-empty.
+```
+
+**Feasibility probe (TC-066-07) — provider/Claude token via proxy (separate, records PASS/BLOCK):**
+
+```bash
+AGENT_BUILDER_VAULT_PROVIDER_PROBE=1 \
+AGENT_BUILDER_VAULT_BIN=$HOME/Code/Public/vault/target/release/vault \
+  go test -count=1 -v ./internal/vault/... -run TestProviderProxyProbe
+# Records whether the in-box Claude CLI can authenticate with the provider token
+# absent from the box env and present only on the egress proxy. The outcome
+# (PASS or BLOCK) decides whether provider-token brokering becomes a follow-on task.
+```
+
+Promote task 066's row (currently 🟡) to ✅ via Section 4's process once TC-066-05/06 are observed PASS. The provider probe's outcome is recorded as evidence regardless — 066 is complete on TC-066-05/06 alone.
 
 ---
 

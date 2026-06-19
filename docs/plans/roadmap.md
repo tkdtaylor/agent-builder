@@ -40,19 +40,19 @@ This table is the single source of truth for *what agent-builder already consume
 | Block | Block state | Adoption into agent-builder | Evidence |
 |---|---|---|---|
 | **exec-sandbox** | shipped | **✅ Adopted** — default run backend | ADR 035; tasks 062–063; ran a full Phase-0 capstone on the real block backend (2026-06-18) |
-| **audit-trail** | shipped (signed checkpoints, Rekor anchoring, rotation) | **✅ Adopted at v0** — `emit` + `verify` gate; ⏳ signed-checkpoint upgrade planned (tasks 067–069, *after* vault) | ADR 026; tasks 038–042; upgrade = tasks 067–069 |
-| **vault** | shipped (v1 complete) | ⏳ **Planned — in flight, next up** — broker tokens via exec-sandbox egress proxy | ADR 036; tasks 064–066 |
-| **policy-engine** | shipped (through block task 007, published remote, green gate) | ◻️ **Not yet adopted** — major adoption after vault. ⚠️ The `RetryPolicy`/escalation-policy code in `internal/loop` (task 013) is the agent-loop retry policy and is **unrelated** to the policy-engine block — do not mistake it for adoption. | — |
+| **audit-trail** | shipped (signed checkpoints, Rekor anchoring, rotation) | **✅ Adopted** — `emit` + `verify` gate (v0) **plus Ed25519 signed-checkpoint upgrade** (create at supervisor seal + `verify-checkpoint` CLI), opt-in via `AGENT_BUILDER_AUDIT_CHECKPOINT_*`; Rekor anchoring still deferred | ADR 026 + ADR 037; tasks 038–042 + 067–069 (merged 2026-06-19; checkpoint create/verify proven against the real `audit-trail` binary) |
+| **vault** | shipped (v1 complete) | **✅ Adopted (L5)** — `internal/vault` client+lifecycle, `VaultSecretSource`, `sandbox.Request.Wiring` → exec-sandbox proxy mode; opt-in via `AGENT_BUILDER_VAULT_BIN`; brokers **git/GitHub tokens** (provider/Claude token deferred pending feasibility probe TC-066-07). ⏳ L6 in-box brokering capstone (TC-066-05/06) operator-pending — needs real creds | ADR 036; tasks 064–066 (merged 2026-06-19; client put/resolve proven live vs real vault daemon) |
+| **policy-engine** | shipped (through block task 007, published remote, green gate) | ◻️ **Not yet adopted** — the next un-adopted block (vault + signed-checkpoints now done). ⚠️ The `RetryPolicy`/escalation-policy code in `internal/loop` (task 013) is the agent-loop retry policy and is **unrelated** to the policy-engine block — do not mistake it for adoption. | — |
 | **memory-guard** | v0 (single commit; write-gate + delete-verify deltas built) | ◻️ Deferred — agent-builder has a live memory store to guard, so this leads agent-mesh when pulled in | block exists at `~/Code/Public/memory-guard` |
 | **agent-mesh** | v0 (single commit; Ed25519 envelopes + replay prevention) | ◻️ Deferred — needs a multi-agent / multi-executor substrate that does not exist yet | block exists at `~/Code/Public/agent-mesh` |
 
-### Immediate order (decided 2026-06-19)
+### Immediate order (decided 2026-06-19; updated as-built same day)
 
-1. **vault adoption (tasks 064–066)** — *in flight, next up*. Closes the token-in-box risk, the single most concrete risk agent-builder faces (ADR 036). This is the only remaining *new-block* adoption that addresses an active risk, so it leads.
-2. **audit-trail signed-checkpoint upgrade (tasks 067–069)** — *after vault*. A deepening of already-working machinery, not a gap closing an active risk — so it follows vault rather than jumping the queue.
-3. **policy-engine adoption** — the next un-adopted block after that (not yet planned).
+1. **vault adoption (tasks 064–066)** — ✅ **done (L5, merged 2026-06-19).** Closed the token-in-box risk for git/GitHub tokens (ADR 036). L6 in-box brokering capstone (TC-066-05/06) + provider-token feasibility probe (TC-066-07) remain operator-gated — see the L6 operator runbook.
+2. **audit-trail signed-checkpoint upgrade (tasks 067–069)** — ✅ **done (merged 2026-06-19).** ADR 037 + signer seam/config + `verify-checkpoint` CLI; create/verify proven against the real `audit-trail` binary.
+3. **policy-engine adoption** — the next un-adopted block (not yet planned). A provider-token vault-brokering follow-on (gated on TC-066-07's outcome) also remains.
 
-### audit-trail — signed-checkpoint upgrade (tasks 067–069, after vault)
+### audit-trail — signed-checkpoint upgrade (tasks 067–069) — ✅ done 2026-06-19
 
 v0 (below) wired `emit` + `verify`. The block has since shipped **Ed25519 signed checkpoints** and Rekor anchoring — the forensic guarantee that turns "tamper-evident *if you trust the file on disk*" into "a signed attestation a third party can verify offline after the agent box is gone." ADR 026 explicitly deferred this ("Surfacing the block's signed-checkpoint / Rekor-anchor verbs … is a later integration"). Tasks 067–069 land it, sequenced **after the vault tasks (064–066)** by decision on 2026-06-19. Shape mirrors the vault adoption arc: ADR → signer seam + config → verify-checkpoint surface. Key management is a file-path signing key for this upgrade; brokering that key through vault is a forward-link to the (now-prior) vault tasks, not a prerequisite.
 
