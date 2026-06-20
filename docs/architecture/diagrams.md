@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-17
+**Last updated:** 2026-06-19
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -161,6 +161,8 @@ C4Component
 sequenceDiagram
     autonumber
     participant Runtime as Default Run Wiring
+    participant Vault as vault daemon (opt-in)
+    participant Policy as policy-engine daemon (opt-in)
     participant Supervisor
     participant Box as Containment Box
     participant AgentLoop as Agent Loop
@@ -182,6 +184,21 @@ sequenceDiagram
     alt no ready task
         Runtime-->>Runtime: print idle and return
     else ready task
+        opt AGENT_BUILDER_VAULT_BIN set
+            Runtime->>Vault: start daemon + resolve token handles (InjectionMode=proxy)
+        end
+        opt AGENT_BUILDER_POLICY_BIN set
+            Runtime->>Policy: start daemon (serve --socket --allow), decide(agent-builder, run-task, task+egress, risk)
+            Note over Runtime,Policy: AFTER vault handle resolution, BEFORE box.Create; fail-closed (any error → deny)
+            Policy-->>Runtime: decision + obligations
+            alt deny / require_approval
+                Runtime->>StatusWriter: WriteStatus(Task.ID, needs-human)
+                StatusWriter->>Tasks: rewrite status line
+                Runtime-->>Runtime: print halted and return (box never starts)
+            else allow
+                Runtime-->>Runtime: apply tier_select → Request.Tier; vault_injection_floor → raise InjectionMode (raise-only)
+            end
+        end
         Runtime->>Supervisor: Run(Task, Box, InBoxLoop, timeout, RunRecord)
     end
     Supervisor->>Box: Create(Task)

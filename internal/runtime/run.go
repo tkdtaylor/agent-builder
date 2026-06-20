@@ -16,6 +16,7 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/executor"
 	"github.com/tkdtaylor/agent-builder/internal/gate"
 	agentloop "github.com/tkdtaylor/agent-builder/internal/loop"
+	"github.com/tkdtaylor/agent-builder/internal/policy"
 	branchpub "github.com/tkdtaylor/agent-builder/internal/publisher"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox/execsandbox"
@@ -48,6 +49,17 @@ const (
 	EnvVaultBin       = "AGENT_BUILDER_VAULT_BIN"
 	EnvVaultSocket    = "AGENT_BUILDER_VAULT_SOCKET"
 	EnvVaultStorePath = "AGENT_BUILDER_VAULT_STORE_PATH"
+
+	// Policy gate (ADR 038, task 072). The policy gate is opt-in: when
+	// EnvPolicyBin is unset, the decide call is skipped entirely and the run
+	// proceeds exactly as before (zero regression).
+	EnvPolicyBin    = "AGENT_BUILDER_POLICY_BIN"
+	EnvPolicySocket = "AGENT_BUILDER_POLICY_SOCKET"
+	EnvPolicyRisk   = "AGENT_BUILDER_POLICY_RISK"
+
+	// defaultPolicyRisk is the static context.risk value sent in the AuthZEN
+	// decide request when AGENT_BUILDER_POLICY_RISK is unset (ADR 038).
+	defaultPolicyRisk = "low"
 
 	// Checkpoint signing (ADR 037, task 068). Checkpoint is opt-in: when
 	// EnvAuditCheckpointKey is unset, checkpoint creation is skipped.
@@ -88,6 +100,11 @@ type Config struct {
 	VaultBin       string
 	VaultSocket    string
 	VaultStorePath string
+
+	// Policy gate (ADR 038, task 072). PolicyBin empty => policy gate disabled.
+	PolicyBin    string
+	PolicySocket string
+	PolicyRisk   string
 
 	// Checkpoint signing (ADR 037, task 068). AuditCheckpointKey empty => disabled.
 	AuditCheckpointKey       string // path to Ed25519 PEM signing key
@@ -147,6 +164,10 @@ func configFromEnvWithSource(getenv func(string) string, src secrets.SecretSourc
 		VaultBin:         cleanPath(getenv(EnvVaultBin)),
 		VaultSocket:      cleanPath(getenv(EnvVaultSocket)),
 		VaultStorePath:   cleanPath(getenv(EnvVaultStorePath)),
+
+		PolicyBin:    cleanPath(getenv(EnvPolicyBin)),
+		PolicySocket: cleanPath(getenv(EnvPolicySocket)),
+		PolicyRisk:   strings.TrimSpace(getenv(EnvPolicyRisk)),
 
 		AuditCheckpointKey:       cleanPath(getenv(EnvAuditCheckpointKey)),
 		AuditCheckpointLogID:     strings.TrimSpace(getenv(EnvAuditCheckpointLogID)),
@@ -268,15 +289,45 @@ func Run(config Config, stdout io.Writer) error {
 		}
 	}
 
+	limits := sandbox.Limits{
+		WallClockTimeout: config.RunTimeout,
+	}
+
+	// Policy gate (ADR 038, task 072). Opt-in: when AGENT_BUILDER_POLICY_BIN is
+	// set, start a policy daemon and call decide BEFORE the box is created.
+	// The decide call sits AFTER vault handle resolution (so a
+	// vault_injection_floor obligation can raise the already-resolved
+	// InjectionMode) and BEFORE sandboxBox.Create (so a deny stops the box from
+	// ever starting and obligations apply to the wiring the box will use).
+	var tierOverride string
+	if config.PolicyBin != "" {
+		outcome, err := decideGate(config, task, limits.EgressAllowlist, &wiring)
+		if err != nil {
+			return err
+		}
+		if !outcome.allowed {
+			// Deny / require_approval: write needs-human status and return
+			// without dispatching. The box never starts.
+			statusWriter := tasksource.NewStatusWriter(config.TaskRoot, tasksource.DefaultTaskDirs...)
+			if _, werr := statusWriter.WriteStatus(task.ID, tasksource.WritableStatusNeedsHuman); werr != nil {
+				return fmt.Errorf("run: %s: write needs-human status for task %s: %w", outcome.reason, task.ID, werr)
+			}
+			_, _ = fmt.Fprintf(stdout, "run halted: task %s — %s\n", task.ID, outcome.reason)
+			return nil
+		}
+		// allow: a tier_select obligation may have set the tier; the
+		// vault_injection_floor obligation may have raised wiring.InjectionMode.
+		tierOverride = outcome.tier
+	}
+
 	box := sandboxBox{
 		runner:   runner,
 		worktree: config.Worktree,
 		launcher: config.ExecBoxLauncher,
 		backend:  backendLabel,
 		wiring:   wiring,
-		limits: sandbox.Limits{
-			WallClockTimeout: config.RunTimeout,
-		},
+		tier:     tierOverride,
+		limits:   limits,
 	}
 	inBox := retryingInBoxLoop{
 		executor:     exec,
@@ -374,6 +425,102 @@ func startVault(config Config) (*vault.Daemon, *secrets.VaultSecretSource, error
 		return nil, nil, fmt.Errorf("run: construct vault secret source: %w", err)
 	}
 	return daemon, src, nil
+}
+
+// gateOutcome is the result of the host-side policy decide gate.
+type gateOutcome struct {
+	allowed bool   // true => proceed to box.Create; false => halt (deny/require_approval)
+	reason  string // human-facing status reason when !allowed
+	tier    string // tier_select obligation value ("" => no override)
+}
+
+// decideGate starts the policy daemon, builds the AuthZEN decide request, calls
+// PolicyClient.Decide, and applies obligations (ADR 038, task 072).
+//
+// Ordering invariant (load-bearing): decideGate is called AFTER vault handle
+// resolution (so the vault_injection_floor obligation can raise the
+// already-resolved wiring.InjectionMode) and BEFORE sandboxBox.Create (so a deny
+// stops the box from ever starting and the tier_select / floor obligations apply
+// to the request the box will issue). It receives wiring by pointer and may
+// raise wiring.InjectionMode in place — never lower it.
+//
+// Fail-closed: the client returns DecisionDeny on any transport/parse error
+// (see internal/policy.Decide). decideGate routes on response.Decision, never on
+// the error, so any failure halts dispatch rather than allowing it. The daemon
+// is stopped before return in all paths.
+func decideGate(config Config, task supervisor.Task, egressHosts []string, wiring *sandbox.RunWiring) (gateOutcome, error) {
+	binPath, err := resolvePolicyBin(config.PolicyBin)
+	if err != nil {
+		return gateOutcome{}, err
+	}
+
+	socketPath := config.PolicySocket
+	if socketPath == "" {
+		socketPath = filepath.Join(os.TempDir(), fmt.Sprintf("agent-builder-policy-%d.sock", os.Getpid()))
+	}
+
+	daemon := &policy.PolicyDaemon{
+		BinPath:    binPath,
+		SocketPath: socketPath,
+		Allow:      egressHosts,
+	}
+	if err := daemon.Start(context.Background()); err != nil {
+		return gateOutcome{}, fmt.Errorf("run: start policy daemon: %w", err)
+	}
+	defer func() { _ = daemon.Stop() }()
+
+	risk := config.PolicyRisk
+	if risk == "" {
+		risk = defaultPolicyRisk
+	}
+
+	req := policy.DecideRequest{
+		Subject:  policy.Subject{Type: "agent", ID: "agent-builder"},
+		Action:   policy.Action{Name: "run-task"},
+		Resource: policy.Resource{Type: "task", ID: task.ID, Properties: policy.ResourceProperties{EgressHosts: egressHosts}},
+		Context:  policy.DecideContext{Risk: risk},
+	}
+
+	// Decide is fail-closed: any error yields DecisionDeny. We deliberately route
+	// on resp.Decision (not the error) so an error path halts dispatch.
+	resp, _ := policy.NewClient(socketPath).Decide(req)
+
+	// Apply obligations regardless of decision shape; on allow they take effect,
+	// on deny they are inert (the box never starts).
+	tier := policy.TierSelect(resp.Obligations)
+	wiring.InjectionMode = policy.RaiseInjectionFloor(wiring.InjectionMode, resp.Obligations)
+
+	switch resp.Decision {
+	case policy.DecisionAllow:
+		return gateOutcome{allowed: true, tier: tier}, nil
+	case policy.DecisionRequireApproval:
+		// Task 072 routes require_approval the same as deny with a placeholder
+		// reason. Distinct routing (and the distinct status reason) is task 073.
+		return gateOutcome{allowed: false, reason: "policy: requires human approval"}, nil
+	default:
+		// deny and any fail-closed deny.
+		return gateOutcome{allowed: false, reason: "policy: decision denied"}, nil
+	}
+}
+
+// resolvePolicyBin resolves the policy-engine binary path: an explicit
+// AGENT_BUILDER_POLICY_BIN value (validated executable on $PATH) takes
+// precedence, otherwise the bare name "policy-engine" is looked up on $PATH. An
+// unresolvable binary is a hard configuration error (fail-loud, mirroring
+// resolveAuditBin). Only called when config.PolicyBin is non-empty.
+func resolvePolicyBin(configured string) (string, error) {
+	if configured != "" {
+		resolved, err := exec.LookPath(configured)
+		if err != nil {
+			return "", fmt.Errorf("run config: %s %q is not an executable policy-engine binary: %w", EnvPolicyBin, configured, err)
+		}
+		return resolved, nil
+	}
+	resolved, err := exec.LookPath("policy-engine")
+	if err != nil {
+		return "", fmt.Errorf("run config: %s is set but no policy-engine binary resolves (set %s or add policy-engine to PATH): %w", EnvPolicyBin, EnvPolicyBin, err)
+	}
+	return resolved, nil
 }
 
 // newBlockSink resolves the audit-trail binary and verifies the chain logfile
@@ -552,6 +699,7 @@ type sandboxBox struct {
 	launcher string
 	backend  string
 	wiring   sandbox.RunWiring
+	tier     string // exec-sandbox tier; "" => backend default (set by policy tier_select)
 	limits   sandbox.Limits
 }
 
@@ -567,6 +715,7 @@ func (b sandboxBox) Create(task supervisor.Task) (supervisor.BoxHandle, error) {
 		Command:  []string{"-c", "true"},
 		Worktree: b.worktree,
 		Limits:   b.limits,
+		Tier:     b.tier,
 		Wiring:   b.wiring,
 	})
 	if err != nil {
