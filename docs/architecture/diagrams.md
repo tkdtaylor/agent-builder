@@ -141,6 +141,7 @@ C4Component
 - Task 017 fixes the supervisor dispatch lifecycle: create one box, run one in-box loop, and tear the box down exactly once.
 - Task 019 fixes the run-record seam: command/stdout/stderr events stream to host-side NDJSON and close before box teardown.
 - Task 041 wires the audit action layer: the in-box loop projects typed action events through an optional `audit.Sink` (`RunStreams.Audit`) alongside the unchanged 019 raw run-record stream; the supervisor Seals the sink before teardown on success and failure. The production sink (`audit.BlockSink`, behind `AGENT_BUILDER_AUDIT_RECORD`) shells out to the `audit-trail` block to produce the hash-chained log, resolved fail-fast before dispatch. The supervisor depends only on the `audit.Sink` interface, so F-003 isolation holds.
+- Task 073 moves audit sink construction to before the policy gate so that an `audit_emit` obligation can emit a `policy-decision` event even when the gate denies or requires approval. The `policy-decision` event (`ActionPolicyDecision`) is a new action type in the closed `AuditAction` enum. `require_approval` produces a distinct status reason (`"policy: requires human approval"`) from `deny` (`"policy: decision denied"`).
 - Task 028 fixes the default CLI run wiring: `internal/runtime` parses explicit environment configuration, selects one ready task, composes the Phase 0 adapters, and calls the supervisor without adding executor/web/LLM imports to `internal/supervisor`.
 - Task 034 fixes branch and PR publication: `internal/publisher` pushes only Gate-verified non-empty branches and records PR artifact evidence with publication-token redaction.
 - The supervisor remains trusted and dumb; the gate contains verification orchestration only, not executor/LLM/web logic.
@@ -187,14 +188,24 @@ sequenceDiagram
         opt AGENT_BUILDER_VAULT_BIN set
             Runtime->>Vault: start daemon + resolve token handles (InjectionMode=proxy)
         end
+        opt AGENT_BUILDER_AUDIT_RECORD set
+            Runtime-->>Runtime: resolve audit-trail bin + check path writable (fail-fast before dispatch); construct audit.BlockSink
+        end
         opt AGENT_BUILDER_POLICY_BIN set
             Runtime->>Policy: start daemon (serve --socket --allow), decide(agent-builder, run-task, task+egress, risk)
             Note over Runtime,Policy: AFTER vault handle resolution, BEFORE box.Create; fail-closed (any error → deny)
             Policy-->>Runtime: decision + obligations
-            alt deny / require_approval
+            opt audit_emit obligation present AND audit sink configured
+                Runtime->>AuditChain: emit policy-decision event (decision, reason) — side-effect, does not change routing
+            end
+            alt deny
                 Runtime->>StatusWriter: WriteStatus(Task.ID, needs-human)
                 StatusWriter->>Tasks: rewrite status line
-                Runtime-->>Runtime: print halted and return (box never starts)
+                Runtime-->>Runtime: print halted — "policy: decision denied" — and return (box never starts)
+            else require_approval
+                Runtime->>StatusWriter: WriteStatus(Task.ID, needs-human)
+                StatusWriter->>Tasks: rewrite status line
+                Runtime-->>Runtime: print halted — "policy: requires human approval" — and return (box never starts; reason distinct from deny)
             else allow
                 Runtime-->>Runtime: apply tier_select → Request.Tier; vault_injection_floor → raise InjectionMode (raise-only)
             end
@@ -207,9 +218,6 @@ sequenceDiagram
     Supervisor->>RunRecord: open + write run_started
     Supervisor-->>Supervisor: log loop.started
     Supervisor->>RunRecord: write command
-    opt AGENT_BUILDER_AUDIT_RECORD set
-        Supervisor-->>Supervisor: resolve audit-trail bin + check path writable (fail-fast before dispatch)
-    end
     Supervisor->>AgentLoop: RunInside(BoxHandle, Task, RunStreams{+Audit})
     AgentLoop-->>RunRecord: stream stdout/stderr/commands (raw)
     AgentLoop-->>AuditChain: emit typed action events (containment, pick, attempt, verify, publish, finish) — alongside the raw stream, never raw bytes
@@ -239,7 +247,7 @@ sequenceDiagram
     end
     Supervisor->>RunRecord: write run_finished + close
     opt audit sink configured
-        Supervisor->>AuditChain: Seal() — before teardown, on success and failure
+        Supervisor->>AuditChain: Seal() — before teardown, on success and failure (same sink constructed before policy gate)
     end
     Supervisor->>Box: Teardown(BoxHandle)
     Supervisor-->>Supervisor: log box.torn_down

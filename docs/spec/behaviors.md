@@ -1,7 +1,7 @@
 # Behaviors
 
 **Project:** agent-builder
-**Last updated:** 2026-06-17 (task 050 — rootless egress sidecar fix)
+**Last updated:** 2026-06-19 (task 073 — require_approval routing + audit_emit obligation)
 
 What the system does, observably. Each behavior describes a triggering condition, the system's response, and any externally-visible side effects. This is the "you can verify this from outside the process" view.
 
@@ -183,6 +183,22 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Blank branch, blank remote, git push failure, GitHub CLI failure, auth failure, or PR creation failure returns a non-success run outcome. Configured git/GitHub token values are redacted from publisher errors, CLI stderr, and RunRecord events.
 - **References:** `docs/tasks/test-specs/034-branch-pr-publication-test-spec.md`.
 
+### B-022: Route policy `require_approval` to needs-human with a distinct status reason from `deny`
+
+- **Trigger:** The host-side policy decide gate returns `decision: require_approval` when `AGENT_BUILDER_POLICY_BIN` is set.
+- **Response:** `runtime.Run` writes `needs-human` status for the picked task, prints `run halted: task <id> — policy: requires human approval` to stdout, and returns nil (valid terminal outcome, not a system error). The status reason string is `"policy: requires human approval"` — observably distinct from `deny`'s `"policy: decision denied"`.
+- **Side effects:** The task status file is updated to `needs-human`. The sandbox box never starts. The executor receives zero invocations.
+- **Failure modes:** A status-write failure after the policy deny is returned as a non-nil error. No other failure mode exists on this path.
+- **References:** ADR 038; `docs/tasks/test-specs/073-require-approval-and-audit-emit-obligations-test-spec.md`.
+
+### B-023: Emit a `policy-decision` audit event when `audit_emit` obligation is present
+
+- **Trigger:** The policy decide gate returns any decision with an `{"type":"audit_emit","value":true}` obligation, AND the `audit.Sink` is configured (`AGENT_BUILDER_AUDIT_RECORD` is set).
+- **Response:** `runtime.Run` appends an `AuditEvent{Action: ActionPolicyDecision, RunID: taskID, TaskID: taskID, Detail: {PolicyDecision: <decision>, PolicyReason: <reason>}}` to the configured sink before routing on the decision.
+- **Side effects:** The `audit_emit` obligation is a side-effect, not a routing modifier: `allow` + `audit_emit` still allows; `deny` + `audit_emit` blocks AND emits; `require_approval` + `audit_emit` writes needs-human AND emits. Append errors are swallowed (consistent with other in-run audit projections).
+- **Failure modes:** Nil sink when `audit_emit` is present is a no-op (no panic). Absence of `audit_emit` obligation means no `ActionPolicyDecision` event is ever emitted.
+- **References:** ADR 038; `docs/tasks/test-specs/073-require-approval-and-audit-emit-obligations-test-spec.md`.
+
 ### B-021: Verify audit chain integrity via the block's own verifier
 
 - **Trigger:** A caller invokes `audit.VerifyChain(binPath, logfile)` after a run has produced an audit-trail chain via `audit.BlockSink`.
@@ -237,3 +253,6 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - The branch publisher is called only after Executor success, Gate pass, and non-empty branch capture.
 - An unavailable `audit-trail` verifier binary is never reported as "valid": `VerifyChain` returns a non-nil `ErrVerifierUnavailable` error, not a passing `VerifyResult`.
 - `audit.VerifyChain` does not re-implement tamper detection; it delegates to the block's `verify` verb and maps the block's verdict to a typed block-severity gate result.
+- `require_approval` and `deny` decisions both block dispatch (box never starts, status written as `needs-human`) but produce observably different status reason strings: deny uses `"policy: decision denied"`, require_approval uses `"policy: requires human approval"`.
+- The `audit_emit` obligation never changes routing: routing is always determined by `Decision` alone. `audit_emit` is a side-effect on the configured `audit.Sink`.
+- A nil `audit.Sink` when `audit_emit` is present is a no-op; it never panics and never returns an error to the caller.

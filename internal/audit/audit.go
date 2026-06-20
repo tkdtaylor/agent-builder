@@ -27,24 +27,26 @@ type AuditAction string
 //
 // Raw stdout/stderr stay in the RunRecord; they do not appear in this taxonomy.
 const (
-	ActionContainment AuditAction = "containment"
-	ActionPick        AuditAction = "pick"
-	ActionAttempt     AuditAction = "attempt"
-	ActionVerify      AuditAction = "verify"
-	ActionPublish     AuditAction = "publish"
-	ActionEscalate    AuditAction = "escalate"
-	ActionFinish      AuditAction = "finish"
+	ActionContainment    AuditAction = "containment"
+	ActionPick           AuditAction = "pick"
+	ActionAttempt        AuditAction = "attempt"
+	ActionVerify         AuditAction = "verify"
+	ActionPublish        AuditAction = "publish"
+	ActionEscalate       AuditAction = "escalate"
+	ActionFinish         AuditAction = "finish"
+	ActionPolicyDecision AuditAction = "policy-decision"
 )
 
 // validActions is the closed set of known actions. Used by Valid() and Validate.
 var validActions = map[AuditAction]struct{}{
-	ActionContainment: {},
-	ActionPick:        {},
-	ActionAttempt:     {},
-	ActionVerify:      {},
-	ActionPublish:     {},
-	ActionEscalate:    {},
-	ActionFinish:      {},
+	ActionContainment:    {},
+	ActionPick:           {},
+	ActionAttempt:        {},
+	ActionVerify:         {},
+	ActionPublish:        {},
+	ActionEscalate:       {},
+	ActionFinish:         {},
+	ActionPolicyDecision: {},
 }
 
 // Valid reports whether a is a known, non-empty action in the closed enum.
@@ -94,6 +96,12 @@ type EventDetail struct {
 	Remote string
 	// Attempt is the 1-based attempt number (relevant for attempt/escalate events).
 	Attempt int
+	// PolicyDecision is the policy engine decision string ("allow", "deny", or
+	// "require_approval"). Only set for ActionPolicyDecision events (task 073).
+	PolicyDecision string
+	// PolicyReason is the human-readable reason returned by the policy engine.
+	// Only set for ActionPolicyDecision events (task 073).
+	PolicyReason string
 }
 
 // AuditEvent is the structured, typed event that the supervisor writes through
@@ -155,7 +163,7 @@ func Validate(ev AuditEvent) error {
 	if !ev.Action.Valid() {
 		return &ValidationError{
 			Field:   "action",
-			Message: fmt.Sprintf("must be one of {containment, pick, attempt, verify, publish, escalate, finish}, got %q", ev.Action),
+			Message: fmt.Sprintf("must be one of {containment, pick, attempt, verify, publish, escalate, finish, policy-decision}, got %q", ev.Action),
 		}
 	}
 	if ev.Action == ActionVerify && !ev.Verdict.Valid() {

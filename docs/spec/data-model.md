@@ -488,15 +488,16 @@ Trace          TraceRecorder         optional producer-consumer trace sink
 #### Value: `audit.AuditAction` (closed enum)
 
 ```
-constant            string value      notes
-─────────────────────────────────────────────────────────────
-ActionContainment   "containment"     containment box created; launcher identity recorded
-ActionPick          "pick"            task selected from the task source
-ActionAttempt       "attempt"         executor attempt started for the picked task
-ActionVerify        "verify"          gate verification started; verdict required
-ActionPublish       "publish"         branch pushed and PR artifact recorded
-ActionEscalate      "escalate"        retry exhausted; status written as needs-human
-ActionFinish        "finish"          run lifecycle complete; outcome recorded
+constant              string value        notes
+───────────────────────────────────────────────────────────────────
+ActionContainment     "containment"       containment box created; launcher identity recorded
+ActionPick            "pick"              task selected from the task source
+ActionAttempt         "attempt"           executor attempt started for the picked task
+ActionVerify          "verify"            gate verification started; verdict required
+ActionPublish         "publish"           branch pushed and PR artifact recorded
+ActionEscalate        "escalate"          retry exhausted; status written as needs-human
+ActionFinish          "finish"            run lifecycle complete; outcome recorded
+ActionPolicyDecision  "policy-decision"   policy engine decision recorded; emitted by audit_emit obligation (task 073)
 ```
 
 - **Closed:** `AuditAction.Valid()` returns false for any value not in the constant set above. Raw stdout/stderr actions do not exist in this taxonomy (raw output stays in the 019 RunRecord).
@@ -523,15 +524,17 @@ Detail      EventDetail       optional typed structured context; fields relevant
 #### Value: `audit.EventDetail`
 
 ```
-field       type      notes
-─────────────────────────────────────────────────────────────
-Launcher    string    containment launcher path (containment events)
-Branch      string    executor-produced branch (publish events)
-Remote      string    git remote used for publication (publish events)
-Attempt     int       1-based attempt number (attempt/escalate events)
+field             type      notes
+─────────────────────────────────────────────────────────────────────────────
+Launcher          string    containment launcher path (containment events)
+Branch            string    executor-produced branch (publish events)
+Remote            string    git remote used for publication (publish events)
+Attempt           int       1-based attempt number (attempt/escalate events)
+PolicyDecision    string    policy engine decision string — "allow", "deny", or "require_approval" (policy-decision events; task 073)
+PolicyReason      string    human-readable reason from the policy engine response (policy-decision events; task 073)
 ```
 
-- **Identity:** embedded in `AuditEvent`; carries only the non-zero fields relevant to the action.
+- **Identity:** embedded in `AuditEvent`; carries only the non-zero fields relevant to the action. `PolicyDecision` and `PolicyReason` are set only for `ActionPolicyDecision` events; they are zero-valued on all other event types.
 - **Lifecycle:** constructed at the call site with named fields (no `map[string]any`).
 
 #### Value: `audit.AuditVerdict`

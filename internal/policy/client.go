@@ -93,12 +93,21 @@ type DecideRequest struct {
 	Context  DecideContext `json:"context,omitempty"`
 }
 
+// DecideResponseContext carries human-facing context returned by the policy engine
+// alongside a decision. The Reason field contains the policy engine's human-readable
+// reason string for the decision (used by audit_emit events — task 073).
+type DecideResponseContext struct {
+	Reason string `json:"reason,omitempty"`
+}
+
 // DecideResponse is the output of PolicyClient.Decide.
 // Decision is always set — on any error path it is DecisionDeny.
 // Obligations is nil or empty on denial.
+// Context carries the policy engine's reason string (non-empty when the engine provides one).
 type DecideResponse struct {
-	Decision    Decision     `json:"decision"`
-	Obligations []Obligation `json:"obligations,omitempty"`
+	Decision    Decision             `json:"decision"`
+	Obligations []Obligation         `json:"obligations,omitempty"`
+	Context     DecideResponseContext `json:"context,omitempty"`
 }
 
 // PolicyClient is a minimal client for the policy-engine Unix socket. The zero
@@ -175,6 +184,7 @@ func (c *PolicyClient) Decide(req DecideRequest) (DecideResponse, error) {
 	return DecideResponse{
 		Decision:    d,
 		Obligations: raw.Obligations,
+		Context:     DecideResponseContext{Reason: raw.Reason},
 	}, nil
 }
 
@@ -211,6 +221,7 @@ type genericWire struct {
 type rawResponse struct {
 	Decision    string
 	Obligations []Obligation
+	Reason      string
 	OK          bool
 	wireErr     *wireErrorShape
 }
@@ -257,6 +268,7 @@ func (c *PolicyClient) do(req any) (rawResponse, error) {
 	return rawResponse{
 		Decision:    wire.Decision,
 		Obligations: obligations,
+		Reason:      wire.Context.Reason,
 		OK:          wire.OK,
 		wireErr:     wire.Error,
 	}, nil
