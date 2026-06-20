@@ -1,8 +1,6 @@
 package policy
 
-// Obligation type identifiers (ADR 038 obligation→seam map). The values
-// agent-builder knows how to apply in task 072 are tier_select and
-// vault_injection_floor; audit_emit is wired in task 073.
+// Obligation type identifiers (ADR 038 obligation→seam map).
 const (
 	// ObligationTierSelect sets the exec-sandbox execution tier
 	// (sandbox.Request.Tier). Value is the tier name (e.g. "gvisor").
@@ -11,6 +9,10 @@ const (
 	// ObligationVaultInjectionFloor raises sandbox.RunWiring.InjectionMode to a
 	// stricter floor (raise-only). Value is the floor ("env" or "proxy").
 	ObligationVaultInjectionFloor = "vault_injection_floor"
+
+	// ObligationAuditEmit triggers emission of an ActionPolicyDecision audit
+	// event on the configured audit.Sink (task 073). Value is bool true.
+	ObligationAuditEmit = "audit_emit"
 )
 
 // injectionRank orders the InjectionMode values from weakest to strongest so
@@ -43,6 +45,21 @@ func TierSelect(obligations []Obligation) string {
 		}
 	}
 	return ""
+}
+
+// AuditEmit reports whether the audit_emit obligation is present with value true
+// in the obligations slice (task 073). Returns false when the obligation is absent,
+// the value is not a bool, or the bool is false.
+func AuditEmit(obligations []Obligation) bool {
+	for _, ob := range obligations {
+		if ob.Type != ObligationAuditEmit {
+			continue
+		}
+		if b, ok := ob.Value.(bool); ok && b {
+			return true
+		}
+	}
+	return false
 }
 
 // RaiseInjectionFloor applies any vault_injection_floor obligations to current,

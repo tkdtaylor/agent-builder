@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-19
-**Status:** backlog
+**Status:** done
 
 ## Goal
 

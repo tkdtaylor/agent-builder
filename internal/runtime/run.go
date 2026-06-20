@@ -293,6 +293,20 @@ func Run(config Config, stdout io.Writer) error {
 		WallClockTimeout: config.RunTimeout,
 	}
 
+	// Optional typed audit chain (task 041). When AGENT_BUILDER_AUDIT_RECORD is
+	// set, the audit-trail binary must resolve and the path must be writable
+	// BEFORE dispatch — auditing is never silently skipped when configured.
+	// Construction happens here (before the policy gate) so that an audit_emit
+	// obligation can emit a policy-decision event even when the gate denies (task 073).
+	var auditSink audit.Sink
+	if config.AuditRecordPath != "" {
+		sink, err := newBlockSink(config)
+		if err != nil {
+			return err
+		}
+		auditSink = sink
+	}
+
 	// Policy gate (ADR 038, task 072). Opt-in: when AGENT_BUILDER_POLICY_BIN is
 	// set, start a policy daemon and call decide BEFORE the box is created.
 	// The decide call sits AFTER vault handle resolution (so a
@@ -305,6 +319,9 @@ func Run(config Config, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
+		// audit_emit obligation (task 073): emit a policy-decision event on the
+		// configured sink regardless of the routing outcome. Nil sink = no-op.
+		maybeEmitPolicyDecision(auditSink, task.ID, outcome)
 		if !outcome.allowed {
 			// Deny / require_approval: write needs-human status and return
 			// without dispatching. The box never starts.
@@ -360,15 +377,8 @@ func Run(config Config, stdout io.Writer) error {
 	if config.RunRecordPath != "" {
 		options = append(options, supervisor.WithRunRecordPath(config.RunRecordPath))
 	}
-	// Optional typed audit chain (task 041). When AGENT_BUILDER_AUDIT_RECORD is
-	// set, the audit-trail binary must resolve and the path must be writable
-	// BEFORE dispatch — auditing is never silently skipped when configured.
-	if config.AuditRecordPath != "" {
-		sink, err := newBlockSink(config)
-		if err != nil {
-			return err
-		}
-		options = append(options, supervisor.WithSink(sink))
+	if auditSink != nil {
+		options = append(options, supervisor.WithSink(auditSink))
 	}
 
 	// Optional checkpoint signing (ADR 037, task 068). When
@@ -429,9 +439,12 @@ func startVault(config Config) (*vault.Daemon, *secrets.VaultSecretSource, error
 
 // gateOutcome is the result of the host-side policy decide gate.
 type gateOutcome struct {
-	allowed bool   // true => proceed to box.Create; false => halt (deny/require_approval)
-	reason  string // human-facing status reason when !allowed
-	tier    string // tier_select obligation value ("" => no override)
+	allowed        bool   // true => proceed to box.Create; false => halt (deny/require_approval)
+	reason         string // human-facing status reason when !allowed
+	tier           string // tier_select obligation value ("" => no override)
+	auditEmit      bool   // true => emit ActionPolicyDecision event (audit_emit obligation present)
+	policyDecision string // raw policy engine decision string for the audit event
+	policyReason   string // policy engine reason string for the audit event
 }
 
 // decideGate starts the policy daemon, builds the AuthZEN decide request, calls
@@ -489,17 +502,37 @@ func decideGate(config Config, task supervisor.Task, egressHosts []string, wirin
 	// on deny they are inert (the box never starts).
 	tier := policy.TierSelect(resp.Obligations)
 	wiring.InjectionMode = policy.RaiseInjectionFloor(wiring.InjectionMode, resp.Obligations)
+	auditEmit := policy.AuditEmit(resp.Obligations)
+	policyReason := resp.Context.Reason
 
 	switch resp.Decision {
 	case policy.DecisionAllow:
-		return gateOutcome{allowed: true, tier: tier}, nil
+		return gateOutcome{
+			allowed:        true,
+			tier:           tier,
+			auditEmit:      auditEmit,
+			policyDecision: string(policy.DecisionAllow),
+			policyReason:   policyReason,
+		}, nil
 	case policy.DecisionRequireApproval:
-		// Task 072 routes require_approval the same as deny with a placeholder
-		// reason. Distinct routing (and the distinct status reason) is task 073.
-		return gateOutcome{allowed: false, reason: "policy: requires human approval"}, nil
+		// require_approval: needs-human path with a status reason distinct from deny.
+		// The box does NOT start; runtime.Run returns nil (valid terminal outcome).
+		return gateOutcome{
+			allowed:        false,
+			reason:         "policy: requires human approval",
+			auditEmit:      auditEmit,
+			policyDecision: string(policy.DecisionRequireApproval),
+			policyReason:   policyReason,
+		}, nil
 	default:
 		// deny and any fail-closed deny.
-		return gateOutcome{allowed: false, reason: "policy: decision denied"}, nil
+		return gateOutcome{
+			allowed:        false,
+			reason:         "policy: decision denied",
+			auditEmit:      auditEmit,
+			policyDecision: string(policy.DecisionDeny),
+			policyReason:   policyReason,
+		}, nil
 	}
 }
 
@@ -899,6 +932,26 @@ func writeCommand(streams supervisor.RunStreams, format string, args ...any) {
 		return
 	}
 	_, _ = fmt.Fprintf(streams.Command, format, args...)
+}
+
+// maybeEmitPolicyDecision emits an ActionPolicyDecision audit event when the
+// audit_emit obligation is present (outcome.auditEmit == true) and sink is non-nil.
+// It is a no-op when the obligation is absent or the sink is unconfigured.
+// Append errors are intentionally swallowed — the event is a side-effect and does
+// not affect routing (same error-swallow convention as emitAudit for in-loop events).
+func maybeEmitPolicyDecision(sink audit.Sink, taskID string, outcome gateOutcome) {
+	if !outcome.auditEmit || sink == nil {
+		return
+	}
+	_ = sink.Append(audit.AuditEvent{
+		Action: audit.ActionPolicyDecision,
+		RunID:  taskID,
+		TaskID: taskID,
+		Detail: audit.EventDetail{
+			PolicyDecision: outcome.policyDecision,
+			PolicyReason:   outcome.policyReason,
+		},
+	})
 }
 
 // emitAudit projects one typed action event through the optional audit Sink. It

@@ -144,6 +144,78 @@ func TestPolicyGateFakeBinaryE2E(t *testing.T) {
 	})
 }
 
+// TestPolicyGateRequireApprovalDistinctFromDeny (TC-073-01): require_approval
+// produces a needs-human status with "approval" in the reason, observably
+// different from the deny reason. Both block dispatch (box never starts).
+func TestPolicyGateRequireApprovalDistinctFromDeny(t *testing.T) {
+	binary := buildAgentBuilder(t)
+	fakePolicy := buildFakePolicyEngine(t)
+
+	var denyReason, approvalReason string
+
+	t.Run("TC-073-01_deny_reason", func(t *testing.T) {
+		fixture := newPublicationFixture(t, publicationFixtureConfig{})
+		argsLog := filepath.Join(t.TempDir(), "policy-args.log")
+		socket := filepath.Join(t.TempDir(), "policy.sock")
+		env := policyEnv(fixture, fakePolicy, socket, argsLog,
+			`{"decision":"deny","context":{"reason":"forbidden","obligations":[]}}`)
+
+		stdout, _, code := runAgentBuilder(t, binary, env, "run")
+		if code != 0 {
+			t.Fatalf("deny exit code = %d, want 0", code)
+		}
+		if !strings.Contains(stdout, "run halted") {
+			t.Fatalf("deny stdout = %q, want 'run halted'", stdout)
+		}
+		// Capture what the halt message says.
+		denyReason = stdout
+		// deny reason must NOT contain "approval".
+		if strings.Contains(stdout, "approval") {
+			t.Errorf("deny stdout = %q, must not contain 'approval'", stdout)
+		}
+		// Task marked needs-human.
+		taskFile := readFile(t, filepath.Join(fixture.taskRoot, "docs/tasks/backlog/001-first.md"))
+		if !strings.Contains(taskFile, "**Status:** needs-human") {
+			t.Fatalf("deny did not mark task needs-human:\n%s", taskFile)
+		}
+		// Box never started.
+		assertNoPublishLog(t, fixture.publishLog)
+	})
+
+	t.Run("TC-073-01_require_approval_reason_contains_approval", func(t *testing.T) {
+		fixture := newPublicationFixture(t, publicationFixtureConfig{})
+		argsLog := filepath.Join(t.TempDir(), "policy-args.log")
+		socket := filepath.Join(t.TempDir(), "policy.sock")
+		env := policyEnv(fixture, fakePolicy, socket, argsLog,
+			`{"decision":"require_approval","context":{"reason":"high risk task","obligations":[]}}`)
+
+		stdout, _, code := runAgentBuilder(t, binary, env, "run")
+		if code != 0 {
+			t.Fatalf("require_approval exit code = %d, want 0", code)
+		}
+		if !strings.Contains(stdout, "run halted") {
+			t.Fatalf("require_approval stdout = %q, want 'run halted'", stdout)
+		}
+		// Must contain "approval" to be observably distinct from deny.
+		if !strings.Contains(stdout, "approval") {
+			t.Fatalf("require_approval stdout = %q, want it to contain 'approval'", stdout)
+		}
+		approvalReason = stdout
+		// Task marked needs-human.
+		taskFile := readFile(t, filepath.Join(fixture.taskRoot, "docs/tasks/backlog/001-first.md"))
+		if !strings.Contains(taskFile, "**Status:** needs-human") {
+			t.Fatalf("require_approval did not mark task needs-human:\n%s", taskFile)
+		}
+		// Box never started.
+		assertNoPublishLog(t, fixture.publishLog)
+	})
+
+	// Final cross-sub-test assertion: the two reason strings are observably different.
+	if denyReason != "" && approvalReason != "" && denyReason == approvalReason {
+		t.Errorf("TC-073-01: deny and require_approval produced identical stdout %q — must differ", denyReason)
+	}
+}
+
 // policyEnv extends the publication fixture env with the policy gate vars and a
 // fake-policy-engine binary launched as AGENT_BUILDER_POLICY_BIN.
 func policyEnv(f publicationFixture, fakePolicyBin, socket, argsLog, response string) map[string]string {
