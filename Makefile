@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation check l6-preflight l6-probe
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation check l6-preflight l6-probe
 
 lint:
 	golangci-lint run
@@ -10,7 +10,7 @@ test:
 	go test ./...
 
 # Fitness functions — see docs/spec/fitness-functions.md
-fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default
+fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation
 	@echo "All fitness checks passed."
 
 fitness-no-docker:
@@ -171,6 +171,32 @@ fitness-exec-sandbox-default:
 		exit 1; \
 	fi; \
 	echo "PASS fitness-exec-sandbox-default: internal/runtime wires execsandbox as the default run backend"
+
+# fitness-policy-isolation covers test-spec TC-074-01, TC-074-02, TC-074-03, TC-074-04:
+# (1) internal/policy must be a leaf — its import graph must not contain any other
+#     agent-builder/internal/ path. This prevents internal/policy from importing
+#     internal/runtime, internal/sandbox, internal/vault, etc., which would allow an
+#     in-process decision path that bypasses the out-of-process rule.
+# (2) internal/runtime must reach the policy-engine block only over IPC — its import
+#     graph must NOT contain github.com/tkdtaylor/policy-engine (the block's Go module
+#     path). If that import appears, the block's in-process Decide() is reachable and
+#     the out-of-process security model is defeated (ADR 038).
+fitness-policy-isolation:
+	@policy_deps=$$(go list -deps ./internal/policy/...) || exit $$?; \
+	policy_forbidden=$$(printf '%s\n' "$$policy_deps" | grep 'github.com/tkdtaylor/agent-builder/internal/' | grep -v 'agent-builder/internal/policy' || true); \
+	runtime_deps=$$(go list -deps ./internal/runtime/...) || exit $$?; \
+	runtime_block_import=$$(printf '%s\n' "$$runtime_deps" | grep 'github.com/tkdtaylor/policy-engine' || true); \
+	if [ -n "$$policy_forbidden" ]; then \
+		echo "FAIL fitness-policy-isolation: internal/policy imports forbidden agent-builder/internal package(s):"; \
+		printf '%s\n' "$$policy_forbidden"; \
+		exit 1; \
+	fi; \
+	if [ -n "$$runtime_block_import" ]; then \
+		echo "FAIL fitness-policy-isolation: internal/runtime imports policy-engine as a Go module (must use IPC — ADR 038):"; \
+		printf '%s\n' "$$runtime_block_import"; \
+		exit 1; \
+	fi; \
+	echo "PASS fitness-policy-isolation: internal/policy import graph contains no other internal packages, and internal/runtime does not import the policy-engine block as a Go module."
 
 check: lint test fitness
 	@echo "All checks passed."
