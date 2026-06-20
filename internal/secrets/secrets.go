@@ -2,9 +2,9 @@
 // It is a leaf package: no imports from other agent-builder/internal packages.
 // The dependency direction is executor → secrets, not the reverse.
 //
-// Task 066 will introduce a VaultSecretSource that implements the same
-// SecretSource interface and can be swapped in at construction time without
-// changing call-site code in executor or runtime.
+// VaultSecretSource (vault_source.go) implements the same SecretSource
+// interface and is swapped in at construction time without changing call-site
+// code in executor or runtime.
 package secrets
 
 import "os"

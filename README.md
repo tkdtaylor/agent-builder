@@ -2,7 +2,7 @@
 
 An autonomous coding agent that reviews a roadmap and builds the **secure-agent ecosystem blocks** (exec-sandbox, vault, policy-engine, audit-trail) unattended — working one task at a time on its own branch, gated by a machine-checkable verification step.
 
-It is the first concrete consumer of those blocks, and the bootstrap that resolves their chicken-and-egg: it runs on rented isolation today, and its **first task is to build `exec-sandbox` v0**, after which it swaps the rented isolation for the block it just produced.
+It is the first concrete consumer of those blocks, and the bootstrap that resolved their chicken-and-egg: it began on rented isolation, built `exec-sandbox`, and **now runs on that block as its default backend** — having swapped the rented isolation for the block it produced. `audit-trail` and `vault` are adopted; `policy-engine` is wired as an opt-in gate (see the [roadmap](docs/plans/roadmap.md) for current adoption status).
 
 **North star:** agent-builder starts as *the agent that builds the blocks* and evolves into *a tool to build agents from the blocks* — the ecosystem's front door.
 
@@ -17,9 +17,9 @@ It is the first concrete consumer of those blocks, and the bootstrap that resolv
 
 See [docs/architecture/overview.md](docs/architecture/overview.md) and [docs/spec/SPEC.md](docs/spec/SPEC.md).
 
-## Build order
+## Block adoption
 
-`exec-sandbox` → `audit-trail` → `policy-engine` → `vault`. Tracked in [docs/plans/roadmap.md](docs/plans/roadmap.md).
+Adoption order is driven by which block shipped first, not a fixed sequence: `exec-sandbox` ✅ (default run backend), `audit-trail` ✅, `vault` ✅ (opt-in token brokering), `policy-engine` ◻️ wired as an opt-in `decide` gate, not yet a required dependency. Current status is tracked in [docs/plans/roadmap.md](docs/plans/roadmap.md).
 
 ## Develop locally
 
@@ -34,7 +34,7 @@ go run ./cmd/agent-builder version
 
 `agent-builder run` dispatches **one ready task**: pick task → sandbox → Claude executor → verification gate → open a PR on pass (escalate on fail). You review and merge the PR, then run again for the next task. It is configured entirely through environment variables.
 
-**Prerequisites** (one-time, see the [operator guide](docs/operating.md) for setup): rootless Podman + a runtime (`runc`/`runsc`); the gate toolchain in `containment/execution-box/gate-tools/` (`golangci-lint`, `dep-scan` ≥ 1.3.1, `code-scanner`); `git` + `gh` authenticated; and a Claude credential — your **subscription** token `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or an `ANTHROPIC_API_KEY`.
+**Prerequisites** (one-time, see the [operator guide](docs/operating.md) for setup): rootless Podman + a runtime (`runc`/`runsc`); the gate toolchain in `containment/execution-box/gate-tools/` (`golangci-lint`, `dep-scan` ≥ 1.3.1, `code-scanner` — gitignored, populate per host); `git` + `gh` authenticated; and a Claude credential — your **subscription** token `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or an `ANTHROPIC_API_KEY`.
 
 **Run one task against a target repo** (the target carries its own `docs/plans/roadmap.md` + `docs/tasks/backlog/NNN-*.md`):
 
@@ -53,7 +53,7 @@ env AGENT_BUILDER_TASK_ROOT="$TARGET" \
     go run ./cmd/agent-builder run
 ```
 
-Other subcommands: `agent-builder version`; `agent-builder verify <repo>` (run just the gate against a checkout). Full environment reference and prerequisites: **[docs/operating.md](docs/operating.md)** and [docs/spec/configuration.md](docs/spec/configuration.md).
+Other subcommands: `agent-builder version`; `agent-builder verify <repo>` (run just the gate against a checkout); `agent-builder verify-checkpoint` (verify a signed checkpoint against an Ed25519 public key). Full environment reference and prerequisites: **[docs/operating.md](docs/operating.md)** and [docs/spec/configuration.md](docs/spec/configuration.md).
 
 ## Tech stack
 

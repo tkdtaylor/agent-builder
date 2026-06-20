@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-19
+**Last updated:** 2026-06-20
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -25,14 +25,24 @@ C4Context
     System(system, "agent-builder", "What this system does in one line")
     System_Ext(claudeCLI, "Claude Code CLI", "Cloud executor harness/model subprocess")
     System_Ext(podman, "rootless Podman", "Execution-box containment substrate, driven by containment/execution-box/run.sh")
+    System_Ext(execSandbox, "exec-sandbox block", "Tiered-isolation contained-command runner block (github.com/tkdtaylor/exec-sandbox); default run backend when AGENT_BUILDER_EXEC_SANDBOX_BIN is set")
     System_Ext(codeScanner, "code-scanner", "Malware/backdoor scanner used as a blocking gate step")
+    System_Ext(armorTool, "armor", "External LLM guard for the web-ingestion + tool-call path")
+    System_Ext(vaultBlock, "vault block", "Opt-in token-brokering daemon (github.com/tkdtaylor/vault); holds publication tokens, returns opaque handles")
+    System_Ext(policyBlock, "policy-engine block", "Opt-in AuthZEN authorization daemon (github.com/tkdtaylor/policy-engine); decides run-task before the box starts")
+    System_Ext(auditTrail, "audit-trail block", "Hash-chained append-only forensic log block (github.com/tkdtaylor/audit-trail); invoked over CLI by audit.BlockSink")
     System_Ext(gitCLI, "git", "Version-control CLI used to push verified branches")
     System_Ext(ghCLI, "GitHub CLI", "CLI used to look up or create PR artifacts")
 
     Rel(user, system, "Uses")
     Rel(system, claudeCLI, "Runs", "process PATH")
     Rel(system, podman, "Runs", "execution-box/run.sh")
+    Rel(system, execSandbox, "Runs (default backend)", "process PATH")
     Rel(system, codeScanner, "Runs", "process PATH")
+    Rel(system, armorTool, "Guards ingestion", "JSON over process")
+    Rel(system, vaultBlock, "Brokers tokens (opt-in)", "Unix socket")
+    Rel(system, policyBlock, "Decides run-task (opt-in)", "Unix socket")
+    Rel(system, auditTrail, "Emits + verifies chain", "process PATH")
     Rel(system, gitCLI, "Runs", "git push")
     Rel(system, ghCLI, "Runs", "gh pr")
 ```
@@ -55,10 +65,21 @@ C4Container
         Container(egressSidecar, "execution-box egress sidecar", "Rootless Podman / nftables", "Trusted default-deny egress filter for the execution-box pod namespace")
     }
 
+    System_Ext(execSandbox, "exec-sandbox block", "Default contained-command run backend binary (opt-in via AGENT_BUILDER_EXEC_SANDBOX_BIN)")
+    System_Ext(vaultBlock, "vault block", "Opt-in token-brokering daemon")
+    System_Ext(policyBlock, "policy-engine block", "Opt-in AuthZEN authorization daemon")
+    System_Ext(auditTrail, "audit-trail block", "Hash-chained forensic log block")
+
     Rel(operator, cli, "Runs")
     Rel(operator, execBox, "Runs probe")
     Rel(execBox, egressSidecar, "Starts before workload")
+    Rel(cli, execSandbox, "Runs (default backend)", "process")
+    Rel(cli, vaultBlock, "Brokers tokens (opt-in)", "Unix socket")
+    Rel(cli, policyBlock, "Decides run-task (opt-in)", "Unix socket")
+    Rel(cli, auditTrail, "Emits + verifies chain", "process")
 ```
+
+> The exec-sandbox, vault, policy-engine, and audit-trail blocks are external Systems (Section 2 of the catalog), not containers inside the agent-builder boundary. They are drawn here because they are deployable units the CLI starts/invokes at runtime, but they are owned and versioned independently — agent-builder holds only the typed client/adapter for each.
 
 ---
 
@@ -73,7 +94,10 @@ C4Component
     System_Ext(codeScanner, "code-scanner", "Malware/backdoor scanner CLI")
     System_Ext(claudeCLI, "Claude Code CLI", "Cloud executor harness/model subprocess")
     System_Ext(execBoxLauncher, "execution-box launcher", "containment/execution-box/run.sh — rootless Podman + selectable OCI runtime")
+    System_Ext(execSandboxBlock, "exec-sandbox block", "Tiered-isolation contained-command runner block binary")
     System_Ext(armorTool, "armor", "External LLM guard process/service")
+    System_Ext(vaultBlock, "vault block", "Token-brokering daemon (Unix socket)")
+    System_Ext(policyBlock, "policy-engine block", "AuthZEN authorization daemon (Unix socket)")
     System_Ext(gitCLI, "git", "Version-control CLI")
     System_Ext(ghCLI, "GitHub CLI", "PR artifact CLI")
 
@@ -88,6 +112,10 @@ C4Component
         Component(executor, "Claude CLI Executor", "internal/executor", "Concrete supervisor.Executor adapter with explicit web/tool policy")
         Component(sandbox, "exec-sandbox Run Adapter", "internal/sandbox", "Typed contained-command seam and test fake")
         Component(podmanAdapter, "Podman Adapter", "internal/sandbox/podman", "Concrete Podman-backed sandbox.Runner via the execution-box launcher")
+        Component(execsandboxAdapter, "exec-sandbox Backend Adapter", "internal/sandbox/execsandbox", "Block-backed sandbox.Runner; default backend when AGENT_BUILDER_EXEC_SANDBOX_BIN is set (ADR 035)")
+        Component(secrets, "Secret Source", "internal/secrets", "SecretSource seam for token retrieval plus VaultSecretSource broker (vault_source.go)")
+        Component(vaultClient, "Vault Client", "internal/vault", "Stdlib-only vault block socket client + daemon lifecycle (opt-in token brokering)")
+        Component(policyGate, "Policy Gate", "internal/policy", "Fail-closed AuthZEN decide client + policy-engine daemon lifecycle (opt-in authorization gate)")
         Component(tasksource, "Task Source", "internal/tasksource", "Read-only roadmap/task parser and next-task selector")
         Component(statuswriter, "Task Status Writer", "internal/tasksource", "Constrained task status mutation")
         Component(gate, "Verification Gate", "internal/gate", "Ordered blocking checks with structured Verdicts")
@@ -98,7 +126,11 @@ C4Component
     Rel(runtime, tasksource, "Selects one ready task")
     Rel(runtime, executor, "Constructs")
     Rel(runtime, gate, "Constructs production Gate")
-    Rel(runtime, podmanAdapter, "Constructs")
+    Rel(runtime, podmanAdapter, "Constructs (fallback backend)")
+    Rel(runtime, execsandboxAdapter, "Constructs (default backend when bin set)")
+    Rel(runtime, secrets, "Reads tokens through SecretSource seam")
+    Rel(runtime, vaultClient, "Starts daemon + resolves token handles (opt-in)")
+    Rel(runtime, policyGate, "Calls Decide after vault resolution, before box Create (opt-in)")
     Rel(runtime, agentloop, "Constructs retrying in-box loop")
     Rel(runtime, statuswriter, "Constructs for escalation")
     Rel(runtime, publisher, "Constructs for post-Gate publication")
@@ -106,6 +138,11 @@ C4Component
     Rel(supervisor, sandbox, "Stores Runner / box seam")
     Rel(podmanAdapter, sandbox, "Implements Runner seam")
     Rel(podmanAdapter, execBoxLauncher, "Invokes with worktree + typed limits")
+    Rel(execsandboxAdapter, sandbox, "Implements Runner seam")
+    Rel(execsandboxAdapter, execSandboxBlock, "Invokes with typed Request → argv")
+    Rel(secrets, vaultClient, "VaultSecretSource brokers tokens")
+    Rel(vaultClient, vaultBlock, "put / resolve over Unix socket")
+    Rel(policyGate, policyBlock, "decide over Unix socket (fail-closed)")
     Rel(supervisor, gate, "Consumes Verdict model / Gate seam")
     Rel(agentloop, supervisor, "Consumes Task / Executor / Gate seams")
     Rel(executor, supervisor, "Implements Executor seam")
@@ -131,6 +168,9 @@ C4Component
 - ADR 013 fixes the retry escalation policy: non-negative `MaxAttempts`, mandatory stop, status-writer `needs-human` marking, and substitutable escalation hook.
 - ADR 020 fixes the exec-sandbox run adapter seam: command/worktree/typed limits in, result/exit/error out.
 - Task 035 fixes the Podman backing adapter: `internal/sandbox/podman` invokes `containment/execution-box/run.sh` with the worktree and typed limits while callers continue to depend on the ADR 020 seam.
+- ADR 035 adopts the shipped exec-sandbox block as the default `run()` backend: `internal/sandbox/execsandbox` wraps the block binary behind the same ADR 020 `sandbox.Runner` seam as the Podman adapter; `internal/runtime` constructs it as the default when `AGENT_BUILDER_EXEC_SANDBOX_BIN` is set and falls back to the Podman adapter otherwise. The `fitness-exec-sandbox-default` check enforces that `internal/runtime` imports `internal/sandbox/execsandbox`. This is the north-star milestone run backend.
+- ADR 036 / Task 066 wire opt-in vault token brokering: when `AGENT_BUILDER_VAULT_BIN` is set, `internal/runtime` starts the vault daemon, hands git/GitHub token plaintext to `secrets.VaultSecretSource` exactly once via `put`, and passes the resolved opaque handles + socket + `injection_mode="proxy"` through `sandbox.RunWiring`. `internal/secrets` is the stdlib-only `SecretSource` seam vault plugs into; `internal/vault` is a stdlib-only leaf client. One-way dependency: `runtime`/`secrets` → `vault`. Unset = the old env-forwarding path holds.
+- ADR 038 / Task 072 fix the policy decide gate: `internal/runtime` starts the `policy-engine` daemon (`serve --socket --allow`, fed from `sandbox.Limits.EgressAllowlist`) and calls AuthZEN `decide` **after** vault handle resolution and **before** `sandboxBox.Create`. `deny`/`require_approval` writes needs-human and the box never starts; `allow` applies the `tier_select` (→ `Request.Tier`) and raise-only `vault_injection_floor` (→ `RunWiring.InjectionMode`) obligations. Fail-closed: any transport/parse error yields `deny`. `internal/policy` is a stdlib-only leaf (one-way `runtime → policy`); the `fitness-policy-isolation` check (F-006) enforces the isolation. Opt-in via `AGENT_BUILDER_POLICY_BIN`.
 - ADR 021 removes the rented `@anthropic-ai/sandbox-runtime` (`srt`) backend from the run pipeline: task 036 swaps `internal/runtime` to construct the Podman adapter (launcher path overridable via `AGENT_BUILDER_EXEC_BOX_LAUNCHER`), the `fitness-no-srt` check enforces that `internal/runtime` no longer imports `sandboxruntime`, and task 037 accepts the Phase 1 swap at fake-provider L5. The `internal/sandbox/sandboxruntime` package is retained out-of-graph for reference only — it is no longer part of the run wiring.
 - ADR 024 fixes the ingestion boundary shape: typed web-content and tool-call candidates, guard decisions of allow/block/quarantine, and fail-closed broker release.
 - Task 025 fixes the armor guard adapter shape: external JSON process/service invocation maps allow/findings/failure output to ingestion decisions without vendoring armor source.

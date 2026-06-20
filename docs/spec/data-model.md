@@ -752,7 +752,7 @@ run_finished    outcome; error when outcome is failed or timed-out
 - **Example:**
 
 ```ndjson
-{"box_id":"box-019","repo":"agent-builder","run_id":"019/box-019","spec":"docs/tasks/backlog/019-run-log-collection.md","task_id":"019","timestamp":"2026-06-05T12:00:00Z","type":"run_started","version":"1","worktree":"/work/agent-builder"}
+{"box_id":"box-019","repo":"agent-builder","run_id":"019/box-019","spec":"docs/tasks/completed/019-run-log-collection.md","task_id":"019","timestamp":"2026-06-05T12:00:00Z","type":"run_started","version":"1","worktree":"/work/agent-builder"}
 {"command":"go test ./...","run_id":"019/box-019","timestamp":"2026-06-05T12:00:01Z","type":"command","version":"1"}
 {"data":"ok github.com/tkdtaylor/agent-builder/internal/supervisor\n","run_id":"019/box-019","timestamp":"2026-06-05T12:00:02Z","type":"stdout","version":"1"}
 {"outcome":"completed","run_id":"019/box-019","timestamp":"2026-06-05T12:00:03Z","type":"run_finished","version":"1"}
