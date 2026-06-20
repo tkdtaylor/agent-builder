@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-19
-**Status:** backlog
+**Status:** 🟡 code merged
 
 ## Goal
 
@@ -75,12 +75,12 @@ contain no `github.com/tkdtaylor/agent-builder/internal/` paths other than
 
 ## Acceptance criteria
 
-- [ ] [REQ-071-01] TC-071-01: `PolicyClient.Ping` against fake server → nil error; compile assertions pass
-- [ ] [REQ-071-01] TC-071-02: `DecideRequest`, `DecideResponse`, `Decision`, `Obligation` types compile; interface-satisfaction (if applicable) present
-- [ ] [REQ-071-02] TC-071-03: `Decide` returns `DecisionAllow` with parsed obligations on allow response
-- [ ] [REQ-071-02] TC-071-04: `Decide` returns `DecisionDeny` with empty obligations on deny response
-- [ ] [REQ-071-03] TC-071-05: all six fail-closed sub-cases produce `DecisionDeny` (never `DecisionAllow`)
-- [ ] [REQ-071-04] TC-071-06: `go list -deps ./internal/policy/...` → `PASS-leaf`; `make check` → `All checks passed.`
+- [x] [REQ-071-01] TC-071-01: `PolicyClient.Ping` against fake server → nil error; compile assertions pass
+- [x] [REQ-071-01] TC-071-02: `DecideRequest`, `DecideResponse`, `Decision`, `Obligation` types compile; interface-satisfaction (if applicable) present
+- [x] [REQ-071-02] TC-071-03: `Decide` returns `DecisionAllow` with parsed obligations on allow response
+- [x] [REQ-071-02] TC-071-04: `Decide` returns `DecisionDeny` with empty obligations on deny response
+- [x] [REQ-071-03] TC-071-05: all six fail-closed sub-cases produce `DecisionDeny` (never `DecisionAllow`)
+- [x] [REQ-071-04] TC-071-06: `go list -deps ./internal/policy/...` → `PASS-leaf`; `make check` → `All checks passed.`
 
 ## Verification plan
 
