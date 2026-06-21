@@ -1,79 +1,366 @@
-# agent-builder Agent Instructions
+# agent-builder — Agent briefing (canonical)
 
-This repository's fullest agent briefing lives in `CLAUDE.md`. Reuse it as
-the source of truth for project context, commands, architecture invariants,
-task workflow, verification expectations, and boundaries.
+This is the **canonical, harness-neutral briefing** for agent-builder. It is the
+single source of truth for project context, commands, architectural invariants,
+the task workflow, verification expectations, commit rules, and the load-bearing
+process rules every agent must follow.
 
-Before changing code or docs:
+Every coding-agent harness loads this file:
 
-1. Read `CLAUDE.md`.
-2. Read the relevant task file and test spec when working on planned work.
-3. Read `docs/architecture/overview.md` for system context.
-4. Check `docs/spec/SPEC.md` and update the matching `docs/spec/` files in
-   the same change when behavior, interfaces, architecture, configuration, or
-   data model change.
+- **Codex** auto-loads `AGENTS.md` (this file). The Codex-specific short commands
+  are at the end under *Harness notes — Codex*.
+- **Antigravity / Gemini** load it via `GEMINI.md` (a symlink to this file).
+- **Claude Code** loads `CLAUDE.md`, which imports this file (`@AGENTS.md`) and adds
+  the Claude-specific mechanics (skills, subagents, hooks).
 
-## Codex and Cross-Tool Notes
+Keep this file harness-neutral. Anything that only one harness understands belongs
+in that harness's layer (`CLAUDE.md` for Claude Code), not here.
 
-- Prefer the existing `scripts/start-task.sh <NNN> <slug>` flow for task
-  branch or worktree isolation.
-- Run `make check` before claiming implementation work is complete.
-- Use `go test ./...`, `go build ./...`, and `gofmt -w .` for narrower Go
-  verification and formatting loops.
-- Keep edits scoped. Do not reorganize the Claude-specific hook or agent files
-  unless the task explicitly asks for that integration work.
-- Treat `.claude/agents/` as implementation guidance for Claude subagents, not
-  as automatically available Codex agents. If a workflow depends on one, mirror
-  the intent manually in the current task.
+## What this is
 
-## Codex Short Commands
+agent-builder is the **autonomous coding agent that builds the secure-agent
+ecosystem blocks** (exec-sandbox, vault, policy-engine, audit-trail) by reviewing a
+roadmap and working through tasks unattended. It is the first concrete consumer of
+those blocks — it composes them over their **published contracts** and treats each
+block's own README `## Scope` section as the authoritative statement of what that
+block does and does not own; it does not restate or reimplement block
+responsibilities here. The authoritative design is **`autonomous-builder.md`** in
+the internal planning hub — read it before changing architecture. The key
+invariants below derive from it.
 
-Use these short phrases as automatic repo-local workflows. The user should not
-need to paste the long Claude agent prompts.
+**North star:** starts as *the agent that builds the blocks* → becomes *a tool to
+build agents from the blocks*. Apache-2.0 licensed; it
+goes public. Keep the executor / repo / verify seams clean for that end state —
+don't hack them for the bootstrap.
 
-- `work task NNN`, `start task NNN`, `continue task NNN`, or
-  `use task-executor on task NNN`: locate the matching task file under
+## Project structure
+
+```
+cmd/          ← entrypoints (main packages) — cmd/agent-builder
+internal/     ← code outputs (orchestrator packages; not importable externally)
+artifacts/    ← non-code outputs (rendered diagrams, exports, schemas)
+docs/         ← spec + planning + history (the source-of-truth side)
+  spec/           authoritative current-state snapshot — SPEC.md, behaviors, architecture, data-model, interfaces, configuration
+  architecture/   narrative overview, diagrams.md, ADRs, tech stack
+  plans/          roadmap, sprints
+  tasks/          active, backlog, completed task files
+    test-specs/   TDD specs — always written before implementation
+  agent-rules.md  process rules + project retros (the growing log of lessons)
+  operating.md    operator runbook (how to run the orchestrator against a target)
+```
+
+Idiomatic Go layout (`cmd/` + `internal/`) is used instead of the generic `src/`.
+The key distinction: `docs/` is the input side (read before you act, and the
+artifact that survives a rewrite), `cmd/` + `internal/` are the output side (what
+gets produced).
+
+`docs/spec/` is **dual-natured** — it's the output of every task that changes
+externally-visible behavior, *and* the input to onboarding, drift audits, and (in
+the limit) regenerating the codebase from scratch. The code is one realization of
+the spec. Spec and code that disagree means one of them is wrong; fix it in the same
+change.
+
+## Tech stack
+
+Go — see [docs/architecture/tech-stack.md](docs/architecture/tech-stack.md) for the
+full stack and rationale.
+
+## Commands
+
+```bash
+go test ./...                     # run tests
+go build ./...                    # compile everything
+go run ./cmd/agent-builder        # run the orchestrator (entrypoint)
+golangci-lint run                 # lint
+gofmt -w .                        # format
+make check                        # lint + test + fitness (the verification gate)
+```
+
+## Architectural invariants (from autonomous-builder.md)
+
+These are load-bearing — violating one breaks the security model, not just style:
+
+- **Verification gate is the definition of done.** Unattended, the agent's only
+  ground truth is machine-checkable success. No task is "done" without the gate
+  passing (tests + build + lint + scanners green). Keep the gate thin — adopt `go
+  test`/`golangci-lint` + scanners, don't build a framework.
+- **No unattended self-modification.** agent-builder reads from its own repo but
+  never edits it autonomously — a bad self-edit can disable its own gate/escalation.
+  It builds *blocks*, not itself. Self-edits are human-reviewed.
+- **the internal planning hub is read-mostly.** The roadmap is input the agent consumes, not
+  something it rewrites. It may flip task status; the human stays the author.
+- **One task = one repo = one branch.** Never sprawl a task across repos. Cross-repo
+  needs become separate, sequenced tasks.
+- **Substrate is rootless Podman, not Docker** (tiered runtime: `runc` → gVisor
+  `runsc` → Kata/Firecracker). Container definitions in this repo are *product*
+  artifacts (the execution-box profile), never a generic dev container.
+- **Executor seam = `(harness, model) → branch`.** Cloud CLIs (Claude/Gemini)
+  bundle both; local LLMs supply the harness. Route by quota + sensitivity + cost.
+  The verify gate is what makes mixing uneven-quality executors safe.
+- **Egress allowlist is the load-bearing control for the accepted token-in-box
+  risk** — keep it tight; ensure executor tokens are independently revocable + fast
+  to rotate. `dep-scan`/`code-scanner` gate code that could read tokens off disk;
+  `armor` guards the web-ingestion + tool-call path.
+
+## Design principles
+
+This project follows **Unix philosophy** as its default design approach — favoring
+**composability over monolithic design**. Complex behavior should emerge from
+combining small, independent components that communicate through standardized
+interfaces, not by growing one large one. The full statement lives in
+[docs/architecture/overview.md](docs/architecture/overview.md) under *Design
+principles*; the short version is four structural properties to design for:
+
+- **Modularity** — independent units that can be built, understood, and changed on
+  their own
+- **Interface standardization** — stable, well-defined contracts between components
+  (typed signatures, versioned APIs, plain-text formats)
+- **Maintainability** — changes in one module should not cascade across unrelated
+  ones
+- **Reusability** — components should be liftable into another project without
+  entanglement
+
+Derived working rules:
+
+- **One thing, well** — each module, service, and function has a single clear
+  responsibility
+- **Small, composable pieces** over large configurable ones
+- **Plain text** for configs, intermediate artifacts, and data interchange where
+  possible
+- **Explicit over implicit** — surface assumptions in code and types, not in
+  comments
+- **Fail fast, crash loudly** on unexpected state — never silently paper over it
+- **Test in isolation** — every component runnable without the whole stack
+- **Defer premature decisions** — no abstractions until the second or third concrete
+  use case demands them
+
+**Monolithic is a legitimate choice when deliberate** — the Linux kernel itself is
+monolithic for good reasons (performance, correctness, tight internal coupling that
+plug-ins would undermine). The same can apply to a hot-path runtime core, a state
+machine, or a cryptographic primitive. The principle is "prefer composability at
+user-facing or cross-module boundaries, and document any deviation with an ADR."
+Accidental monolithic drift is not the same as a deliberate monolithic decision.
+
+## Conventions
+
+- Task files are named `NNN-short-name.md` (zero-padded, sequential across all task
+  states)
+- Every task has a paired test spec; no implementation starts without one
+- Tasks follow Unix philosophy — one task, one responsibility; break things smaller
+  when in doubt
+- ADRs live in `docs/architecture/decisions/` — add one whenever a significant
+  design decision is made
+- **Spec is updated in the same commit as the code change.** A task that changes
+  externally-visible behavior, the data model, an interface, or configuration is not
+  done until the matching `docs/spec/` file reflects the new state. Stale spec
+  entries are rewritten in place — never appended to. The ADR carries the history;
+  the spec carries the current truth.
+- **Diagrams update with the code.** When a component boundary moves or a runtime
+  flow changes, update `docs/architecture/diagrams.md` in the same commit.
+
+## Working in this project
+
+Every task lives on its own branch (or worktree under concurrent sessions). Working
+directly on `main` is blocked by the `no-commit-on-main` hook —
+`scripts/start-task.sh` is how you pick the right isolation for the moment.
+
+1. Start each session by reading the relevant task file (including its
+   **Verification plan**) and its test spec
+2. Check [docs/architecture/overview.md](docs/architecture/overview.md) for system
+   context
+3. Write the test spec before any implementation code
+4. Implement via your harness's task-execution flow. Its Step 0 runs
+   `scripts/start-task.sh <NNN> <slug>` to set up either:
+   - `BRANCH task/NNN-<slug>` (solo session — the common case), or
+   - `WORKTREE .claude/worktrees/NNN-<slug>/` (concurrent session detected; `cd` in)
+
+   Commit at status **🟡 (code merged)** on the task branch.
+5. After the executor returns, run the **spec-verifier** role on the task — it
+   returns APPROVE or BLOCK based on per-assertion evidence
+6. If spec-verifier APPROVEs **and** the verification plan's L5/L6 evidence is
+   recorded (validation-harness output or runtime observation), promote the row to
+   **✅ (verified)** in `coverage-tracker.md` in a **separate commit** titled
+   `verify: confirm task NNN — <evidence>` (still on the task branch)
+7. **Merge to main** when ready: `git checkout main && git merge task/NNN-<slug>`.
+   The `auto-cleanup-merge` hook then deletes the task branch and removes the
+   worktree automatically. If the merge conflicts or you want to keep the branch, the
+   hook surfaces a note and leaves it in place.
+8. **Commit and push after each milestone** — never start the next task without
+   committing the current one first
+
+The separation between the task branch and `main` is the load-bearing rule for
+multi-session safety. Two sessions on different `task/*` branches can work in
+parallel without stepping on each other; two sessions both editing `main` cannot.
+
+The separation between 🟡 (feat commit) and ✅ (verify commit) is the load-bearing
+rule: it makes "merged" and "verified" two distinct artifacts in git history, so
+neither can silently substitute for the other. **Never** mark ✅ in the same commit
+as the feature work — the verification step must be its own observable event.
+
+## Commit rules
+
+**You must commit and push after every milestone.** Do not batch multiple tasks into
+one commit. Do not continue to the next task until the current one is committed and
+pushed.
+
+All commits below land on the **task branch** (`task/NNN-<slug>`), never on `main`
+directly. The merge to `main` happens after the verify step, in a separate explicit
+operation.
+
+| Milestone | What to stage | Message | Branch |
+|-----------|--------------|---------|--------|
+| ADR written | `docs/architecture/decisions/NNN-*.md`, any superseded spec entries rewritten in `docs/spec/` | `docs: add ADR NNN — <decision title>` | task branch |
+| Test spec written | `docs/tasks/test-specs/NNN-*-test-spec.md`, updated `coverage-tracker.md` | `test: add spec for task NNN — <name>` | task branch |
+| Task code merged (🟡) | `internal/`/`cmd/` changes, moved task file, `coverage-tracker.md` row set to **🟡**, **and any affected `docs/spec/` files** | `feat: complete task NNN — <name>` | task branch |
+| Task verified (✅) | `coverage-tracker.md` row promoted from 🟡 → ✅ with `Verified by` filled (harness command + final assertion, or operator observation) | `verify: confirm task NNN — <evidence>` | task branch |
+| Diagram updated | `docs/architecture/diagrams.md` (with date bump at top) | `docs: refresh diagrams — <what changed>` | task branch (or `[allow-main]` for standalone doc fixes) |
+| Spec rewritten standalone | `docs/spec/<file>.md` | `spec: <what changed and why now>` | task branch (or `[allow-main]` for standalone doc fixes) |
+| Merged into main | (after `git merge task/NNN-<slug>` on `main`) | (default `Merge branch …` message) | `main` |
+
+Do **not** add a `Co-Authored-By` line to commits unless explicitly asked.
+
+## Load-bearing process rules
+
+These are the rules that exist specifically to stop a preventable mistake. The
+**full treatment, with the incident that motivated each, lives in
+[docs/agent-rules.md](docs/agent-rules.md)** — read it. The essentials, so they
+reach you even without that file loaded:
+
+- **Commit after every milestone — now, not "after the next task too."** Batched
+  commits are impossible to untangle. One task, one commit.
+- **Test spec before implementation — always.** No "this is too small for a spec."
+  The spec defines done; without it you're guessing.
+- **Never work directly on the default branch.** First action of any task is
+  `scripts/start-task.sh <NNN> <slug>`, which puts you on `task/NNN-<slug>` or in a
+  worktree. When it prints `WORKTREE <path>`, your **next command must be `cd
+  <path>`** — editing the parent repo while believing you're isolated is the silent
+  failure.
+- **"Done" means operationally verified, not "code merged."** The verification
+  ladder: (1) code merged → (2) unit tests pass → (3) `make fitness` passes → (4) CI
+  → (5) validation harness exercises the live path → (6) live binary observed.
+  Levels 1–4 are 🟡; only 5 or 6 flips a row to ✅. Never claim a level you did not
+  reach.
+- **Trace producer→consumer before declaring done on cross-module state.** A test
+  that sets a field by hand proves the gate works *given* the field; it does not
+  prove the field is ever set on the live path. Grep the write site and the read
+  site and identify the live path.
+- **No smoke tests where the spec asks for assertions.** If the spec says "returns
+  `Some(2)`", the test must verify that, not merely that the call doesn't panic. If
+  constructing the state is hard, that's a blocker to report — not a license to
+  downgrade the test.
+- **No new warnings self-justified away.** A change that adds a linter/typecheck
+  warning over baseline must fix the root cause or stop and report. "Acceptable
+  false positive" is not a label you apply unilaterally — use an explicit suppression
+  with a reason, or escalate.
+- **Run it when the change is runtime-visible.** Logging, CLI/exit codes, TUI
+  output, endpoints, file outputs, side effects — `make check` is not verification.
+  Run the binary path and quote the output.
+- **Never `git checkout -- <path>` over uncommitted work.** It silently overwrites
+  and the reflog cannot recover it. Use `git stash`, `git worktree add <ref>`, or
+  `git diff <ref> -- <path>` / `git show <ref>:<path>` instead. A `protect-checkout`
+  hook blocks this; the rule stands even if the hook is off.
+- **Git status must be clean before declaring a task complete.** `git status` must
+  report `nothing to commit, working tree clean`. The common miss: `cp` instead of
+  `git mv` when moving a task file leaves the original undeleted.
+
+## Boundaries
+
+### Always
+- Write the test spec before any implementation code
+- Fill in the **Verification plan** of the task file *before* writing code — the
+  highest verification level achievable, the harness command, the runtime
+  observation
+- Commit and push after every milestone
+- Read the task file (including its Verification plan) and test spec before starting
+- Create an ADR for significant design decisions
+- **Update `docs/spec/` in the same commit** as any code change that alters
+  externally-visible behavior, data model, interfaces, or configuration
+- **Update `docs/architecture/diagrams.md` in the same commit** as any code change
+  that moves a component boundary or alters a diagrammed runtime flow
+- **Default new task status to 🟡 on the feat commit; ✅ only after spec-verifier
+  APPROVE + recorded L5/L6 evidence, in a separate `verify:` commit**
+- **Run `spec-verifier` on every task** before promoting to ✅ — its APPROVE/BLOCK
+  verdict is the gate, not the executor's self-judgement
+- **Start every task on its own branch via `scripts/start-task.sh <NNN> <slug>`**
+
+### Ask first
+- Modifying files in `docs/plans/`, `docs/tasks/`, or
+  `docs/architecture/decisions/` — they are planning and historical documents
+- Deleting or renaming existing source files
+- Adding dependencies not already in the tech stack
+- Changing the project structure beyond what a task requires
+- Reorganizing `docs/spec/` (splitting files, renaming sections) — the structure is
+  a stable contract; restructure deliberately, not opportunistically
+
+### Never
+- Create files in `internal/`/`cmd/` without a corresponding task and test spec
+- Combine unrelated changes in one task or commit
+- Skip the test spec — even for "small" changes
+- Force push or rewrite published git history
+- Add a `Co-Authored-By` line to commits unless explicitly asked
+- Append to spec entries instead of rewriting them (the ADR keeps history; the spec
+  is a snapshot)
+- Add future-tense statements to the spec (the spec is what *is*; planned work goes
+  in `docs/plans/` and `docs/tasks/`)
+- Mark a task ✅ on the same commit as the feature work
+- Claim a verification level you did not actually reach
+- Commit directly to `main` (use `[allow-main]` in the message for genuine main-only
+  fixes — standalone doc fixes, hotfixes)
+- Run `git checkout -- <path>` over a dirty working tree
+
+## External tools
+
+- **dep-scan** — supply-chain CVE scan of Go modules (and npm/pypi/cargo) the agent
+  pulls; a blocking gate alongside code-scanner. Use `gods` for Go. Install:
+  `curl -fsSL https://raw.githubusercontent.com/tkdtaylor/dep-scan/main/install.sh | bash`
+- **code-scanner** — scan any target repo/package/deps for malware before the agent
+  builds on or runs them; wired into the verification gate as a blocking step.
+- **armor** — the LLM-guard block; sits on the web-ingestion + tool-call path
+  (injection/exfil/tool-call validation). Wire it where the agent ingests web
+  research.
+- **gh** — clone/inspect target block repos and open PRs.
+
+MCP is not needed — `gh` covers repo ops, web search/fetch cover research, and the
+provider CLIs are driven as subprocesses.
+
+## Operating the orchestrator
+
+To run agent-builder against a real target repository, see
+[docs/operating.md](docs/operating.md) (the task-oriented runbook) and
+[docs/spec/configuration.md](docs/spec/configuration.md) (the exhaustive
+configuration reference).
+
+## Harness notes — Codex
+
+Use these short phrases as automatic repo-local workflows. The user should not need
+to paste long agent prompts.
+
+- `work task NNN`, `start task NNN`, `continue task NNN`, or `use task-executor on
+  task NNN`: locate the matching task file under
   `docs/tasks/{backlog,active,completed}/NNN-*.md` and the paired
-  `docs/tasks/test-specs/NNN-*-test-spec.md`; read
-  `.claude/agents/task-executor.md`; then follow that workflow. Start with
-  `scripts/start-task.sh <NNN> <slug>` unless already in the correct isolated
-  task branch/worktree.
-- `verify task NNN`, `spec verify NNN`, or `use spec-verifier on task NNN`:
-  read `.claude/agents/spec-verifier.md` and perform its assertion-by-assertion
-  gate against the task, test spec, diff, and test output. Do not edit files.
+  `docs/tasks/test-specs/NNN-*-test-spec.md`; read `.claude/agents/task-executor.md`;
+  then follow that workflow. Start with `scripts/start-task.sh <NNN> <slug>` unless
+  already on the correct isolated task branch/worktree.
+- `verify task NNN`, `spec verify NNN`, or `use spec-verifier on task NNN`: read
+  `.claude/agents/spec-verifier.md` and perform its assertion-by-assertion gate
+  against the task, test spec, diff, and test output. Do not edit files.
 - `review task NNN`, `review current diff`, or `/code-review`: read
-  `.claude/agents/code-reviewer.md` and respond in code-review mode with
-  findings first.
+  `.claude/agents/code-reviewer.md` and respond in code-review mode, findings first.
 - `architect task NNN`, `architecture review`, or `drift audit`: read
   `.claude/agents/architect.md` and apply that role to the requested scope.
 - `security audit task NNN` or `security review`: read
-  `.claude/agents/security-auditor.md` and apply that role to the requested
-  scope.
+  `.claude/agents/security-auditor.md` and apply that role to the requested scope.
 
-When the user explicitly asks to delegate, run parallel agents, or "use" one of
-the named executor/reviewer agents as a subagent, spawn Codex subagents using
-the matching `.claude/agents/*.md` file as the role prompt. Otherwise, execute
-the workflow locally in the current Codex session.
+When the user explicitly asks to delegate, run parallel agents, or "use" one of the
+named executor/reviewer roles as a subagent, spawn subagents using the matching
+`.claude/agents/*.md` file as the role prompt. Otherwise execute the workflow locally
+in the current session. The `.claude/agents/*.md` files are role prompts — they are
+not automatically-available Codex agents; mirror their intent manually.
 
-For multiple tasks with dependencies, act as the parent coordinator:
-
-- Parse the task list into dependency levels before spawning agents.
-- Spawn Codex subagents only for tasks whose prerequisites are already complete
-  and whose expected write scopes do not overlap.
-- Give every code-modifying subagent the matching `.claude/agents/task-executor.md`
-  workflow, its task path, its test-spec path, and a fail-fast instruction to
-  prove it is in an isolated branch/worktree before editing.
-- Keep dependent tasks queued until their prerequisite agents finish and their
-  results are reviewed.
-- After parallel code agents finish, audit isolation and integration before
-  starting the next dependency level.
-
-## Boundaries To Preserve
-
-- Test specs come before implementation.
-- One task equals one repo branch or isolated worktree.
-- Do not commit directly to `main`.
-- Do not mark a task verified until the spec-verifier gate and the required
-  runtime or harness evidence exist.
-- Do not use destructive git commands or path checkouts over uncommitted work.
-- Do not add dependencies or restructure the project without a task-level need.
+For multiple tasks with dependencies, act as the parent coordinator: parse the task
+list into dependency levels, spawn subagents only for tasks whose prerequisites are
+complete and whose write scopes don't overlap, give every code-modifying subagent the
+`task-executor.md` workflow plus a fail-fast "prove you are in an isolated
+branch/worktree before editing" instruction, keep dependent tasks queued until their
+prerequisites finish and are reviewed, and audit isolation + integration after each
+level before starting the next.
