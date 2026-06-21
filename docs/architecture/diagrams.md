@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-20
+**Last updated:** 2026-06-21
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -205,7 +205,7 @@ sequenceDiagram
     participant Vault as vault daemon (opt-in)
     participant Policy as policy-engine daemon (opt-in)
     participant Supervisor
-    participant Box as Containment Box
+    participant ContainmentBox as Containment Box
     participant AgentLoop as Agent Loop
     participant TaskSource as Task Source
     participant Executor
@@ -229,11 +229,11 @@ sequenceDiagram
             Runtime->>Vault: start daemon + resolve token handles (InjectionMode=proxy)
         end
         opt AGENT_BUILDER_AUDIT_RECORD set
-            Runtime-->>Runtime: resolve audit-trail bin + check path writable (fail-fast before dispatch); construct audit.BlockSink
+            Runtime-->>Runtime: resolve audit-trail bin + check path writable (fail-fast before dispatch) and construct audit.BlockSink
         end
         opt AGENT_BUILDER_POLICY_BIN set
             Runtime->>Policy: start daemon (serve --socket --allow), decide(agent-builder, run-task, task+egress, risk)
-            Note over Runtime,Policy: AFTER vault handle resolution, BEFORE box.Create; fail-closed (any error → deny)
+            Note over Runtime,Policy: AFTER vault handle resolution, BEFORE box.Create, fail-closed (any error → deny)
             Policy-->>Runtime: decision + obligations
             opt audit_emit obligation present AND audit sink configured
                 Runtime->>AuditChain: emit policy-decision event (decision, reason) — side-effect, does not change routing
@@ -245,15 +245,15 @@ sequenceDiagram
             else require_approval
                 Runtime->>StatusWriter: WriteStatus(Task.ID, needs-human)
                 StatusWriter->>Tasks: rewrite status line
-                Runtime-->>Runtime: print halted — "policy: requires human approval" — and return (box never starts; reason distinct from deny)
+                Runtime-->>Runtime: print halted — "policy: requires human approval" — and return (box never starts, reason distinct from deny)
             else allow
-                Runtime-->>Runtime: apply tier_select → Request.Tier; vault_injection_floor → raise InjectionMode (raise-only)
+                Runtime-->>Runtime: apply tier_select → Request.Tier and vault_injection_floor → raise InjectionMode (raise-only)
             end
         end
         Runtime->>Supervisor: Run(Task, Box, InBoxLoop, timeout, RunRecord)
     end
-    Supervisor->>Box: Create(Task)
-    Box-->>Supervisor: BoxHandle
+    Supervisor->>ContainmentBox: Create(Task)
+    ContainmentBox-->>Supervisor: BoxHandle
     Supervisor-->>Supervisor: log box.created
     Supervisor->>RunRecord: open + write run_started
     Supervisor-->>Supervisor: log loop.started
@@ -289,7 +289,7 @@ sequenceDiagram
     opt audit sink configured
         Supervisor->>AuditChain: Seal() — before teardown, on success and failure (same sink constructed before policy gate)
     end
-    Supervisor->>Box: Teardown(BoxHandle)
+    Supervisor->>ContainmentBox: Teardown(BoxHandle)
     Supervisor-->>Supervisor: log box.torn_down
 ```
 
