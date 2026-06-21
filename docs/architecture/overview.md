@@ -33,7 +33,7 @@ supervisor (host, trusted, dumb)
 
 ## Design principles
 
-Unix philosophy / composability over monolith (see CLAUDE.md). The blocks are standalone and pluggable; agent-builder composes them through stable seams, never absorbs them. The executor, repo-target, containment, and gate are all adapter seams so alternatives stay swappable.
+Unix philosophy / composability over monolith (see AGENTS.md). The blocks are standalone and pluggable; agent-builder composes them through stable seams, never absorbs them. The executor, repo-target, containment, and gate are all adapter seams so alternatives stay swappable.
 
 ## Repo topology
 
