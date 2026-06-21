@@ -15,7 +15,7 @@ It is the first concrete consumer of those blocks, and the bootstrap that resolv
 - **Executors** are pluggable behind one seam, `(harness, model) → branch`: Claude Code / Gemini CLIs (bundle harness + model) and local LLMs (supply a harness). Routed by quota + sensitivity + cost.
 - **Containment:** rootless Podman, tiered runtime (`runc` → gVisor → Kata/Firecracker), default-deny egress allowlist. `armor` guards the web-ingestion + tool-call path.
 
-See [docs/architecture/overview.md](docs/architecture/overview.md) and [docs/spec/SPEC.md](docs/spec/SPEC.md).
+See [docs/architecture/overview.md](docs/architecture/overview.md), the [architecture diagrams](docs/architecture/diagrams.md), and [docs/spec/SPEC.md](docs/spec/SPEC.md).
 
 ## Block adoption
 
