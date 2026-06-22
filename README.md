@@ -1,6 +1,6 @@
 # agent-builder
 
-An autonomous coding agent that reviews a roadmap and builds the **secure-agent ecosystem blocks** (exec-sandbox, vault, policy-engine, audit-trail) unattended — working one task at a time on its own branch, gated by a machine-checkable verification step.
+An autonomous coding agent that reviews a roadmap and builds the **secure-agent ecosystem blocks** ([exec-sandbox](https://github.com/tkdtaylor/exec-sandbox), [vault](https://github.com/tkdtaylor/vault), [policy-engine](https://github.com/tkdtaylor/policy-engine), [audit-trail](https://github.com/tkdtaylor/audit-trail)) unattended — working one task at a time on its own branch, gated by a machine-checkable verification step.
 
 It is the first concrete consumer of those blocks, and the bootstrap that resolved their chicken-and-egg: it began on rented isolation, built `exec-sandbox`, and **now runs on that block as its default backend** — having swapped the rented isolation for the block it produced. `audit-trail` and `vault` are adopted; `policy-engine` is wired as an opt-in gate (see the [roadmap](docs/plans/roadmap.md) for current adoption status).
 
@@ -11,9 +11,9 @@ It is the first concrete consumer of those blocks, and the bootstrap that resolv
 ## How it works (target architecture)
 
 - **Supervisor (outside the box):** dispatches one task at a time, enforces the wall-clock/escalation kill, collects results, tears the box down. Deliberately dumb — never reasons over untrusted content.
-- **Agent loop (inside the box):** reads a task → routes it to an executor → the executor edits the target repo's worktree → the **verification gate** runs (tests + build + lint + `dep-scan`/`code-scanner`) → branch + PR on pass, escalate on fail.
+- **Agent loop (inside the box):** reads a task → routes it to an executor → the executor edits the target repo's worktree → the **verification gate** runs (tests + build + lint + [`dep-scan`](https://github.com/tkdtaylor/dep-scan)/[`code-scanner`](https://github.com/tkdtaylor/code-scanner)) → branch + PR on pass, escalate on fail.
 - **Executors** are pluggable behind one seam, `(harness, model) → branch`: Claude Code / Gemini CLIs (bundle harness + model) and local LLMs (supply a harness). Routed by quota + sensitivity + cost.
-- **Containment:** rootless Podman, tiered runtime (`runc` → gVisor → Kata/Firecracker), default-deny egress allowlist. `armor` guards the web-ingestion + tool-call path.
+- **Containment:** rootless Podman, tiered runtime (`runc` → gVisor → Kata/Firecracker), default-deny egress allowlist. [`armor`](https://github.com/tkdtaylor/armor) guards the web-ingestion + tool-call path.
 
 See [docs/architecture/overview.md](docs/architecture/overview.md), the [architecture diagrams](docs/architecture/diagrams.md), and [docs/spec/SPEC.md](docs/spec/SPEC.md).
 
