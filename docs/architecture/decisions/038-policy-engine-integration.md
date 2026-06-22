@@ -1,6 +1,6 @@
 # ADR 038 — Policy-engine integration: host-side decide gate before exec-sandbox dispatch
 
-**Status:** Proposed
+**Status:** Accepted (implemented — tasks 070–074, all ✅ verified)
 **Date:** 2026-06-19
 **Preceded by:** ADR 035 (adopt exec-sandbox block as default run backend), ADR 036 (vault integration — vault_injection_floor obligation references the `InjectionMode` seam introduced there)
 
