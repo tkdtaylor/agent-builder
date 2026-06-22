@@ -1,6 +1,6 @@
 # ADR 039 — AGENTS.md as the canonical cross-harness agent briefing
 
-**Status:** Proposed
+**Status:** Accepted — AGENTS.md is the live canonical briefing (CLAUDE.md imports it, GEMINI.md symlinks it); pilot rolling out to the block repos
 **Date:** 2026-06-21
 **Supersedes:** the prior arrangement where `CLAUDE.md` was the canonical briefing and `AGENTS.md` was a pointer to it; relocates the retro log introduced as `docs/architecture/agent-rules.md`.
 

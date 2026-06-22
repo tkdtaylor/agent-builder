@@ -1,7 +1,7 @@
 # ADR 024: armor ingestion and tool-call boundary
 
 **Date:** 2026-06-05
-**Status:** Proposed
+**Status:** Accepted (implemented — tasks 024–029, all ✅ verified)
 
 ## Context
 

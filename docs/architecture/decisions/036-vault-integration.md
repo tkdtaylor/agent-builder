@@ -1,6 +1,6 @@
 # ADR 036 — Adopt the vault block as agent-builder's token broker
 
-**Status:** Proposed
+**Status:** Accepted (implemented — tasks 064–066, all ✅ verified)
 **Date:** 2026-06-19
 **Preceded by:** ADR 035 (adopt exec-sandbox block as default run backend — deferred vault wiring)
 

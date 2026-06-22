@@ -1,7 +1,7 @@
 # ADR 037: audit-trail signed-checkpoint integration
 
 **Date:** 2026-06-19
-**Status:** Proposed
+**Status:** Accepted (implemented — tasks 067–069, all ✅ verified)
 **Extends:** ADR 026 (audit-trail v0 — consume the shipped block via its CLI/IPC seam)
 
 ## Context
