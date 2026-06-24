@@ -71,7 +71,7 @@ v0 (below) wired `emit` + `verify`. The block has since shipped **Ed25519 signed
 
 - **Multi-provider router** (Claude + Gemini + local LLMs, quota/sensitivity/cost routing) — design the seam now, build as v1.
 - **memory-guard / agent-mesh** — both now exist as **v0 blocks** (`~/Code/Public/memory-guard`, `~/Code/Public/agent-mesh`), so they are no longer vaporware — but their *adoption into agent-builder* is deferred (see the status table above for why). Of the two, memory-guard leads: agent-builder already runs a live memory store worth guarding, whereas agent-mesh presupposes a multi-agent substrate that does not exist here yet.
-- **The "tool to build agents" product surface** — the north-star evolution, after the blocks are usable.
+- **The "builder of purpose-built agents" product surface** — now the project's **primary forward arc** (ADR 040). The foundational blocks have all shipped to v1 and are adopted, so agent-builder's evolution from *the single autonomous coding agent* to *a tool that assembles any purpose-built secure agent from the blocks* is no longer gated on block readiness. Decomposition into tasks is the next planning step.
 
 ## Sequencing note
 

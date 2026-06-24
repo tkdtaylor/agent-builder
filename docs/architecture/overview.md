@@ -7,7 +7,9 @@ A narrative tour of agent-builder. The authoritative, decision-level design live
 
 ## The problem it solves
 
-The secure-agent ecosystem (exec-sandbox, vault, policy-engine, audit-trail) is a stack of blocks that need building. agent-builder is the autonomous coding agent that builds them — reviewing a roadmap and working tasks unattended — and is itself the first concrete consumer of those blocks. The chicken-and-egg ("need a safe agent to build the blocks, need the blocks for a safe agent") is resolved by **adopt-to-bootstrap, build-to-ship**: run on rented isolation, make exec-sandbox v0 the first task, then swap.
+The Secure Agent Ecosystem ships its security as a stack of standalone blocks (exec-sandbox, vault, policy-engine, audit-trail, armor) rather than one framework. Composing them correctly into a working agent — sandboxed execution, JIT-brokered credentials, policy-gated actions, tamper-evident audit, guarded ingestion, all wired over the blocks' published contracts — is itself the hard part. agent-builder is that **composition layer**: it assembles the blocks into purpose-built secure agents, and its first reference build is an autonomous coding agent that works a target repo's tasks unattended.
+
+Historically, agent-builder began as the agent meant to *build* the blocks and bootstrapped exec-sandbox v0 — run on rented isolation, then swapped onto the block it produced (ADR 021/035). The blocks ultimately shipped as independent repos; the "adopt-to-bootstrap, build-to-ship" arc and the repositioning to a composition layer are recorded in ADR 040.
 
 ## The shape of a run
 

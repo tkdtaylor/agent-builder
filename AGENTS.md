@@ -18,20 +18,30 @@ in that harness's layer (`CLAUDE.md` for Claude Code), not here.
 
 ## What this is
 
-agent-builder is the **autonomous coding agent that builds the secure-agent
-ecosystem blocks** (exec-sandbox, vault, policy-engine, audit-trail) by reviewing a
-roadmap and working through tasks unattended. It is the first concrete consumer of
-those blocks — it composes them over their **published contracts** and treats each
-block's own README `## Scope` section as the authoritative statement of what that
-block does and does not own; it does not restate or reimplement block
-responsibilities here. The authoritative design is **`autonomous-builder.md`** in
-the internal planning hub — read it before changing architecture. The key
-invariants below derive from it.
+agent-builder is the **assembly layer of the Secure Agent Ecosystem** — it composes
+the foundational blocks (exec-sandbox, vault, policy-engine, audit-trail, guarded by
+armor) into **purpose-built, secure autonomous agents**. Its first and reference build
+is an **autonomous coding agent** that works a target repo's tasks unattended, one at a
+time, behind a machine-checkable verification gate. It composes the blocks over their
+**published contracts** and treats each block's own README `## Scope` section as the
+authoritative statement of what that block does and does not own; it does not restate
+or reimplement block responsibilities here. The authoritative design is
+**`autonomous-builder.md`** in the internal planning hub — read it before changing
+architecture (it still carries the older "builds the blocks" framing; reconcile there
+separately). The key invariants below derive from it.
 
-**North star:** starts as *the agent that builds the blocks* → becomes *a tool to
-build agents from the blocks*. Apache-2.0 licensed, part of the Secure Agent
-Ecosystem. Keep the executor / repo / verify seams clean for that end state —
-don't hack them for the bootstrap.
+**North star:** agent-builder is the ecosystem's **front door** — the tool that
+assembles secure agents from the blocks. The autonomous coding agent is the first
+reference build; the arc is from *this one agent* to *a builder of any purpose-built
+secure agent* over the same seams. Apache-2.0 licensed, part of the Secure Agent
+Ecosystem. Keep the executor / repo / verify seams clean for that end state.
+
+**Origin (historical — don't reintroduce as the live purpose).** agent-builder began
+as the agent meant to *build* the blocks and bootstrapped exec-sandbox (built on rented
+isolation, then swapped onto it). The blocks shipped as independent repos; the
+composition layer it pioneered is what carries forward. This history lives in ADR 040
+(the repositioning) and the early ADRs (021/026/035) — do not re-assert "builds the
+blocks" as the current mission.
 
 ## Project structure
 

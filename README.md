@@ -1,14 +1,10 @@
 # agent-builder
 
-An autonomous coding agent that reviews a roadmap and builds the **secure-agent ecosystem blocks** ([exec-sandbox](https://github.com/tkdtaylor/exec-sandbox), [vault](https://github.com/tkdtaylor/vault), [policy-engine](https://github.com/tkdtaylor/policy-engine), [audit-trail](https://github.com/tkdtaylor/audit-trail)) unattended — working one task at a time on its own branch, gated by a machine-checkable verification step.
+agent-builder is the **assembly layer of the Secure Agent Ecosystem**: it composes the [foundational blocks](#the-building-blocks) into **purpose-built, secure autonomous agents** — sandboxed execution, JIT-brokered credentials, policy-gated actions, and a tamper-evident audit trail, wired together over the blocks' published contracts.
 
-It is the first concrete consumer of those blocks, and the bootstrap that resolved their chicken-and-egg: it began on rented isolation, built `exec-sandbox`, and **now runs on that block as its default backend** — having swapped the rented isolation for the block it produced. `audit-trail` and `vault` are adopted; `policy-engine` is wired as an opt-in gate (see the [roadmap](docs/plans/roadmap.md) for current adoption status).
+Today it builds one such agent: an **autonomous coding agent**. Give it a task and it works sandboxed — verifying its own output against a machine-checkable gate and opening a PR on success, one task at a time, on its own branch, unattended.
 
-**North star:** agent-builder starts as *the agent that builds the blocks* and evolves into *a tool to build agents from the blocks* — the ecosystem's front door.
-
-> **Status:** Phase 0 working — verified live (L6) end-to-end on a real Claude subscription against rootless Podman + gVisor: pick task → sandboxed Claude executor → full verification gate (build/vet/test/gofmt/golangci-lint/dep-scan/code-scanner) → real PR. Supervised (human reviews/merges each PR). Design is pinned in `autonomous-builder.md`.
-
-## How it works (target architecture)
+## How it works
 
 - **Supervisor (outside the box):** dispatches one task at a time, enforces the wall-clock/escalation kill, collects results, tears the box down. Deliberately dumb — never reasons over untrusted content.
 - **Agent loop (inside the box):** reads a task → routes it to an executor → the executor edits the target repo's worktree → the **verification gate** runs (tests + build + lint + [`dep-scan`](https://github.com/tkdtaylor/dep-scan)/[`code-scanner`](https://github.com/tkdtaylor/code-scanner)) → branch + PR on pass, escalate on fail.
@@ -17,9 +13,27 @@ It is the first concrete consumer of those blocks, and the bootstrap that resolv
 
 See [docs/architecture/overview.md](docs/architecture/overview.md), the [architecture diagrams](docs/architecture/diagrams.md), and [docs/spec/SPEC.md](docs/spec/SPEC.md).
 
-## Block adoption
+## The building blocks
 
-Adoption order is driven by which block shipped first, not a fixed sequence: `exec-sandbox` ✅ (default run backend), `audit-trail` ✅, `vault` ✅ (opt-in token brokering), `policy-engine` ◻️ wired as an opt-in `decide` gate, not yet a required dependency. Current status is tracked in [docs/plans/roadmap.md](docs/plans/roadmap.md).
+The Secure Agent Ecosystem ships its security as small, standalone, independently
+usable blocks rather than one framework. agent-builder composes these over their
+published contracts; each links to its own repo (the block's `## Scope` section is the
+authoritative statement of what it owns).
+
+| Block | What it does | In agent-builder |
+|---|---|---|
+| [exec-sandbox](https://github.com/tkdtaylor/exec-sandbox) | OS execution isolation — tiered runtime (`runc` → gVisor `runsc` → Kata/Firecracker), enforced resource limits, default-deny egress proxy | ✅ default run backend |
+| [vault](https://github.com/tkdtaylor/vault) | JIT zero-knowledge secret store + credential proxy; secrets resolve to single-use handles the agent never sees in plaintext | ✅ git/GitHub token brokering |
+| [policy-engine](https://github.com/tkdtaylor/policy-engine) | Out-of-process authorization (OPA/Rego + Cedar behind an AuthZEN seam); risk→tier scoring, `require_approval` gate | ✅ opt-in `decide` gate before dispatch |
+| [audit-trail](https://github.com/tkdtaylor/audit-trail) | Tamper-evident, hash-chained log (the spine); RFC 6962-style signed checkpoints, Rekor anchoring | ✅ `emit` + `verify` (signed checkpoints opt-in) |
+| [armor](https://github.com/tkdtaylor/armor) | LLM-guard on the web-ingestion + tool-call path — prompt-injection / jailbreak / exfil detection | ✅ fail-closed ingestion guard |
+| [dep-scan](https://github.com/tkdtaylor/dep-scan) | Supply-chain CVE scan of dependencies (SARIF / CycloneDX / SPDX / VEX) | ✅ blocking step in the verification gate |
+| [code-scanner](https://github.com/tkdtaylor/code-scanner) | Malware / supply-chain scan of code and skills before they run | ✅ blocking step in the verification gate |
+| [memory-guard](https://github.com/tkdtaylor/memory-guard) | Memory-I/O gate against poisoning — write-gate plus post-deletion residue verification (OWASP Agentic ASI06) | ◻️ not yet composed (deferred) |
+| [agent-mesh](https://github.com/tkdtaylor/agent-mesh) | Secure inter-agent comms — Ed25519-signed envelopes with a replay-prevention window | ◻️ not yet composed (deferred) |
+
+The two ◻️ blocks exist and are usable, but agent-builder doesn't wire them yet:
+memory-guard waits on a live agent memory store worth guarding, agent-mesh on a multi-agent substrate that doesn't exist here yet. The roadmap's block-adoption table is the source of truth for exactly what is wired and at what verification level (see the [roadmap](docs/plans/roadmap.md)).
 
 ## Develop locally
 
