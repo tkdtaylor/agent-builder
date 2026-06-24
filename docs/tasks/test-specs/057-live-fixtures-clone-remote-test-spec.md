@@ -82,7 +82,7 @@
 
 ### TC-057-04: Fixture clone does not override git user.email
 
-**Objective:** Verify that the clone and initial commit in both `seed_live_fixture()` and `newLiveCapstoneFixture()` do NOT override the ambient git `user.email` to a hardcoded gmail address.
+**Objective:** Verify that the clone and initial commit in both `seed_live_fixture()` and `newLiveCapstoneFixture()` do NOT override the ambient git `user.email` to a hardcoded personal address.
 
 **Preconditions:**
 - Both fixture functions are present in their respective files
@@ -90,7 +90,7 @@
 
 **Test steps:**
 1. Inspect `seed_live_fixture()` and `newLiveCapstoneFixture()` for any `git config --local user.email <value>` or `git -c user.email=<value>` invocations
-2. Verify neither function sets `user.email` to `a personal address` or any hardcoded value
+2. Verify neither function sets `user.email` to a hardcoded personal address or any hardcoded value
 3. Verify the initial commit uses the ambient git identity from `~/.gitconfig` or `GIT_AUTHOR_EMAIL`
 
 **Expected outcome:**

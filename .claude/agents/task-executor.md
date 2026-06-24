@@ -32,7 +32,7 @@ scripts/start-task.sh <NNN> <slug>
 - **If solo (1 lock):** creates branch `task/NNN-<slug>` from `main` and switches to it. Output: `BRANCH task/NNN-<slug>`.
 - **If concurrent (≥2 locks):** creates a worktree at `.claude/worktrees/NNN-<slug>/` on the same branch. Output: `WORKTREE .claude/worktrees/NNN-<slug>`.
 
-**If the script printed `WORKTREE <path>`, your very next command must be `cd <path>` and *every* subsequent command runs from that directory.** The prior retro on this is unambiguous: when an agent forgets to cd into the worktree, the parent repo's working tree gets edited and the "isolation" is fictional.
+**If the script printed `WORKTREE <path>`, your very next command must be `cd <path>` and *every* subsequent command runs from that directory.** A prior retro on this is unambiguous: when an agent forgets to cd into the worktree, the parent repo's working tree gets edited and the "isolation" is fictional.
 
 If the script exits non-zero, **stop and report**. Do not retry blindly — likely causes are uncommitted changes on `main` (commit/stash first), already on a different `task/*` branch (finish that one first), or the script's own bug (rare — report verbatim stderr).
 
