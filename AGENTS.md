@@ -29,8 +29,8 @@ the internal planning hub — read it before changing architecture. The key
 invariants below derive from it.
 
 **North star:** starts as *the agent that builds the blocks* → becomes *a tool to
-build agents from the blocks*. Apache-2.0 licensed; it
-goes public. Keep the executor / repo / verify seams clean for that end state —
+build agents from the blocks*. Apache-2.0 licensed, part of the Secure Agent
+Ecosystem. Keep the executor / repo / verify seams clean for that end state —
 don't hack them for the bootstrap.
 
 ## Project structure

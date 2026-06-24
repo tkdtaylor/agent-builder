@@ -1,0 +1,33 @@
+agent-builder
+Copyright 2026 Kevin Taylor
+
+This product is part of the Secure Agent Ecosystem.
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+this software except in compliance with the License. A copy of the License is in
+the LICENSE file and at http://www.apache.org/licenses/LICENSE-2.0.
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+
+------------------------------------------------------------------------------
+TRADEMARKS
+------------------------------------------------------------------------------
+"agent-builder" and the Secure Agent Ecosystem names and logos are trademarks of
+Kevin Taylor. The Apache-2.0 license grants rights to the code; it does not
+grant permission to use these names or logos except for reasonable and customary
+descriptive reference (e.g. stating that your product uses agent-builder).
+
+------------------------------------------------------------------------------
+SECURITY DISCLAIMER
+------------------------------------------------------------------------------
+agent-builder is an autonomous coding agent that executes model-driven changes
+behind a verification gate and a containment profile. It is provided on an "AS
+IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, express or implied. The
+containment, egress-allowlist, and verification controls reduce but do not
+eliminate the risks of running an autonomous agent against your code and
+credentials. You are solely responsible for evaluating its suitability for your
+use case, for the isolation of the environment you run it in, and for your own
+security posture. See Sections 7 (Disclaimer of Warranty) and 8 (Limitation of
+Liability) of the Apache License 2.0.

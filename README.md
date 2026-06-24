@@ -61,4 +61,7 @@ Go 1.26. CLI/container orchestration over provider CLIs and rootless Podman — 
 
 ## License
 
-Private / unlicensed while in bootstrap. Intended license on going public: **Apache-2.0** (high value-add orchestrator), consistent with the ecosystem's other novel blocks.
+[Apache License 2.0](LICENSE) — consistent with the other blocks in the Secure
+Agent Ecosystem. See [NOTICE](NOTICE) for attribution and the trademark and
+security disclaimers, and [CONTRIBUTING.md](CONTRIBUTING.md) for the
+inbound=outbound / DCO contribution terms.
