@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation check l6-preflight l6-probe
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-diagrams-render check l6-preflight l6-probe
 
 lint:
 	golangci-lint run
@@ -10,7 +10,7 @@ test:
 	go test ./...
 
 # Fitness functions — see docs/spec/fitness-functions.md
-fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation
+fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-diagrams-render
 	@echo "All fitness checks passed."
 
 fitness-no-docker:
@@ -197,6 +197,10 @@ fitness-policy-isolation:
 		exit 1; \
 	fi; \
 	echo "PASS fitness-policy-isolation: internal/policy import graph contains no other internal packages, and internal/runtime does not import the policy-engine block as a Go module."
+
+fitness-diagrams-render:
+	@python3 scripts/check-mermaid.py > /dev/null && \
+	echo "PASS fitness-diagrams-render: all Mermaid blocks render on GitHub (no parse hazards)."
 
 check: lint test fitness
 	@echo "All checks passed."

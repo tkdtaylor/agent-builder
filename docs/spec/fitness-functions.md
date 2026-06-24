@@ -1,7 +1,7 @@
 # Fitness functions
 
 **Project:** agent-builder
-**Last updated:** 2026-06-20
+**Last updated:** 2026-06-24
 
 ## What this file is
 
@@ -50,6 +50,7 @@ Keep entries concrete: the rule must be checkable by a tool, and the threshold m
 | F-005 | `internal/audit` and its supervisor wiring have no executor/LLM/web-fetch or audit-trail-module dependency | structural | (1) `go list -deps ./internal/audit/...` reports no path segment `executor`, `executors`, `llm`, `llms`, `web`, `webfetch`, `web-fetch`, or `audit-trail` Go import; (2) `go list -deps ./internal/supervisor/...` reports no executor/LLM/web path segment introduced via the audit dependency | 0 violations | `make fitness-audit-isolation` | block | ADR 026 (Option A) mandates that `internal/audit` reaches the `audit-trail` block over `os/exec`, not as a Go module import — so the block's packages must never appear in the audit or supervisor import graph. Keeping executor/LLM/web code out of `internal/audit` preserves the "dumb leaf" discipline and ensures the supervisor's isolation boundary (F-003) is not widened by the audit wiring. |
 | F-006 | `internal/policy` is a leaf and `internal/runtime` reaches policy-engine only over IPC | structural | (1) `go list -deps ./internal/policy/...` reports no `agent-builder/internal/` path other than `internal/policy` itself; (2) `go list -deps ./internal/runtime/...` reports no `github.com/tkdtaylor/policy-engine` Go module import | 0 violations | `make fitness-policy-isolation` | block | ADR 038 mandates that `decide` runs out-of-process: policy-engine is a separate daemon reached over a Unix socket, never imported as a Go module. A `github.com/tkdtaylor/policy-engine` import in `internal/runtime` would expose an in-process `Decide()` the agent could self-grant through; a reverse import from `internal/policy` into other `internal/` packages would allow the agent's own code to influence the decision path. |
 | F-007 | Default run pipeline wires the exec-sandbox block backend | structural | `go list -deps ./internal/runtime/...` reports an `internal/sandbox/execsandbox` import in the default run path | import present | `make fitness-exec-sandbox-default` | block | ADR 035 swapped the default run backend to the shipped `exec-sandbox` block (`internal/sandbox/execsandbox`), completing the bootstrap's self-leveraging swap. If `internal/runtime` stopped wiring execsandbox, the agent would silently fall back to the older Podman adapter and the "runs on the block it built" property would regress unnoticed. |
+| F-008 | Mermaid diagrams render on GitHub | hygiene | Scan of `README.md` and every `*.md` under `docs/` reports zero GitHub-render hazards (syntax GitHub's Mermaid parser rejects, e.g. `;` in labels or `[]` in sequence messages) | 0 render hazards | `make fitness-diagrams-render` | block | `docs/architecture/diagrams.md` is authoritative spec; a Mermaid block with a GitHub parse error renders invisible to a reader, silently drifting from the code without notice. F-008 makes "the diagrams render" an executable invariant checked at every gate run. |
 
 Categories: `structural` (cycles, layering, dependency direction), `hygiene` (logging, leftovers, debug code), `performance` (latency, throughput, memory), `complexity` (cyclomatic, file size, fan-out), `security` (deps, surface, secrets), `coverage` (test coverage thresholds).
 
@@ -74,6 +75,7 @@ None recorded.
 - F-005 (audit leaf isolation + supervisor graph) ← [ADR 026](../architecture/decisions/026-audit-trail-consume-shipped-block.md) §Decision (Option A: consume via CLI subprocess, not Go module import), [`architecture.md`](architecture.md) §4 Components.
 - F-006 (policy leaf isolation + runtime IPC-only) ← [ADR 038](../architecture/decisions/038-policy-engine-integration.md) §Out-of-process invariant, [`architecture.md`](architecture.md) §4 Components.
 - F-007 (exec-sandbox block backend is the default) ← [ADR 035](../architecture/decisions/035-adopt-exec-sandbox-block-as-default-run-backend.md) §Decision, [`interfaces.md`](interfaces.md) §exec-sandbox `run()` seam.
+- F-008 (Mermaid diagrams render on GitHub) ← [`architecture.md`](architecture.md) §4 Diagrams (diagrams.md is authoritative spec), [`../architecture/overview.md`](../architecture/overview.md) §Diagrams and drift.
 
 ## Notes
 
