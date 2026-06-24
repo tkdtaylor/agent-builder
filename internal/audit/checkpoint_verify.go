@@ -5,7 +5,7 @@ package audit
 // It verifies an Ed25519-signed checkpoint attestation produced by CheckpointSigner
 // without requiring access to the signing key — only the public key is needed.
 //
-// Governing ADR: docs/architecture/decisions/037-checkpoint-signer-seam.md
+// Governing ADR: docs/architecture/decisions/037-signed-checkpoint-integration.md
 //
 // CLI surface (frozen v1 contract):
 //

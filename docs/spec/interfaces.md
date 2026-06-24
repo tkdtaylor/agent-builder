@@ -315,6 +315,8 @@ type Result struct {
 
 ### Concrete backend: `sandboxruntime.Runner`
 
+> **Retained out-of-graph, not in the run pipeline (ADR 021).** This adapter for the rented `@anthropic-ai/sandbox-runtime` (`srt`) backend was removed from the default `agent-builder run` wiring by ADR 021; `internal/runtime` no longer imports it and the `fitness-no-srt` check enforces its absence from the run graph. The interface below is documented for reference only — the live backends are `podman.Runner` and `execsandbox.Runner`.
+
 ```go
 type Config struct {
 	CLIPath string

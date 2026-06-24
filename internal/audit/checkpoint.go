@@ -5,7 +5,7 @@ package audit
 // passes at supervisor seal time to produce a cryptographic attestation of the
 // sealed audit chain.
 //
-// Governing ADR: docs/architecture/decisions/037-checkpoint-signer-seam.md
+// Governing ADR: docs/architecture/decisions/037-signed-checkpoint-integration.md
 //
 // CLI surface (frozen v1 contract):
 //

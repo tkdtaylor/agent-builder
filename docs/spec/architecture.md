@@ -57,7 +57,7 @@ When the structure changes, both files update in the same commit. The tables her
 | execution-box egress sidecar | Rootless Podman / nftables sidecar | Trusted per-run network filter that installs default-deny egress rules for the execution-box pod namespace before the workload starts. Egress allowlist entries are declared on the pod (infra container) so the pod resolves allowlisted destinations while the workload runs with `--dns none` (ADR 030). | `containment/execution-box` | execution-box profile |
 
 **Invariants for this table**
-- Every container listed has a corresponding directory or deployable artifact under `src/` (or equivalent). The drift-audit mode of the `architect` agent checks this against the actual repo layout.
+- Every container listed has a corresponding directory or deployable artifact under `cmd/`, `internal/`, or `containment/` (the Go layout; no `src/`). The drift-audit mode of the `architect` agent checks this against the actual repo layout.
 - Every `Depends on` entry must resolve to another row in this table (Container) or a row in Section 2 (Systems).
 
 ---
@@ -68,6 +68,7 @@ When the structure changes, both files update in the same commit. The tables her
 
 | Container | Component | Source path | Responsibility | Depends on |
 |-----------|-----------|-------------|----------------|------------|
+| agent-builder CLI | Command Surface | `internal/cli` | Owns the entire command-line surface that `cmd/agent-builder/main.go` delegates to: flag parsing, the `run`/`version`/`verify <repo>`/`verify-checkpoint` subcommand dispatch, and process exit codes. `main` does nothing but call `cli.Main` and `os.Exit` its result | Default Run Wiring; Verification Gate; Audit Sink Seam; Supervisor Task model |
 | agent-builder CLI | Supervisor | `internal/supervisor` | Trusted outside-the-box dispatcher that creates one containment box, starts one in-box loop, streams run output to a durable run-record when configured, exposes an optional typed `audit.Sink` to the loop and Seals it before teardown on success and failure, logs lifecycle events, and tears down deterministically | Verification Gate model; exec-sandbox Run Adapter; Audit Sink Seam |
 | agent-builder CLI | Default Run Wiring | `internal/runtime` | Host-side CLI bootstrap that parses explicit run configuration, selects one ready task, composes the concrete run adapters (including the optional `audit.BlockSink` behind `AGENT_BUILDER_AUDIT_RECORD`, resolved fail-fast before dispatch), projects each action-class lifecycle event through the Sink alongside the raw run-record stream, and hands one configured task to the Supervisor | Supervisor; Task Source; Task Status Writer; Agent Loop; Claude CLI Executor; Verification Gate; Podman Adapter; Branch Publisher; Audit Sink Seam |
 | agent-builder CLI | Agent Loop | `internal/loop` | Drives one inside-the-box pick -> attempt -> verify cycle and applies the bounded retry/escalation policy around that policy-free outcome | Supervisor; Task Source; Task Status Writer; Verification Gate |

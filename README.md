@@ -48,7 +48,7 @@ go run ./cmd/agent-builder version
 
 `agent-builder run` dispatches **one ready task**: pick task → sandbox → Claude executor → verification gate → open a PR on pass (escalate on fail). You review and merge the PR, then run again for the next task. It is configured entirely through environment variables.
 
-**Prerequisites** (one-time, see the [operator guide](docs/operating.md) for setup): rootless Podman + a runtime (`runc`/`runsc`); the gate toolchain in `containment/execution-box/gate-tools/` (`golangci-lint`, `dep-scan` ≥ 1.3.1, `code-scanner` — gitignored, populate per host); `git` + `gh` authenticated; and a Claude credential — your **subscription** token `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or an `ANTHROPIC_API_KEY`.
+**Prerequisites** (one-time, see the [operator guide](docs/operating.md) for setup): rootless Podman + a runtime (`runc`/`runsc`); the gate toolchain in `containment/execution-box/gate-tools/` (the operator-required executables `golangci-lint`, `dep-scan` ≥ 1.3.1, `code-scanner`, plus the shipped `gods` and `semgrep-rules` helpers — gitignored, populate per host); `git` + `gh` authenticated; and a Claude credential — your **subscription** token `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) or an `ANTHROPIC_API_KEY`.
 
 **Run one task against a target repo** (the target carries its own `docs/plans/roadmap.md` + `docs/tasks/backlog/NNN-*.md`):
 

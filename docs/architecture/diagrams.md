@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-21
+**Last updated:** 2026-06-24
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -103,6 +103,7 @@ C4Component
 
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
+        Component(cli, "Command Surface", "internal/cli", "Flag parsing and run/version/verify/verify-checkpoint dispatch with exit codes")
         Component(runtime, "Default Run Wiring", "internal/runtime", "CLI bootstrap that composes configured Phase 0 adapters")
         Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher, lifecycle logger, run-record writer, and stable seams")
         Component(agentloop, "Agent Loop", "internal/loop", "Inside-the-box pick-attempt-verify cycle plus bounded retry policy")
@@ -122,7 +123,8 @@ C4Component
         Component(publisher, "Branch Publisher", "internal/publisher", "Pushes verified branches and records PR artifacts")
     }
 
-    Rel(main, runtime, "Runs default pipeline")
+    Rel(main, cli, "Delegates to cli.Main")
+    Rel(cli, runtime, "Dispatches run to the default pipeline")
     Rel(runtime, tasksource, "Selects one ready task")
     Rel(runtime, executor, "Constructs")
     Rel(runtime, gate, "Constructs production Gate")
@@ -162,35 +164,14 @@ C4Component
     Rel(publisher, ghCLI, "Finds or creates PR")
 ```
 
-**Key contracts**
-- ADR 002 fixes the gate shape: ordered Steps, structured Verdict, first-failure short-circuit, and no skip path.
-- ADR 012 fixes the agent loop shape: pick -> attempt -> verify -> advance states, done/idle/fail outcomes, and policy-free fail reporting.
-- ADR 013 fixes the retry escalation policy: non-negative `MaxAttempts`, mandatory stop, status-writer `needs-human` marking, and substitutable escalation hook.
-- ADR 020 fixes the exec-sandbox run adapter seam: command/worktree/typed limits in, result/exit/error out.
-- Task 035 fixes the Podman backing adapter: `internal/sandbox/podman` invokes `containment/execution-box/run.sh` with the worktree and typed limits while callers continue to depend on the ADR 020 seam.
-- ADR 035 adopts the shipped exec-sandbox block as the default `run()` backend: `internal/sandbox/execsandbox` wraps the block binary behind the same ADR 020 `sandbox.Runner` seam as the Podman adapter; `internal/runtime` constructs it as the default when `AGENT_BUILDER_EXEC_SANDBOX_BIN` is set and falls back to the Podman adapter otherwise. The `fitness-exec-sandbox-default` check enforces that `internal/runtime` imports `internal/sandbox/execsandbox`. This is the north-star milestone run backend.
-- ADR 036 / Task 066 wire opt-in vault token brokering: when `AGENT_BUILDER_VAULT_BIN` is set, `internal/runtime` starts the vault daemon, hands git/GitHub token plaintext to `secrets.VaultSecretSource` exactly once via `put`, and passes the resolved opaque handles + socket + `injection_mode="proxy"` through `sandbox.RunWiring`. `internal/secrets` is the stdlib-only `SecretSource` seam vault plugs into; `internal/vault` is a stdlib-only leaf client. One-way dependency: `runtime`/`secrets` → `vault`. Unset = the old env-forwarding path holds.
-- ADR 038 / Task 072 fix the policy decide gate: `internal/runtime` starts the `policy-engine` daemon (`serve --socket --allow`, fed from `sandbox.Limits.EgressAllowlist`) and calls AuthZEN `decide` **after** vault handle resolution and **before** `sandboxBox.Create`. `deny`/`require_approval` writes needs-human and the box never starts; `allow` applies the `tier_select` (→ `Request.Tier`) and raise-only `vault_injection_floor` (→ `RunWiring.InjectionMode`) obligations. Fail-closed: any transport/parse error yields `deny`. `internal/policy` is a stdlib-only leaf (one-way `runtime → policy`); the `fitness-policy-isolation` check (F-006) enforces the isolation. Opt-in via `AGENT_BUILDER_POLICY_BIN`.
-- ADR 021 removes the rented `@anthropic-ai/sandbox-runtime` (`srt`) backend from the run pipeline: task 036 swaps `internal/runtime` to construct the Podman adapter (launcher path overridable via `AGENT_BUILDER_EXEC_BOX_LAUNCHER`), the `fitness-no-srt` check enforces that `internal/runtime` no longer imports `sandboxruntime`, and task 037 accepts the Phase 1 swap at fake-provider L5. The `internal/sandbox/sandboxruntime` package is retained out-of-graph for reference only — it is no longer part of the run wiring.
-- ADR 024 fixes the ingestion boundary shape: typed web-content and tool-call candidates, guard decisions of allow/block/quarantine, and fail-closed broker release.
-- Task 025 fixes the armor guard adapter shape: external JSON process/service invocation maps allow/findings/failure output to ingestion decisions without vendoring armor source.
-- Task 027 fixes the executor ingestion harness shape: executor-facing web-content and tool-call events become ingestion candidates before continuation or execution, and direct release values cannot be valid without broker review.
-- Task 026 fixes the armor-backed executor harness wiring: `internal/executorharness.NewArmorGuarded` composes the executor-facing harness, ingestion broker, and external armor guard adapter so only armor-allowed candidates reach continuation or execution.
-- Task 029 fixes the Claude executor ingestion-control policy: Claude-facing web/tool routes are either disabled fail-closed or routed through a configured executor harness before continuation or tool execution.
-- Task 022 fixes the Claude CLI executor adapter: `claude -p` runs in the task worktree, receives `ANTHROPIC_API_KEY` through env, and reports the produced branch through an executor-owned temp file.
-- Task 017 fixes the supervisor dispatch lifecycle: create one box, run one in-box loop, and tear the box down exactly once.
-- Task 019 fixes the run-record seam: command/stdout/stderr events stream to host-side NDJSON and close before box teardown.
-- Task 041 wires the audit action layer: the in-box loop projects typed action events through an optional `audit.Sink` (`RunStreams.Audit`) alongside the unchanged 019 raw run-record stream; the supervisor Seals the sink before teardown on success and failure. The production sink (`audit.BlockSink`, behind `AGENT_BUILDER_AUDIT_RECORD`) shells out to the `audit-trail` block to produce the hash-chained log, resolved fail-fast before dispatch. The supervisor depends only on the `audit.Sink` interface, so F-003 isolation holds.
-- Task 073 moves audit sink construction to before the policy gate so that an `audit_emit` obligation can emit a `policy-decision` event even when the gate denies or requires approval. The `policy-decision` event (`ActionPolicyDecision`) is a new action type in the closed `AuditAction` enum. `require_approval` produces a distinct status reason (`"policy: requires human approval"`) from `deny` (`"policy: decision denied"`).
-- Task 028 fixes the default CLI run wiring: `internal/runtime` parses explicit environment configuration, selects one ready task, composes the Phase 0 adapters, and calls the supervisor without adding executor/web/LLM imports to `internal/supervisor`.
-- Task 034 fixes branch and PR publication: `internal/publisher` pushes only Gate-verified non-empty branches and records PR artifact evidence with publication-token redaction.
-- The supervisor remains trusted and dumb; the gate contains verification orchestration only, not executor/LLM/web logic.
-- The task source is read-only and only selects tasks; the task status writer is the separate constrained mutation component.
-- ADR 014 defines the execution-box profile artifact; supervisor wiring to launch it is deferred to the dispatch task.
-- ADR 015 defines the execution-box egress sidecar and allowlist contract; it changes the execution-box runtime topology without changing the agent-builder CLI component graph.
-- ADR 016 defines the execution-box runtime tier seam; workload containers run with Podman `--runtime` selected by workload default (`agent` -> `runsc`, `dev` -> `runc`) or explicit override, without changing the CLI component graph.
-- ADR 030 refines the runtime tier seam for the rootless egress path: the egress workload runtime resolves to `runc` (overriding the agent-tier `runsc` default) because the workload joins the pod's `--userns=keep-id` and gVisor's gofer cannot enter that pre-existing userns; non-networked paths keep the selected runtime unchanged; explicit `--runtime runsc` with egress fails loudly. The egress allowlist entries move to `podman pod create` (not the workload member). This changes the execution-box egress pod topology but not the agent-builder CLI component graph.
-- Task 033 defines the execution-box Gate toolchain contract; workload containers prepend a read-only mounted scanner/linter artifact directory to `PATH`, and the containment probe reports Gate tool path/version evidence.
+**Legend — load-bearing edges and boundaries** (the things you can't read off the boxes). The full contract catalog with ADR citations is the spec's job: see [docs/spec/architecture.md](../spec/architecture.md) §5 *Cross-cutting decisions*.
+
+- **Supervisor is trusted and dumb** — it creates one box, runs one in-box loop, and tears down exactly once; no executor/LLM/web logic enters its graph.
+- **Two run backends behind one `sandbox.Runner` seam** — `execsandbox.Runner` (default when `AGENT_BUILDER_EXEC_SANDBOX_BIN` is set) else `podman.Runner`; the retired `srt` backend is out-of-graph, not in the pipeline.
+- **Policy decides before the box exists** — `decide` runs **after** vault resolution and **before** `sandboxBox.Create`; `deny`/`require_approval` means the box never starts.
+- **Vault, policy, and audit are stdlib-only leaves** — one-way dependencies (`runtime`/`secrets` → `vault`, `runtime` → `policy`, supervisor → `audit.Sink` interface only); raw tokens never enter the RunRequest.
+- **Ingestion is fail-closed** — attacker-reachable web/tool candidates pass an allow/block/quarantine guard; only broker-reviewed releases reach the executor.
+- **Only Gate-verified non-empty branches publish** — the gate is the publication precondition; PR artifacts are recorded with token redaction.
 
 ---
 
