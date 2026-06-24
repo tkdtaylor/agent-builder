@@ -31,6 +31,7 @@ fitness-no-docker:
 			! -path './docs/spec/fitness-functions.md' \
 			! -path './AGENTS.md' \
 			! -path './CLAUDE.md' \
+			! -path './docs/agent-rules.md' \
 			-print | while IFS= read -r file; do \
 				base=$${file##*/}; \
 				base_lc=$$(printf '%s' "$$base" | tr '[:upper:]' '[:lower:]'); \
