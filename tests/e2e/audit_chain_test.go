@@ -27,17 +27,10 @@ import (
 	runtimewiring "github.com/tkdtaylor/agent-builder/internal/runtime"
 )
 
-// auditBinPath resolves the audit-trail binary for the L5 path: an explicit
-// AGENT_BUILDER_AUDIT_BIN, otherwise the well-known prebuilt path, otherwise "".
+// auditBinPath resolves the audit-trail binary for the L5 path from the
+// AGENT_BUILDER_AUDIT_BIN environment variable, or "" if unset.
 func auditBinPath() string {
-	if bin := os.Getenv("AGENT_BUILDER_AUDIT_BIN"); bin != "" {
-		return bin
-	}
-	candidate := "$HOME/Code/Public/audit-trail/audit-trail"
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate
-	}
-	return ""
+	return os.Getenv("AGENT_BUILDER_AUDIT_BIN")
 }
 
 // chainActions parses the audit-trail chain NDJSON file and returns the ordered

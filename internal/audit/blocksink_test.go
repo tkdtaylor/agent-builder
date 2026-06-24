@@ -355,13 +355,6 @@ func TestBlockSinkNonExecutableBinaryIsError(t *testing.T) {
 // assertion when the env var is not set.
 func TestBlockSinkChainVerifies(t *testing.T) {
 	binPath := os.Getenv("AGENT_BUILDER_AUDIT_BIN")
-	if binPath == "" {
-		// Fall back: use the well-known prebuilt path.
-		candidate := "$HOME/Code/Public/audit-trail/audit-trail"
-		if _, err := os.Stat(candidate); err == nil {
-			binPath = candidate
-		}
-	}
 
 	if binPath == "" {
 		// No real binary available; assert argv correctness via recording runner instead.

@@ -309,15 +309,8 @@ func TestVerifyChainRealBlockRoundTrip(t *testing.T) {
 	t.Log("TC-040-06 L5 PASS: intact chain valid; tampered chain invalid with TamperedAt set")
 }
 
-// findAuditTrailBinary returns the audit-trail binary path from the environment
-// or from the well-known prebuilt path, or "" if unavailable.
+// findAuditTrailBinary returns the audit-trail binary path from the
+// AGENT_BUILDER_AUDIT_BIN environment variable, or "" if unset.
 func findAuditTrailBinary() string {
-	if p := os.Getenv("AGENT_BUILDER_AUDIT_BIN"); p != "" {
-		return p
-	}
-	candidate := "$HOME/Code/Public/audit-trail/audit-trail"
-	if _, err := os.Stat(candidate); err == nil {
-		return candidate
-	}
-	return ""
+	return os.Getenv("AGENT_BUILDER_AUDIT_BIN")
 }

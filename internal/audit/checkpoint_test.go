@@ -184,7 +184,7 @@ func TestCheckpointSignerRealBinary(t *testing.T) {
 
 	binPath := os.Getenv("AGENT_BUILDER_AUDIT_BIN")
 	if binPath == "" {
-		binPath = "$HOME/Code/Public/audit-trail/audit-trail"
+		t.Skip("AGENT_BUILDER_AUDIT_BIN not set; skipping real-binary checkpoint test")
 	}
 	if _, err := os.Stat(binPath); err != nil {
 		t.Skipf("audit-trail binary not found at %s: %v", binPath, err)
