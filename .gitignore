@@ -28,3 +28,6 @@ containment/execution-box/gate-tools/*
 
 # execution-box --probe worktree write-test artifact (regenerated each real probe run)
 .execution-box-probe/
+
+# Pre-open-source review notes / punch lists (operator working area, never published)
+/archive/
