@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-24
+**Last updated:** 2026-06-26
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -15,14 +15,12 @@ GitHub and most IDE markdown previewers render Mermaid natively — no build ste
 
 ## 1. System Context — who uses it and what it touches
 
-> Top-level view: the system as one box, the people who use it, and the external systems it depends on. No internals. Update when a new actor or external dependency appears.
-
 ```mermaid
 C4Context
     title System Context for agent-builder
 
     Person(user, "User", "The person who interacts with the system")
-    System(system, "agent-builder", "What this system does in one line")
+    System(system, "agent-builder", "Assembly layer that composes the secure-agent blocks into purpose-built autonomous agents; first build is an autonomous coding agent behind a verification gate")
     System_Ext(claudeCLI, "Claude Code CLI", "Cloud executor harness/model subprocess")
     System_Ext(podman, "rootless Podman", "Execution-box containment substrate, driven by containment/execution-box/run.sh")
     System_Ext(execSandbox, "exec-sandbox block", "Tiered-isolation contained-command runner block (github.com/tkdtaylor/exec-sandbox); default run backend when AGENT_BUILDER_EXEC_SANDBOX_BIN is set")
@@ -50,8 +48,6 @@ C4Context
 ---
 
 ## 2. Containers — deployable units inside the system
-
-> One level down: each independently deployable / runnable unit (process, service, database, queue, scheduled job). Show the technology choice on each container and the protocol on each edge.
 
 ```mermaid
 C4Container
@@ -84,8 +80,6 @@ C4Container
 ---
 
 ## 3. Components — modules inside the main container
-
-> One level deeper into whichever container is most worth zooming into — usually the one a new contributor will touch first. Show the major modules / packages and their dependencies. Add additional Component diagrams (3a, 3b, …) for other containers when they are non-trivial.
 
 ```mermaid
 C4Component
@@ -176,8 +170,6 @@ C4Component
 ---
 
 ## 4. Primary runtime flow
-
-> The most important sequence through the system — the one a new contributor needs to understand first. Startup → first user action → response is a good default.
 
 ```mermaid
 sequenceDiagram

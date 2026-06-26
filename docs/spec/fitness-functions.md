@@ -60,13 +60,14 @@ Severity:
 
 ## Rules considered but rejected
 
-> Negative space matters as much as positive space. When a fitness rule is *proposed* and rejected, record it here so the same rule isn't re-proposed every six months. Keep this section short — if it grows long, the project is rejecting too many rules and the bar may be too high.
+Negative space matters as much as positive space: a fitness rule that is *proposed* and
+rejected is recorded here so the same rule isn't re-proposed every six months.
 
 None recorded.
 
 ## Source-of-truth links
 
-> List which other spec files or ADRs each rule traces back to, so a reader can find the *why*.
+Which other spec files or ADRs each rule traces back to, so a reader can find the *why*.
 
 - F-001 (no Docker dev-environment references) ← [SPEC.md](SPEC.md) §Fitness functions, [`configuration.md`](configuration.md) §Deployment configuration, [`../architecture/overview.md`](../architecture/overview.md) §The shape of a run.
 - F-002 (verification gate has no scanner bypass route) ← [SPEC.md](SPEC.md) §Invariants and §Fitness functions, [`behaviors.md`](behaviors.md) §B-001 and §Implementation constraints, [`../architecture/overview.md`](../architecture/overview.md) §The shape of a run.

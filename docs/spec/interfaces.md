@@ -14,11 +14,10 @@ Not in this file:
 
 ## Inbound interfaces
 
-> What the outside world uses to call into this system.
+The CLI is agent-builder's only inbound surface. It exposes no network API and serves
+no wire protocol.
 
 ### CLI
-
-> The command-line surface. List every subcommand, flag, and positional argument. For each, give type, default, and effect.
 
 ```
 agent-builder <subcommand> [flags] [args]
@@ -55,21 +54,19 @@ There is no `verify` flag that skips, bypasses, or weakens the Gate. The Gate is
 
 ### HTTP / RPC API
 
-> If the project exposes an API, document each endpoint. For larger APIs, link to a generated OpenAPI/protobuf file rather than retyping it here.
-
-| Method | Path | Purpose | Request shape | Response shape | Errors |
-|--------|------|---------|---------------|----------------|--------|
-| | | | | | |
+None. agent-builder exposes no HTTP or RPC endpoints.
 
 ### Wire protocol
 
-> If the project speaks a binary or text protocol (TWS, FIX, custom), document the message catalogue here or link to a separate `protocol.md` if it's large.
+None served. agent-builder is a *client* of the vault, policy-engine, and audit-trail
+block socket/CLI protocols — those are documented under [Outbound interfaces](#outbound-interfaces) and the blocks' own contracts, not served by agent-builder.
 
 ---
 
 ## Outbound interfaces
 
-> What this system calls out to. Each external dependency is a coupling point — list it explicitly so failure modes and version pinning are visible.
+What agent-builder calls out to. Each external dependency is a coupling point — listed
+explicitly so failure modes and version pinning are visible.
 
 | Dependency | What we call | Library / version | Failure mode |
 |------------|-------------|-------------------|--------------|
@@ -88,9 +85,9 @@ There is no `verify` flag that skips, bypasses, or weakens the Gate. The Gate is
 
 ## Internal public surface
 
-> Interfaces *within* the project that are stable contracts between modules. Examples: a `Strategy` trait that strategy crates implement, a `Repository` trait that handlers consume, an event bus shape.
->
-> If a module's public API isn't listed here, it's an implementation detail — callers should not depend on it. Promotion to this list is a deliberate decision (often via ADR).
+Interfaces *within* agent-builder that are stable contracts between modules. A package's
+public API that isn't listed here is an implementation detail — callers should not depend
+on it, and promotion to this list is a deliberate decision (often via ADR).
 
 ### Interface: `gate.Step`
 
@@ -525,8 +522,6 @@ func (l *RetryingLoop) RunOnce() (RetryOutcome, error)
 ---
 
 ## Extension points
-
-> Plugin slots, hook points, registration mechanisms — anything designed for external code to extend the system without modification. If there are none, say "None — extension is by source modification" so it's an explicit choice.
 
 - Gate checks are extended by registering additional `gate.Step` implementations with `gate.New(steps ...Step)`. Registration rejects nil, blank-name, and duplicate-name steps.
 - Task-source input locations are supplied by constructing `tasksource.Source` with a different `fs.FS`, roadmap path, or task directory list.

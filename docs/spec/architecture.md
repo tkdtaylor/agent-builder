@@ -18,21 +18,17 @@ When the structure changes, both files update in the same commit. The tables her
 
 ## 1. Persons (actors)
 
-> Who uses the system. Includes humans (end users, operators, admins) and external automated systems acting as clients. One row per distinct role.
-
 | Name | Description | Goals |
 |------|-------------|-------|
-| | | |
+| Operator | Human who starts and observes unattended autonomous builder runs against a target repository | Get a target repo's ready tasks completed unattended — each verified by the gate and published as a PR — without supervising every step |
 
 ---
 
 ## 2. Systems
 
-> The system itself, plus every external system it integrates with. The "system in scope" gets one row; each integration gets its own.
-
 | Name | Type | Description | Owner |
 |------|------|-------------|-------|
-| agent-builder | In-scope | | This team |
+| agent-builder | In-scope | Assembly layer that composes the secure-agent blocks into purpose-built autonomous agents; the reference build is an autonomous coding agent run unattended against a target repo behind a machine-checkable verification gate | This team |
 | Claude Code CLI | External CLI | Cloud executor harness/model subprocess invoked against a task worktree | Anthropic |
 | rootless Podman | External runtime | Execution-box containment substrate invoked through `containment/execution-box/run.sh` behind the exec-sandbox run adapter seam; selectable OCI runtime (`runsc`/`runc`) | Tooling environment |
 | armor | External CLI/service | LLM guard invoked behind the ingestion boundary to classify content and tool-call candidates | External tool |
@@ -48,8 +44,6 @@ When the structure changes, both files update in the same commit. The tables her
 
 ## 3. Containers
 
-> Independently deployable / runnable units inside the system: services, processes, databases, queues, scheduled jobs. Each container has a technology choice and a single responsibility.
-
 | Name | Technology | Responsibility | Source path | Depends on |
 |------|------------|----------------|-------------|------------|
 | agent-builder CLI | Go | Entrypoint process for the autonomous builder scaffold | `cmd/agent-builder` | |
@@ -63,8 +57,6 @@ When the structure changes, both files update in the same commit. The tables her
 ---
 
 ## 4. Components
-
-> Modules / packages inside containers that are worth naming at the architecture level — typically the ones with stable interfaces between them. Not every file in the codebase belongs here; only the load-bearing ones.
 
 | Container | Component | Source path | Responsibility | Depends on |
 |-----------|-----------|-------------|----------------|------------|
@@ -91,8 +83,6 @@ When the structure changes, both files update in the same commit. The tables her
 ---
 
 ## 5. Cross-cutting decisions
-
-> Architectural choices that span multiple containers or components and don't naturally fit in any single row above — auth approach, observability strategy, error-handling convention, retry policy, transaction boundaries. Each entry should link to an ADR.
 
 - ADR 002: Gate orchestrator shape — ordered Step interface, structured Verdict model, first-failure short-circuit, no skip path.
 - ADR 012: Agent loop state machine shape — explicit pick/attempt/verify/advance states, done/idle/fail outcomes, and policy-free failure reporting.

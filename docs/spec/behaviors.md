@@ -15,15 +15,7 @@ Not in this file:
 
 ## Format
 
-Each behavior is a numbered subsection with three parts:
-
-> **B-NNN: Short imperative title**
->
-> - **Trigger:** what causes this behavior to fire
-> - **Response:** what the system does
-> - **Side effects:** observable effects beyond the immediate response (writes, emitted events, log entries, external calls)
-> - **Failure modes:** how it can fail and what the system does when it does
-> - *(optional)* **References:** ADRs that drove the behavior, related test specs
+Each behavior is a numbered subsection: a `B-NNN` heading followed by **Trigger** (what causes it to fire), **Response** (what the system does), **Side effects** (observable effects beyond the response — writes, emitted events, external calls), and **Failure modes** (how it fails and what the system does), plus an optional **References** line citing ADRs and test specs.
 
 Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable references — never reuse a number, even if a behavior is removed (mark it `B-NNN: REMOVED — see ADR-XXX` and leave the number).
 
@@ -211,8 +203,6 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 
 ## Edge cases and error behaviors
 
-> Behaviors specifically for error conditions, recovery, and edge cases. Keep them here rather than scattered through the core list — most readers want core first, edge cases on demand.
-
 ### B-003: Native tool absence fails loudly
 
 - **Trigger:** A native Go Step runs while its required executable is absent from `PATH`.
@@ -224,13 +214,9 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 
 ## Behavioral invariants
 
-> Cross-cutting properties that hold across many or all behaviors. Examples:
->
-> - All write operations are idempotent on retry.
-> - No behavior can leave the system in an inconsistent state on partial failure (transactions / rollback / compensating action).
-> - User-triggered destructive actions always require confirmation.
->
-> Invariants here are stronger than ones in `SPEC.md` "Top-level invariants" — those are about system architecture; these are about observable behavior.
+Cross-cutting properties that hold across all behaviors. They are stronger than the
+architectural invariants in [SPEC.md](SPEC.md) — those constrain system structure,
+these constrain observable behavior.
 
 - There is no gate skip or bypass input. All configured Steps are blocking.
 - Native Go Steps always run in the caller-supplied worktree, never implicitly in the agent-builder repo.

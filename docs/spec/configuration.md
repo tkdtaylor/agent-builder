@@ -61,8 +61,6 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 
 ## Environment variables
 
-> Variables read from the process environment. Distinguish required-at-startup from optional overrides.
-
 | Variable | Type | Default | Required | Effect |
 |----------|------|---------|----------|--------|
 | `EXEC_BOX_IMAGE` | string | `localhost/agent-builder/execution-box:033` | no | Image tag built and run by the execution-box launcher |
@@ -123,8 +121,6 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 
 ## Runtime flags
 
-> CLI flags that affect runtime mode rather than acting like commands. List here if [interfaces.md](interfaces.md) doesn't already cover them — avoid duplication. Cross-reference rather than restate.
-
 The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.md#executable-artifact-execution-box-launcher). The configuration contract for those flags is:
 
 - `--workload agent|dev`: selects the default runtime tier (`agent` -> `runsc`, `dev` -> `runc`).
@@ -135,7 +131,8 @@ The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.m
 
 ## Runtime parameters
 
-> Typed values supplied by callers at construction time rather than parsed from environment or CLI flags.
+Typed values supplied by callers at construction time rather than parsed from
+environment or CLI flags.
 
 | Parameter | Type | Default | Required | Effect |
 |-----------|------|---------|----------|--------|
@@ -166,7 +163,8 @@ The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.m
 
 ## Secrets
 
-> Sensitive configuration that lives **outside** the repo. Never commit values; document only the names and where they come from.
+Sensitive configuration that lives **outside** the repo. Values are never committed —
+only the names and where they come from are documented here.
 
 | Secret | Source | Used for |
 |--------|--------|----------|
@@ -185,8 +183,6 @@ The execution-box launcher exposes runtime flags in [interfaces.md](interfaces.m
 ---
 
 ## Deployment configuration
-
-> If the project has a deployment story (rootless Podman execution box, dev shell, sandbox), document the runtime contract here: ports exposed, volumes mounted, image tags, resource expectations.
 
 | Aspect | Value | Notes |
 |--------|-------|-------|

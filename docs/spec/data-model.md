@@ -1,7 +1,7 @@
 # Data Model
 
 **Project:** agent-builder
-**Last updated:** 2026-06-19
+**Last updated:** 2026-06-26
 
 What data exists, how it's structured, where it lives, and what relationships hold between entities. Covers persistent storage, in-memory state, and data-on-the-wire formats.
 
@@ -14,36 +14,28 @@ Not in this file:
 
 ## Persistent state
 
-> Data that survives process restart. For each store, document the schema, ownership, and access pattern.
+agent-builder runs as a **stateless orchestrator process**. It owns no database,
+cache, or process-managed datastore — each `agent-builder run` invocation parses its
+inputs fresh and discards all in-process state when it returns. The durable artifacts
+it produces or mutates live in files outside the process and are owned as follows:
 
-### Store: <name> (e.g. PostgreSQL `app_db`, SQLite `data.db`, S3 `bucket-name`)
+| Durable artifact | Owner / writer | Format & location | Documented in |
+|---|---|---|---|
+| RunRecord | `internal/supervisor` (single host-side writer per run) | NDJSON file at the configured `RunRecordPath` | [Wire / interchange formats](#wire--interchange-formats) below |
+| Task `**Status:**` markers | `tasksource.StatusWriter` (constrained single-line mutation) | The target repo's `docs/tasks/*.md` files | [In-memory state → Task Source](#state-task-source) (`WritableStatus`) |
+| Audit chain | the external **audit-trail block**, appended via `audit.BlockSink` | JSONL hash chain at the configured logfile; the block owns the on-disk format | [In-memory state → Audit Sink Seam](#state-audit-sink-seam) |
 
-**Purpose:** what this store holds and why it exists separately from any others
-**Owner:** which component is the single writer (or "shared, see access rules below")
-**Backup / retention:** how long data lives, how it's recovered
-
-#### Entity: <EntityName>
-
-```
-field_name      type          notes
-─────────────────────────────────────
-id              uuid          primary key
-created_at      timestamp     UTC, set by DB default
-…
-```
-
-- **Identity:** what makes a row unique beyond the primary key (natural key, unique constraint)
-- **Lifecycle:** when rows are created, when they're updated, when they're deleted (or "never")
-- **Relationships:** foreign keys, parent/child, many-to-many junctions
-- **Indexes:** non-obvious indexes and what they support
-
-> Add one section per entity. For schemas that are large or change frequently, prefer pasting the canonical DDL/migration source rather than retyping field lists by hand.
+agent-builder holds only the **typed writer seam** for each — never a schema it owns.
+A new durable artifact (a real datastore, an index, a cache) would be documented here
+as its own subsection; today there are none.
 
 ---
 
 ## In-memory state
 
-> Data that exists only during process lifetime. For long-running services this is often as important as persistent state — race conditions and lock orders live here.
+This is where agent-builder's data actually lives: process-local value types and
+seams that exist only for the duration of one `agent-builder run` invocation. Each
+entry notes its shape, owner, lifetime, concurrency rules, and bounds.
 
 ### State: Verification Gate
 
@@ -726,7 +718,8 @@ Terminal       bool                         true when this retry cycle is comple
 
 ## Wire / interchange formats
 
-> Data formats used to exchange information across process boundaries: JSON over HTTP, NDJSON log lines, protobuf messages, CSV exports, etc. Each entry is a stable contract — version it like you would an API.
+Data formats agent-builder exchanges across process boundaries. Each is a stable
+contract, versioned like an API.
 
 ### Format: RunRecord NDJSON
 
@@ -762,23 +755,19 @@ run_finished    outcome; error when outcome is failed or timed-out
 
 ## Derived data
 
-> Data that's computed from other data and treated as authoritative for some purpose (caches, materialized views, indexes). Note the source and the recompute rule so consumers know what guarantees they have.
-
-| Derived | Source | Recompute trigger | Staleness tolerance |
-|---------|--------|-------------------|---------------------|
-| | | | |
+None. agent-builder maintains no caches, materialized views, or indexes. Every value
+is recomputed from source on each run: `tasksource` reparses the roadmap and task
+files on every `Candidates()`/`Next()` call (no cache), and the Gate recomputes its
+`Verdict` on every `Verify(repoPath)` call. There is no derived datum treated as
+authoritative that could go stale.
 
 ---
 
 ## Data invariants
 
-> Properties that must hold across the data model. Examples:
->
-> - `account.balance == sum(account.transactions.amount)` for all accounts.
-> - No two `Order` rows share an `external_id` for the same `account_id`.
-> - In-memory `SessionRegistry` only contains entries whose status is one of {Active, Idle, Failed, Closed}.
->
-> If an invariant is enforced by code (DB constraint, runtime assertion, type system), say so.
+Properties that must hold across the data model. Each is enforced in code (type
+system, constructor validation, or runtime assertion) at the package noted by the
+type it constrains.
 
 - A Verdict with `OK == true` contains only passing StepResults.
 - A Verdict with `OK == false` ends at the first failing StepResult; later configured steps do not run and do not appear in Results.
