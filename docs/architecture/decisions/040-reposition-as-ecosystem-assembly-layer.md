@@ -30,8 +30,8 @@ This left the README and the canonical briefing leading with an identity that is
 longer the project's purpose. Two facts make the repositioning clean rather than a
 land-grab:
 
-1. **The "blocks working together" validation role is already owned elsewhere.** The
-   an internal contract-validation prototype (v0, in-process) and `agent-integration` (v1
+1. **The "blocks working together" validation role is already owned elsewhere.** An
+   internal contract-validation prototype (v0, in-process) and `agent-integration` (v1
    cross-block, cross-language integration harness over the real compiled binaries)
    already validate that the blocks compose. agent-builder taking that role would
    duplicate them.
@@ -67,8 +67,8 @@ Concretely:
 
 ## Why this framing and not the alternatives
 
-- **Not "validation harness."** Already covered by the internal contract-validation prototype + `agent-integration`;
-  adopting it here would duplicate, not add.
+- **Not "validation harness."** Already covered by the internal contract-validation
+  prototype + `agent-integration`; adopting it here would duplicate, not add.
 - **Not "keep building the blocks."** The blocks have shipped; the mission is complete
   and was carried out repo by repo. Continuing to assert it makes the README inaccurate.
 - **"Assembly layer with a reference build"** is the framing that is simultaneously
