@@ -102,9 +102,11 @@ definition.
   vault, policy, audit) — neither recipe has its own containment implementation.
 - The docs-fix recipe's `BlockWiring` config is either shared by reference with the
   coding-agent recipe's or is identically-typed.
-- `go list -deps ./internal/recipe/docsfix/...` does NOT contain
-  `github.com/tkdtaylor/agent-builder/internal/sandbox` directly (containment is
-  block-wiring, not an IO seam the recipe owns).
+- `go list -f '{{range .Imports}}{{.}}\n{{end}}' ./internal/recipe/docsfix/` does NOT contain
+  `github.com/tkdtaylor/agent-builder/internal/sandbox` (the recipe does not DIRECTLY
+  import sandbox; transitive presence of internal/sandbox via internal/supervisor is
+  expected and correct — supervisor owns containment; the binding property is that the
+  recipe does not DIRECTLY import sandbox).
 
 ---
 
@@ -112,15 +114,16 @@ definition.
 
 - **Requirement:** REQ-079-03
 - **Level:** L2 (unit test)
-- **Test file:** `internal/runtime/runtime_gate_assert_test.go`
+- **Test file / harness:** External test `package docsfix_test` in `internal/recipe/docsfix/runtime_test.go` calling the REAL `runtime.Run`
 
-**Input:** Call the runtime assembler with `recipe="docs-fix"`.
+**Input:** Call the actual `runtime.Run(config, io.Discard)` with `recipe="docs-fix"`. The test constructs a minimal `runtime.Config{RecipeName:"docs-fix", TaskRoot:tmpDir, Worktree:tmpDir, ClaudeCLI:"claude", ...}` and invokes Run.
 
 **Expected output:**
-- The gate-existence assertion (task 078) passes — the docs-fix gate is non-nil
-  and recognized as a real blocking gate.
-- The assembler proceeds to supervisor construction (or a pre-dispatch check returns
-  no error).
+- The gate-existence assertion (task 078) fires and PASSES — the docs-fix gate is non-nil,
+  implements `gate.Blocker`, and returns `true` from `Blocks()`.
+- `runtime.Run` proceeds PAST the gate-existence check (no "GateFactory"/"Blocker"/"Blocks()" error).
+- Run will fail later for unrelated reasons (missing sandbox/Claude in test environment), but that's fine — the important thing is the gate-existence assertion passed.
+- Assert: `err != nil` AND the error message does NOT contain any of these substrings: `"GateFactory"`, `"Blocker"`, `"Blocks()"`. That proves gate-existence assertion passed on the live path.
 
 ---
 

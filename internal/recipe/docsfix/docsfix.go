@@ -31,14 +31,15 @@ func (g *DocsFixGate) Blocks() bool {
 	return true
 }
 
-// newDocsFixGate constructs the docs-fix gate with a markdown linter.
-// Note: in production, code-scanner would be included here as well.
-// For the proof recipe, we use just the markdown-lint step to avoid
-// requiring the code-scanner binary to be installed during testing.
+// newDocsFixGate constructs the docs-fix gate with a markdown linter + code-scanner.
+// The gate composes both steps to ensure the docs-fix recipe follows the project's
+// security invariant: every recipe must include code-scanner as a blocking gate step.
+// Note: gate.CodeScannerStep will not execute in unit tests (gates are never Run end-to-end
+// in the test environment), so the code-scanner binary does not need to be installed.
 func newDocsFixGate() (supervisor.Gate, error) {
 	verifier, err := gate.New(
 		&MarkdownLintStep{},
-		// gate.CodeScannerStep{}, // would be included in production
+		gate.CodeScannerStep{},
 	)
 	if err != nil {
 		return nil, fmt.Errorf("construct docs-fix gate: %w", err)

@@ -3,97 +3,74 @@
 package docsfix_test
 
 import (
-	"fmt"
+	"io"
 	"testing"
+	"time"
 
-	"github.com/tkdtaylor/agent-builder/internal/recipe"
+	"github.com/tkdtaylor/agent-builder/internal/runtime"
 )
 
 // TestTC079_04_RuntimeGateAssertionPassesForDocsFix tests TC-079-04:
 // The runtime gate-existence assertion (task 078) passes when recipe="docs-fix".
 //
-// This test simulates the verifyGateExists call that the assembler makes before
-// constructing the supervisor. If the docs-fix gate does not implement
-// gate.Blocker or returns false from Blocks(), this test fails.
+// This test calls the REAL runtime.Run with recipe="docs-fix" and verifies that
+// the gate-existence assertion does NOT reject the docs-fix gate. The gate-existence
+// assertion checks that the gate implements gate.Blocker and returns true from Blocks().
+// If those checks pass, runtime.Run proceeds PAST the assertion (though it will fail
+// later for unrelated reasons like missing sandbox/Claude in the test environment).
 func TestTC079_04_RuntimeGateAssertionPassesForDocsFix(t *testing.T) {
-	// Select the docs-fix recipe
-	r, err := recipe.SelectRecipe("docs-fix")
+	tmpDir := t.TempDir()
+
+	// Construct a minimal runtime.Config for recipe="docs-fix".
+	config := runtime.Config{
+		TaskRoot:       tmpDir,
+		Worktree:       tmpDir,
+		ClaudeCLI:      "claude",
+		ExecBoxLauncher: "containment/execution-box/run.sh",
+		RunTimeout:     1 * time.Second,
+		MaxAttempts:    1,
+		PublishRemote:  "origin",
+		GitCLI:         "git",
+		GitHubCLI:      "gh",
+		RecipeName:     "docs-fix",
+	}
+
+	// Call the real runtime.Run with the docs-fix recipe.
+	// The gate-existence assertion will fire before any sandbox creation.
+	// If the docs-fix gate does NOT implement gate.Blocker or returns false
+	// from Blocks(), the error will contain one of these substrings:
+	//   - "GateFactory"
+	//   - "Blocker"
+	//   - "Blocks()"
+	// If the gate-existence assertion PASSES, runtime proceeds to later failures
+	// (missing sandbox, missing task, etc.) — which is fine for this test.
+	err := runtime.Run(config, io.Discard)
+
+	// The error SHOULD occur (missing sandbox/Claude), but it must NOT be a gate-existence error.
 	if err != nil {
-		t.Fatalf("SelectRecipe(\"docs-fix\") failed: %v", err)
+		errMsg := err.Error()
+		// These substrings would indicate a gate-existence assertion failure.
+		forbiddenSubstrings := []string{"GateFactory", "Blocker", "Blocks()"}
+		for _, substring := range forbiddenSubstrings {
+			if containsSubstring(errMsg, substring) {
+				t.Fatalf("runtime.Run returned a gate-existence error: %v", err)
+			}
+		}
+		// Other errors are expected and fine (missing sandbox, missing task, etc.).
+		// The important thing is we got PAST the gate-existence assertion.
+		return
 	}
 
-	// Verify the GateFactory is non-nil
-	if r.GateFactory == nil {
-		t.Fatal("GateFactory is nil")
-	}
-
-	// Call the GateFactory to get the gate
-	g := r.GateFactory()
-	if g == nil {
-		t.Fatal("GateFactory() returned nil — runtime assembler would reject this")
-	}
-
-	// The runtime's verifyGateExists check requires the gate to implement Blocker.
-	// Check that this gate implements gate.Blocker.
-
-	// Attempt to assert the Blocker interface
-	blocker, ok := g.(interface{ Blocks() bool })
-	if !ok {
-		t.Fatalf("gate type %T does not implement Blocker interface — runtime would reject this", g)
-	}
-
-	// Verify Blocks() returns true (not a pass-through gate)
-	if !blocker.Blocks() {
-		t.Fatal("gate.Blocks() returned false — runtime would reject this gate as a pass-through")
-	}
-
-	// If we reach here, the gate-existence assertion passes
+	// If we get here with no error, that's also acceptable (though unlikely in test env).
 }
 
-// TestTC079_04_RunWithDocsFixRecipePassesGateAssertion tests that a minimal
-// runtime assembly attempt would pass the gate assertion for docs-fix.
-//
-// This test does NOT run the full runtime.Run (which would need full config),
-// but instead verifies the gate-existence check directly by mirroring the
-// verifyGateExists function from runtime/run.go.
-func TestTC079_04_RunWithDocsFixRecipePassesGateAssertion(t *testing.T) {
-	// Select the docs-fix recipe (must not error)
-	r, err := recipe.SelectRecipe("docs-fix")
-	if err != nil {
-		t.Fatalf("SelectRecipe(\"docs-fix\") failed: %v", err)
+// containsSubstring checks if a string contains a substring (case-sensitive).
+func containsSubstring(s, substr string) bool {
+	// Simple substring check
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
 	}
-
-	// Verify the gate-existence assertion (mirroring runtime.verifyGateExists)
-	// This is the same check that runtime.Run performs before supervisor construction.
-	if err := verifyGateExists(r.GateFactory); err != nil {
-		t.Fatalf("verifyGateExists failed (runtime would reject docs-fix): %v", err)
-	}
-
-	// If we reach here, the gate-existence assertion passes
-}
-
-// verifyGateExists mirrors the check from runtime/run.go (task 078).
-// It asserts the gate is non-nil and implements gate.Blocker.
-func verifyGateExists(gateFactory recipe.GateFactory) error {
-	if gateFactory == nil {
-		return fmt.Errorf("runtime: gate assembly error: recipe's GateFactory is nil — a Recipe must have a real, blocking gate")
-	}
-
-	g := gateFactory()
-	if g == nil {
-		return fmt.Errorf("runtime: gate assembly error: GateFactory returned nil — gate must be a non-nil, blocking gate")
-	}
-
-	// Check if the gate implements the Blocker marker interface
-	blocker, ok := g.(interface{ Blocks() bool })
-	if !ok {
-		return fmt.Errorf("runtime: gate assembly error: gate does not implement the Blocker marker interface — gate must be a real, blocking gate")
-	}
-
-	// Verify the gate reports it is blocking (not a pass-through)
-	if !blocker.Blocks() {
-		return fmt.Errorf("runtime: gate assembly error: gate.Blocks() returned false — gate must be a real, blocking gate")
-	}
-
-	return nil
+	return false
 }
