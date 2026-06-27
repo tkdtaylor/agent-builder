@@ -58,29 +58,40 @@ Introduce two new components on the **executor side** of the seam:
 
 ### 1. The executor registry
 
-A catalog of available LLM executors. Entries are **heterogeneous** behind the existing
-`(harness, model) → branch` seam:
+A catalog of available LLM executors. The key factoring is that an entry separates the
+**harness driver** (the thing that runs the agentic loop and emits a branch) from the
+**(model, endpoint, auth) config** it points at — so **one harness backs many entries**:
 
-- **Cloud CLIs** (Claude Code, Codex, Gemini CLI) bundle harness + model — one entry is
-  the whole executor.
-- **A local LLM** is a model that needs a harness — the entry pairs a local model
-  endpoint with a harness driver.
+- **A harness is decoupled from its model.** The Claude Code CLI is a harness, not a
+  model binding: it honors `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`, so pointing it
+  at a different endpoint makes the **existing `claude_cli.go` harness drive a different
+  model**. A local LLM is therefore **not a new harness** — it is the *same* Claude CLI
+  harness configured with a local endpoint and no cloud auth.
+- **Translation-proxy seam for local entries.** Claude Code speaks the Anthropic Messages
+  API; most local servers (llama.cpp, vLLM, Ollama, LM Studio) speak the OpenAI API. So a
+  local entry typically fronts the model with a small **translation proxy** (the
+  LiteLLM / claude-code-router pattern: Anthropic-shape in → local model → Anthropic-shape
+  out) that presents an Anthropic-compatible endpoint. The entry's `Endpoint` points at
+  that proxy. This is a named seam, not bespoke per-model code.
+- **Some CLIs are their own harness.** Codex and Gemini ship their own CLIs that are their
+  own harnesses (own wire format, own auth), so each is its own harness driver — they do
+  not reuse the Claude CLI harness.
 
-The registry stores provider **config** (never secrets) plus per-entry **quota/usage
-state**:
+So the old "cloud-cli bundles harness+model vs. local-model needs a harness" split
+collapses into a single axis: **which harness driver + which endpoint/auth config.** The
+registry stores provider **config** (never secrets) plus per-entry **quota/usage state**:
 
 ```
 RegistryEntry {
   ID             string          // stable handle, e.g. "claude-oauth", "local-qwen", "codex", "gemini"
-  Kind           ExecutorKind    // cloud-cli | local-model
+  Harness        HarnessDriver   // which harness runs the loop: claude-cli | codex-cli | gemini-cli
   CapabilityTier int             // ordered: higher = stronger
   CostWeight     int             // relative cost per dispatch; lower = cheaper
-  SecretRef      string          // which vault secret to resolve (NOT the secret)
-  // provider config:
-  BinaryPath     string          // cloud-cli: the CLI to invoke
+  // model/endpoint/auth config (one harness, many entries):
   ModelID        string          // model identifier
-  Endpoint       string          // local-model: the inference endpoint
-  // quota config (optional; a local model leaves Budget zero = unlimited):
+  Endpoint       string          // base URL the harness points at (cloud API, or a local translation proxy)
+  SecretRef      string          // which vault secret to resolve (NOT the secret); empty for a no-cloud-auth local entry
+  // quota config (optional; a local entry leaves Budget zero = unlimited):
   Budget         QuotaBudget     // configured cap over a rolling window (e.g. a subscription limit), or zero for none
   // quota/usage state (router-owned, persisted across dispatches — see below):
   Usage          int             // running tally against Budget over the current window
@@ -91,10 +102,24 @@ QuotaBudget   { Limit int; Window Duration }       // e.g. {Limit: N, Window: 5h
 Availability  { Status AvailStatus; ResetAt Time } // Status: available | exhausted
 ```
 
-A **local-model** entry leaves `Budget` zero — it has no subscription cap, so it is
-never marked exhausted (the quota-free backstop, below). `Usage` and `Availability` are
-**not static config**: they are mutable state the router owns and updates as dispatches
-land and quota signals arrive.
+Worked examples of the one-harness-many-entries factoring:
+
+| Entry | Harness | Endpoint | Auth (`SecretRef`) |
+|---|---|---|---|
+| `claude-oauth` | claude-cli | Anthropic API | Claude OAuth/subscription token |
+| `local-qwen` | **same claude-cli** | local model via translation proxy | none (no cloud auth) |
+| `codex` | codex-cli | OpenAI API | Codex/OpenAI key |
+| `gemini` | gemini-cli | Google Gemini API | Gemini API key |
+
+A **local entry** leaves `Budget` zero — it has no subscription cap, so it is never marked
+exhausted (the quota-free backstop, below). A local entry also means **local-only egress**
+(no cloud traffic leaves the box), which reinforces "local = the privacy/quota backstop"
+and is exactly what the soft sensitivity hint should bias toward. The trade-off: a weak
+local model may drive Claude's tool-calling format imperfectly — that **agentic-fidelity**
+risk is absorbed by the capability tier (a local entry sits at a low tier), the verify
+gate, and escalation; it is not a blocker. `Usage` and `Availability` are **not static
+config**: they are mutable state the router owns and updates as dispatches land and quota
+signals arrive.
 
 The registry is a Go-typed, in-process catalog (consistent with ADR 041's Go-typed
 recipe form): entries are first-party Go values, not a runtime-parsed dispatch table.
@@ -306,9 +331,10 @@ rotatable.
     bearing: escalation rides entirely on gate pass/fail, so the gate is what makes
     weak-first routing safe. Nothing about the gate's blocking, no-skip character
     (F-002) changes.
-  - *Executor seam `(harness, model) → branch`* — shape unchanged; the registry
-    represents both cloud-CLI (harness+model bundled) and local-model (model needing a
-    harness) entries behind this same seam. This ADR additionally realizes the **quota**
+  - *Executor seam `(harness, model) → branch`* — shape unchanged, and made literal: an
+    entry is a **harness driver + (model, endpoint, auth) config**, so one harness (e.g.
+    the Claude CLI) backs many entries, including a local model behind a translation
+    proxy. This ADR additionally realizes the **quota**
     dimension of invariant 6's "mixing uneven-quality executors made safe by the gate":
     the router now routes *around* an exhausted provider (availability axis) as well as
     *up* from a failed one (quality axis).
@@ -316,7 +342,8 @@ rotatable.
     keyed by `SecretRef`; each provider token is independently revocable (invariant 5).
   - *Containment + default-deny egress allowlist* — unchanged; the allowlist stays the
     load-bearing token-in-box control. The router changes *which* executor runs in the
-    box, not the box's containment.
+    box, not the box's containment. A local entry additionally has **local-only egress**
+    (no cloud API traffic), which the soft sensitivity hint can bias toward.
   - *Supervisor isolation (F-003)* — preserved: the router lives on the executor side of
     the injection boundary; `internal/supervisor` gains no LLM/router import. Re-run
     `make fitness-supervisor-isolation` when the router lands.
@@ -338,8 +365,31 @@ rotatable.
     config) and its in-process loader;
   - vault-brokered per-provider auth (extend `secrets.SecretSource` to resolve a named
     provider secret per `SecretRef`);
-  - the four concrete adapters behind the seam — Claude already exists; add local-LLM,
-    Codex, and Gemini;
+  - the harness adapters behind the seam — **smaller than four**: Claude CLI already
+    exists, and the **local entry reuses it** (a Claude-CLI config variant pointed at a
+    local endpoint, plus the **translation-proxy seam** that presents an
+    Anthropic-compatible endpoint over an OpenAI-API local server), so only **Codex and
+    Gemini** are genuinely new harness adapters;
+  - **local-model selection / evaluation** — an empirical, **hardware-specific** task:
+    benchmark locally-runnable LLMs against the host's RAM / VRAM / CPU / accelerator and
+    pick the **most capable model that stays responsive** (no perceptible slowdown) for
+    the local entry. The choice is **config** (the local entry's `ModelID`/`Endpoint`),
+    not a hardcoded constant. Because local models improve constantly, this is
+    **re-runnable** and worth periodically revisiting — it could be wired as a recurring
+    eval on a cadence (a note, not a mandate).
+
+    **Target hardware (probed 2026-06-27):**
+    - **CPU:** Intel Core Ultra 9 185H (Meteor Lake) — 16 cores / 22 threads, up to 5.1 GHz
+    - **RAM:** 62 GiB total (≈45 GiB available)
+    - **GPU:** NVIDIA RTX 4060 Laptop (Max-Q/Mobile), **8 GB VRAM** (driver 595.71.05) + Intel Arc iGPU (Meteor Lake)
+    - **Disk:** ~2.7 TB free; **OS:** Ubuntu 26.04 LTS, x86_64
+
+    The **8 GB VRAM is the responsiveness ceiling** — models (or quantizations) that fit
+    fully in VRAM run fast; the 62 GiB system RAM is capacity headroom for larger models
+    via CPU/GPU offload, but offloaded layers degrade responsiveness. The eval optimizes
+    "most capable that still fits the responsiveness budget," so the VRAM-resident sweet
+    spot (≈7–14B at 4-bit, or a small MoE) is the likely region — but the actual pick is
+    the benchmark's output, not assumed here. CUDA-capable (NVIDIA) backend is available;
   - the router + capability/cost model + escalation-ladder integration with the agent
     loop's existing retry→escalate path;
   - **usage/quota tracking** — the per-entry `Usage`/`Budget`/`Availability` state, its
