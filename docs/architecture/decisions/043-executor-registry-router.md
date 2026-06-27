@@ -321,7 +321,7 @@ rotatable.
   imports.
 - **Tool registry is explicitly out of scope.** A registry of *tools* the executor may
   call is a sibling concern with its own trust boundary; it is deferred to a follow-on
-  **ADR 044** and must not be conflated with this executor registry.
+  **ADR 045** and must not be conflated with this executor registry.
 - **ADR 042's executor-selection open question (OQ-3) is answered:** the orchestrator's
   decomposition worker and its dispatched workers route through the registry like any
   other dispatch, so an orchestrator *can* route a sub-goal (or its own decomposition
