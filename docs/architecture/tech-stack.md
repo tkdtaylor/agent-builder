@@ -8,7 +8,7 @@
 | Layer | Technology | Rationale |
 |-------|-----------|-----------|
 | Language | Go 1.26.3 | Single static binary, strong stdlib, fast compile-test loop, and an import graph that fitness checks can assert on to enforce package-isolation invariants. |
-| Framework | None (standard library only) | Unix-philosophy composition over a framework. The orchestrator is small, typed seams wired by hand; `go.mod` declares **no third-party dependencies** (no `go.sum`), which keeps the supply-chain surface of the trusted outside-the-box code minimal. |
+| Framework | None (standard library + `golang.org/x/crypto`) | Unix-philosophy composition over a framework. The orchestrator is small, typed seams wired by hand. The project started pure-stdlib; `golang.org/x/crypto` was approved as a new dependency in ADR 045 for the cryptographic primitives in `internal/envelope` (Ed25519 signing, X25519+AEAD confidentiality). The supply-chain surface of third-party Go code is minimal (one dependency, maintained by the Go team, widely vetted). |
 | Database | None | State lives in the target repo (git branches/PRs), in plain-text task files, and in append-only NDJSON run records / the `audit-trail` hash chain. No datastore to operate. |
 | Containment | Rootless Podman + tiered OCI runtime (`runc` → gVisor `runsc` → Kata/Firecracker) | The execution-box profile is a product artifact: read-only rootfs, scratch tmpfs, non-root, dropped caps, resource quotas, default-deny egress. Workload tier picks the runtime (`agent` → `runsc`, `dev` → `runc`); rootless networked paths fall back to `runc` (ADR 030). |
 
@@ -48,6 +48,6 @@ agent-builder is the **assembly layer** — it composes ecosystem blocks over th
 
 ## Notes
 
-- **No third-party Go dependencies by design.** Adding one is an "ask first" decision (see `AGENTS.md`) — it widens the trusted-code supply-chain surface. Prefer the stdlib or an out-of-process CLI seam.
+- **Third-party Go dependencies are rare by design.** Adding one is an "ask first" decision (see `AGENTS.md`) — it widens the trusted-code supply-chain surface. `golang.org/x/crypto` is the single exception (approved 2026-06-27 in ADR 045) for the cryptographic primitives in `internal/envelope`. Future dependencies require the same owner approval.
 - Minimum Go: **1.26** (`go.mod`). gVisor `runsc` Go-toolchain compatibility is recorded through the containment probe (ADR 016).
 - The blocks above are consumed over CLI/socket contracts, not imported — `internal/audit`, `internal/vault`, `internal/secrets`, and `internal/policy` are stdlib-only leaves, enforced by the isolation fitness checks.

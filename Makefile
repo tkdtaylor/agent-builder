@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-diagrams-render check l6-preflight l6-probe
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-diagrams-render check l6-preflight l6-probe
 
 lint:
 	golangci-lint run
@@ -10,7 +10,7 @@ test:
 	go test ./...
 
 # Fitness functions — see docs/spec/fitness-functions.md
-fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-diagrams-render
+fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-diagrams-render
 	@echo "All fitness checks passed."
 
 fitness-no-docker:
@@ -198,6 +198,30 @@ fitness-policy-isolation:
 		exit 1; \
 	fi; \
 	echo "PASS fitness-policy-isolation: internal/policy import graph contains no other internal packages, and internal/runtime does not import the policy-engine block as a Go module."
+
+# fitness-envelope-isolation covers test-spec TC-096-10, TC-096-11:
+# internal/envelope must be a pure leaf — its import graph must contain only stdlib +
+# golang.org/x/crypto, with NO agent-builder/internal/ paths other than itself.
+# Further, internal/envelope must NOT appear in internal/supervisor's dependency graph
+# (F-007). The envelope package holds crypto primitives and must stay strictly outside
+# the supervisor's control path (the GoalSource seam separates the channel/crypto side
+# from the orchestrator side; ADR 045 §1).
+fitness-envelope-isolation:
+	@envelope_deps=$$(go list -deps ./internal/envelope/...) || exit $$?; \
+	envelope_forbidden=$$(printf '%s\n' "$$envelope_deps" | grep 'github.com/tkdtaylor/agent-builder/internal/' | grep -v 'agent-builder/internal/envelope' || true); \
+	supervisor_deps=$$(go list -deps ./internal/supervisor/...) || exit $$?; \
+	supervisor_envelope=$$(printf '%s\n' "$$supervisor_deps" | grep 'github.com/tkdtaylor/agent-builder/internal/envelope' || true); \
+	if [ -n "$$envelope_forbidden" ]; then \
+		echo "FAIL fitness-envelope-isolation: internal/envelope imports forbidden agent-builder/internal package(s):"; \
+		printf '%s\n' "$$envelope_forbidden"; \
+		exit 1; \
+	fi; \
+	if [ -n "$$supervisor_envelope" ]; then \
+		echo "FAIL fitness-envelope-isolation: internal/envelope appears in internal/supervisor's dependency graph:"; \
+		printf '%s\n' "$$supervisor_envelope"; \
+		exit 1; \
+	fi; \
+	echo "PASS fitness-envelope-isolation: internal/envelope is not in internal/supervisor's dependency graph."
 
 fitness-diagrams-render:
 	@python3 scripts/check-mermaid.py > /dev/null && \
