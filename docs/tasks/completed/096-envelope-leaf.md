@@ -95,6 +95,9 @@ Key findings driving the design:
   integration is an explicit follow-on per ADR 045 §3).
 - Key-provisioning tooling (generating/distributing keypairs); out-of-band for v1.
 - Wrapping the agent-mesh binary (there is no sign/verify filter verb to wrap — ADR 045 §Context).
+- **SEC-005 (typed key wrappers):** wrapping `[32]byte` raw keys in named types is an
+  API-shape decision deferred to task 080 when the consumer is in view. For v1, raw
+  `[32]byte` keys are acceptable.
 
 ## Dependencies
 

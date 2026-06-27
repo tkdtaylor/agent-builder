@@ -33,10 +33,16 @@ config knob) and a nonce set bounded by `2×W` retention, evicting safely.
 }
 ```
 
-`signingBytes()` is the canonical body that is signed: a deterministic encoding of
-the fields other than `sig` (e.g. `from|to|nonce|ts|payload` joined by a fixed
-separator, or a canonical JSON marshalling — implementation may choose either as
-long as it is stable and wire-compatible with agent-mesh).
+`signingBytes()` is the canonical body that is signed: **canonical JSON marshalling
+of the Envelope with Sig set to empty string**, matching agent-mesh's implementation
+(see `mesh.go` ~65–68). This approach:
+- Ensures byte-for-byte compatibility with agent-mesh for wire interoperability
+- Prevents field-confusion attacks (no delimiter injection; unambiguous field boundaries)
+- Mirrors agent-mesh's struct field order (From, To, Nonce, TS, Payload, Sig="")
+
+**Why not pipe-delimited:** A bare `|` join (e.g. `from|to|nonce|ts|payload`) is
+collision-prone: `{From:"a",To:"b|c"}` and `{From:"a|b",To:"c"}` both produce `a|b|c|ts|payload`
+if the separator is not escaped. JSON marshalling closes this attack vector.
 
 ## Requirements coverage
 
