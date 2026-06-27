@@ -1,6 +1,6 @@
 # ADR 043 — The executor registry + model router
 
-**Status:** Proposed — design-only. Defines the registry + router seam that promotes
+**Status:** Accepted — design-only. Defines the registry + router seam that promotes
 the deferred multi-provider routing off the roadmap's Deferred list; no code, spec, or
 diagram changes land with this ADR.
 **Date:** 2026-06-27

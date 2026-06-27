@@ -67,9 +67,12 @@ v0 (below) wired `emit` + `verify`. The block has since shipped **Ed25519 signed
 
 > **Deferred — IPC-socket transport (upgrade path).** v0 uses the block's `audit-trail emit` CLI per action event (~7/run, action layer only). The block's Unix-socket IPC (`audit-trail serve`) is the throughput upgrade; the `BlockSink` seam is shaped so CLI→socket is an adapter-internal swap (ADR 026 Option B).
 
+## Targeted (decided, decomposed into tasks)
+
+- **Multi-provider executor registry + router** (Claude + Gemini + Codex + local LLMs; quota/sensitivity/cost routing) — **promoted off Deferred by ADR 043.** The seam is designed: a registry of heterogeneous executors (one harness driver backs many model/endpoint/auth entries; the local LLM is the Claude CLI harness via a translation proxy) and a quota-aware, capability/cost-first router (availability as a hard filter, gate-failure escalation up the capability ladder, quota-exhaustion fallback sideways to the next available entry, local model as the quota-free backstop). Decomposed into a task cluster (registry + per-provider vault auth + Codex/Gemini adapters + local entry + router + usage/quota tracking + local-model evaluation + the recipe `RoutingSpec` amendment to ADR 041).
+
 ## Deferred (not bootstrap-critical)
 
-- **Multi-provider router** (Claude + Gemini + local LLMs, quota/sensitivity/cost routing) — design the seam now, build as v1.
 - **The "builder of purpose-built agents" product surface** — now the project's **primary forward arc** (ADR 040), with its shape decided in **ADR 041** (the agent-recipe seam) and **ADR 042** (the secure two-tier orchestrator). The foundational blocks have all shipped to v1 and are adopted, so the evolution from *the single autonomous coding agent* to *a tool that assembles any purpose-built secure agent from the blocks* is no longer gated on block readiness. **Decomposition into task clusters is now underway** (recipe seam + selectable IO seams; Telegram channel adapter + Ed25519 envelope + armor guard; orchestrator core; agent-builder worker recipe; agent-mesh + memory-guard adoption; orchestrator self-containment + policy + fleet audit; multi-worker dispatch). As a consequence, **memory-guard and agent-mesh have moved off Deferred to Targeted** in the block-adoption table above — agent-mesh becomes the orchestrator↔worker transport and memory-guard guards the orchestrator's goal/fleet state.
 
 ## Sequencing note
