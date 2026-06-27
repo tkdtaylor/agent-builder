@@ -1,6 +1,6 @@
 # ADR 041 — The agent-recipe seam
 
-**Status:** Proposed — design-only. Defines the seam that makes the ADR 040
+**Status:** Accepted — design-only. Defines the seam that makes the ADR 040
 generalization real; no code, spec, or diagram changes in this ADR.
 **Date:** 2026-06-27
 **Motivated by:** ADR 040 (reposition agent-builder as the ecosystem's assembly layer),

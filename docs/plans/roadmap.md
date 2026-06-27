@@ -1,7 +1,7 @@
 # Roadmap
 
 **Project:** agent-builder
-**Last updated:** 2026-06-19
+**Last updated:** 2026-06-27
 
 Derived from `autonomous-builder.md` §2, §8. This roadmap doubles as the agent's own work queue once it runs — but during bootstrap it is built by hand (supervised).
 
@@ -44,8 +44,8 @@ This table is the single source of truth for *what agent-builder already consume
 | **vault** | shipped (v1 complete) | **✅ Adopted (L5)** — `internal/vault` client+lifecycle, `VaultSecretSource`, `sandbox.Request.Wiring` → exec-sandbox proxy mode; opt-in via `AGENT_BUILDER_VAULT_BIN`; brokers **git/GitHub tokens** (provider/Claude token deferred pending feasibility probe TC-066-07). ⏳ L6 in-box brokering capstone (TC-066-05/06) operator-pending — needs real creds | ADR 036; tasks 064–066 (merged 2026-06-19; client put/resolve proven live vs real vault daemon) |
 | **policy-engine** | shipped (through block task 007, published remote, green gate) | **✅ Adopted (L5)** — host-side fail-closed `decide` gate: `internal/runtime` starts `policy-engine serve` as a Unix-socket daemon and calls AuthZEN `decide` after vault resolution and **before** `sandboxBox.Create`; `deny`/`require_approval` → needs-human (box never starts), `allow` applies `tier_select` + raise-only `vault_injection_floor` obligations. `internal/policy` is a stdlib-only leaf reached IPC-only (F-006 fitness). Opt-in via `AGENT_BUILDER_POLICY_BIN`; unset = no gate. ⏳ live decide-gate against the real binary is operator-gated (`AGENT_BUILDER_LIVE_POLICY=1`). ⚠️ The `RetryPolicy`/escalation-policy code in `internal/loop` (task 013) is the agent-loop retry policy and is **unrelated** to the policy-engine block. | ADR 038; tasks 070–074 (decision, decide client, daemon lifecycle + decide-gate, require_approval/audit_emit obligations, F-006 isolation fitness) — all ✅ verified |
 | **armor** | shipped (LLM-guard block) | **✅ Adopted** — fail-closed web-ingestion + tool-call guard boundary (ADR 024): `internal/executorharness` routes executor-facing web content and tool-call candidates through the ingestion broker, exposing only broker-reviewed values to the executor; `internal/armor` adapts the external armor process into allow/block/quarantine decisions before release. The armor-backed guard is constructed when configured; the boundary itself is always present. | ADR 024; tasks 024–029 (boundary seam, guard adapter, ingestion wiring, executor harness, default-run wiring, Claude ingestion control) — all ✅ verified |
-| **memory-guard** | v0 (single commit; write-gate + delete-verify deltas built) | ◻️ Deferred — agent-builder has a live memory store to guard, so this leads agent-mesh when pulled in | block exists at `~/Code/Public/memory-guard` |
-| **agent-mesh** | v0 (single commit; Ed25519 envelopes + replay prevention) | ◻️ Deferred — needs a multi-agent / multi-executor substrate that does not exist yet | block exists at `~/Code/Public/agent-mesh` |
+| **memory-guard** | v0 (single commit; write-gate + delete-verify deltas built) | 🎯 **Targeted (ADR 042)** — guards the orchestrator's long-lived goal/fleet state (write-gate + delete-verify). Promoted off Deferred by the secure-orchestrator decision; adoption is a follow-on task cluster. | block exists at `~/Code/Public/memory-guard` |
+| **agent-mesh** | v0 (single commit; Ed25519 envelopes + replay prevention) | 🎯 **Targeted (ADR 042)** — orchestrator↔worker transport (Ed25519 signed envelopes + replay prevention). The two-tier orchestrator creates the multi-agent substrate it needs, so this moves off Deferred; adoption is a follow-on task cluster. | block exists at `~/Code/Public/agent-mesh` |
 
 ### Immediate order (decided 2026-06-19; updated as-built same day)
 
@@ -70,8 +70,7 @@ v0 (below) wired `emit` + `verify`. The block has since shipped **Ed25519 signed
 ## Deferred (not bootstrap-critical)
 
 - **Multi-provider router** (Claude + Gemini + local LLMs, quota/sensitivity/cost routing) — design the seam now, build as v1.
-- **memory-guard / agent-mesh** — both now exist as **v0 blocks** (`~/Code/Public/memory-guard`, `~/Code/Public/agent-mesh`), so they are no longer vaporware — but their *adoption into agent-builder* is deferred (see the status table above for why). Of the two, memory-guard leads: agent-builder already runs a live memory store worth guarding, whereas agent-mesh presupposes a multi-agent substrate that does not exist here yet.
-- **The "builder of purpose-built agents" product surface** — now the project's **primary forward arc** (ADR 040). The foundational blocks have all shipped to v1 and are adopted, so agent-builder's evolution from *the single autonomous coding agent* to *a tool that assembles any purpose-built secure agent from the blocks* is no longer gated on block readiness. Decomposition into tasks is the next planning step.
+- **The "builder of purpose-built agents" product surface** — now the project's **primary forward arc** (ADR 040), with its shape decided in **ADR 041** (the agent-recipe seam) and **ADR 042** (the secure two-tier orchestrator). The foundational blocks have all shipped to v1 and are adopted, so the evolution from *the single autonomous coding agent* to *a tool that assembles any purpose-built secure agent from the blocks* is no longer gated on block readiness. **Decomposition into task clusters is now underway** (recipe seam + selectable IO seams; Telegram channel adapter + Ed25519 envelope + armor guard; orchestrator core; agent-builder worker recipe; agent-mesh + memory-guard adoption; orchestrator self-containment + policy + fleet audit; multi-worker dispatch). As a consequence, **memory-guard and agent-mesh have moved off Deferred to Targeted** in the block-adoption table above — agent-mesh becomes the orchestrator↔worker transport and memory-guard guards the orchestrator's goal/fleet state.
 
 ## Sequencing note
 

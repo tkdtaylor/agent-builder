@@ -1,6 +1,6 @@
 # ADR 042 — The secure orchestrator (two-tier purpose-built-agent model)
 
-**Status:** Proposed — design-only. Defines the two-tier architecture that turns the
+**Status:** Accepted — design-only. Defines the two-tier architecture that turns the
 ADR 040/041 "builder of purpose-built agents" arc into a concrete shape; no code,
 spec, or diagram changes land with this ADR.
 **Date:** 2026-06-27
