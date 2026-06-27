@@ -11,12 +11,12 @@ recipe seam). This ADR defines the layer that *drives* recipes: a long-lived
 interactive orchestrator that decomposes a human goal into many contained workers.
 **Amends:** ADR 041 on two points. (1) ADR 041 left open whether the generalized
 surface is itself "just another recipe." It is not — the orchestrator is a **consumer
-of the recipe seam**, standing *on* it to select, parameterize, and (now) generate
-recipes; it is not assembled *by* it. (2) ADR 041 enforced gate-existence at *compile
-time* because recipes were human-authored Go. This ADR lets the orchestrator **author
-recipe code**, which forfeits that compile-time guarantee, so gate-existence moves to a
-**runtime assembly-time assertion** (detailed under the safety model below). Recipes
-are no longer exclusively human-authored.
+of the recipe seam**, standing *on* it to select, parameterize, and dispatch recipes;
+it does not author them. (2) ADR 041 enforced gate-existence at *compile time* because
+recipes were human-authored Go. This ADR allows recipes to be **authored by a
+code-authoring worker**, not only by humans — which forfeits the compile-time guarantee
+for generated recipes, so gate-existence moves to a **runtime assembly-time assertion**
+(detailed under the safety model below).
 
 ## Context
 
@@ -43,10 +43,12 @@ rather than re-litigates them):
    to set up**, not a local CLI or a bespoke endpoint.
 2. **Multiple concurrent workers from the start**, not a single-worker proof of
    concept.
-3. **The orchestrator MAY author new agent/recipe code** — not merely select from a
-   fixed first-party menu — with automated scanning as part of a layered release gate.
-   This is the defining capability of a *builder*; the safety model for it is set out
-   below.
+3. **Code-authoring is a worker-tier task, not an orchestrator capability.** When a
+   goal needs new code — including the code/definition of a *new* purpose-built agent —
+   the orchestrator spawns a dedicated code-authoring worker to produce it; the
+   orchestrator itself authors nothing. Code-authoring thereby inherits the full worker
+   safety model (set out below), and "build an agent to do X" decomposes into an
+   ordinary, gated sub-task.
 
 ## Decision
 
@@ -58,9 +60,10 @@ the orchestrator decomposes it, proposes a plan, and — **only on human approva
 assembles and dispatches purpose-built worker agents, monitors them, aggregates their
 results, and reports back through the messenger. Its work product is *other agents and
 their aggregated results*, never a branch of its own. It is a **consumer of the
-recipe seam** (ADR 041): it selects and parameterizes existing first-party recipes and
-**may author new ones** (gated by the safety stack below) per sub-goal. It is **not
-itself a recipe**.
+recipe seam** (ADR 041): it selects and parameterizes existing recipes and dispatches
+them; when a goal needs new code or a new agent, it spawns a **dedicated code-authoring
+worker** to produce it (a worker task, gated like any other — see below). **The
+orchestrator itself authors no code.** It is **not itself a recipe**.
 
 **Tier 2 — workers.** Each sub-goal is handed to a purpose-built secure worker
 assembled from a recipe (ADR 041), each contained, each behind its own verification
@@ -133,47 +136,55 @@ the security model. A follow-on may finalize the transport; the position is Tele
 | **memory-guard** | Guard the orchestrator's long-lived goal/fleet state (write-gate + delete-verify). |
 | **agent-mesh** | Transport for orchestrator↔worker messaging (Ed25519-signed envelopes + replay prevention). |
 
-### Safety model for code-authoring, and the bright line that stays
+### Code-authoring is a worker task; the safety model is the worker safety model
 
-The orchestrator **may author new agent/recipe code** — the defining power of a
-builder, chosen deliberately by the owner. Authoring is made safe by a **layered gate
-on every generated artifact, not by any single check**:
+Code-authoring — including authoring the code/definition of a *new* purpose-built
+agent — is **not a special orchestrator power**. It is a **task performed at the worker
+tier**: either as a normal coding worker's output (the existing coding recipe already
+writes code), or by a **dedicated "agent-builder" worker** — a first-party recipe whose
+job is to author a new agent and hand it back. "Build an agent to do X" therefore
+decomposes the same way any goal does: a code-authoring sub-task → then dispatch the
+result. This is the Unix-philosophy factoring — the orchestrator keeps one
+responsibility (decompose + dispatch + aggregate), and code generation lives in a
+contained, single-purpose worker. (The base case is human-authored: the *first*
+agent-builder worker is a first-party Go recipe per ADR 041; it can then author
+further agents.)
 
-1. **code-scanner** on all generated code (malware, backdoors, credential-harvesting,
+The payoff is that authoring inherits the **standard worker safety model** rather than
+needing a bespoke privileged path:
+
+1. **code-scanner** on the generated code (malware, backdoors, credential-harvesting,
    obfuscation) — a blocking release gate.
 2. **dep-scan** on anything the generated code pulls in (supply-chain CVEs / malicious
    packages).
-3. **A mandatory verification gate on the generated agent.** ADR 041 enforced
-   gate-existence at *compile time* because recipes were human-authored Go. Generated
-   code forfeits that guarantee, so the check moves to a **runtime assembly-time
-   assertion: the assembler REJECTS any generated agent that does not bind a real,
-   non-empty, blocking gate.** "A generated agent with no gate" stays unrepresentable —
-   the guarantee is preserved, enforced one layer down.
-4. **Containment.** Generated code only ever runs *inside exec-sandbox* under the
-   default-deny egress allowlist — so even code that slips past the scanners is boxed,
-   with no ambient network or host access.
-5. **policy-engine** gates what a generated agent may do and what egress it gets.
-6. **Human approval before first run** (the line below) + **audit-trail** records the
-   generated source and its provenance for forensics.
+3. **A mandatory verification gate.** Because a generated agent's recipe is no longer
+   human-authored Go, ADR 041's compile-time "no gate won't compile" guarantee no
+   longer covers it, so the assembler applies a **runtime assembly-time assertion:
+   reject any generated agent that does not bind a real, non-empty, blocking gate.**
+   "A generated agent with no gate" stays unrepresentable.
+4. **Containment.** The code-authoring worker, and anything it produces, only ever runs
+   *inside exec-sandbox* under the default-deny egress allowlist — so even code that
+   slips past the scanners is boxed, with no ambient network or host access.
+5. **policy-engine** gates what the code-authoring worker and any generated agent may
+   do and what egress they get.
+6. **Human approval before a newly-authored agent is dispatched** (the line below) +
+   **audit-trail** records the generated source and its provenance for forensics.
 
-The owner's instruction must not be read to mean code-scanner is the whole control:
-**a scanner is necessary but not sufficient** — it catches *known-bad*, not
-novel-malicious or merely-wrong. The safety is the *stack*: scan + dep-scan +
-verify-gate + containment + policy + human approval + audit. Code-authoring rides on
-all of it.
+A scanner alone is **necessary but not sufficient** — it catches *known-bad*, not
+novel-malicious or merely-wrong. Safety is the *stack*, and it applies automatically
+because code-authoring is just a (gated, contained) worker.
 
-**The one bright line that stays non-negotiable: the orchestrator authors *worker /
-recipe* code — it NEVER edits agent-builder's own repo** (its orchestrator core, its
-verification gate, its escalation, or this safety stack). Authoring a worker is the
-job; editing the thing that judges and contains the workers is self-modification and
-remains forbidden. The earlier "no autonomous code authoring at all" line conflated
-the two; only the self-modification half was ever load-bearing. Relaxing even this
-would require its own ADR.
+**The bright line that stays non-negotiable: no agent at any tier edits
+agent-builder's own repo** — not the orchestrator, not a coding worker, not the
+agent-builder worker. They author *other* agents and *target* repos; the orchestrator
+core, the verification gate, the escalation path, and this safety stack are never
+self-modified. Relaxing this would require its own ADR.
 
 **The human remains the AUTHOR of the goal, and approves the plan before any worker
-spawns.** The orchestrator surfaces its decomposition — and any agent code it generated
-— and obtains explicit human approval; the mechanism is policy-engine's
-`require_approval` obligation gating the spawn action.
+spawns — and specifically before any newly-authored agent is run.** The orchestrator
+surfaces its decomposition and any generated agent code and obtains explicit human
+approval; the mechanism is policy-engine's `require_approval` obligation gating the
+spawn action.
 
 ## Why this framing and not the alternatives
 
@@ -192,13 +203,15 @@ spawns.** The orchestrator surfaces its decomposition — and any agent code it 
   ecosystem composes rather than rebuilds. Relying on a messenger's *native* E2E
   (Signal/Matrix) would couple the security model to one vendor's crypto and setup
   friction; the envelope layer keeps the transport swappable.
-- **Why allow code-authoring, gated, rather than selection-only.** A builder that can
-  only pick from a fixed human-written menu is an agent *launcher*, not an agent
-  *builder* — it cannot produce a genuinely novel purpose-built agent. The owner chose
-  the builder. The risk an authoring agent introduces is contained by the layered stack
-  above (scan + dep-scan + mandatory runtime gate + containment + policy + human
-  approval + audit) and bounded by the one line it can never cross (its own repo).
-  Selection-only is the safer-but-weaker design; gated authoring is the chosen trade.
+- **Why code-authoring is a worker task, not an orchestrator capability.** A builder
+  that can only pick from a fixed human-written menu is an agent *launcher*, not an
+  agent *builder*. But putting code-generation *in the orchestrator* would bloat its
+  single responsibility and create a privileged authoring path needing its own bespoke
+  safeguards. Pushing authoring down to a dedicated worker keeps the orchestrator thin
+  and makes authoring inherit the existing worker safety model (scan + dep-scan +
+  runtime gate + containment + policy + approval + audit) for free. The alternative —
+  an orchestrator that writes code directly — is both a wider responsibility and a
+  wider attack surface for no gain.
 
 ## Consequences
 
@@ -213,18 +226,19 @@ spawns.** The orchestrator surfaces its decomposition — and any agent code it 
   becomes the orchestrator↔worker transport and memory-guard becomes the guard on the
   orchestrator's long-lived goal/fleet state. The roadmap edit (moving both rows off
   Deferred in the block-adoption table) is a **separate change**, not part of this ADR.
-- **ADR 041 is amended (two points):** the orchestrator is a recipe-seam *consumer*,
-  not a recipe; and recipes may now be **orchestrator-authored**, not exclusively
-  human-authored Go — so ADR 041's compile-time gate-existence guarantee becomes a
-  **runtime assembly-time assertion** that rejects any gate-less generated agent.
+- **ADR 041 is amended (two points):** the orchestrator is a recipe-seam *consumer*
+  (it selects, parameterizes, and dispatches; it does not author); and recipes may now
+  be **authored by a code-authoring worker**, not exclusively human-authored Go — so
+  ADR 041's compile-time gate-existence guarantee becomes a **runtime assembly-time
+  assertion** that rejects any gate-less generated agent.
 - **All seven load-bearing invariants survive:**
   - *Verification gate is the definition of done* — every worker is gated exactly as
     today; the orchestrator's own actions are additionally gated by policy-engine
     before any spawn or egress.
-  - *No unattended self-modification* — the orchestrator may author *worker* code but
-    **never edits agent-builder's own repo** (orchestrator core, gate, escalation, or
-    the safety stack); generated worker code is scanned, gated, contained, and
-    human-approved before it runs.
+  - *No unattended self-modification* — **no agent at any tier edits agent-builder's
+    own repo** (orchestrator core, gate, escalation, or the safety stack). Code-
+    authoring workers author *other* agents and *target* repos; generated code is
+    scanned, gated, contained, and human-approved before it runs.
   - *the internal planning hub is read-mostly / human-authored goal* — the human authors and
     approves the goal; the orchestrator decomposes and proposes, it does not set its
     own objectives.
@@ -242,8 +256,10 @@ spawns.** The orchestrator surfaces its decomposition — and any agent code it 
     on that channel;
   - orchestrator core: goal intake → plan → human-approval gate → dispatch → aggregate
     → report;
-  - code-authoring pipeline: generate recipe/agent code → code-scanner + dep-scan →
-    runtime gate-existence assertion → human approval, before any generated agent runs;
+  - the **agent-builder worker recipe**: a first-party code-authoring worker (generate
+    recipe/agent code → code-scanner + dep-scan → runtime gate-existence assertion →
+    human approval) that runs contained and gated like any worker, before any generated
+    agent is dispatched;
   - agent-mesh adoption for orchestrator↔worker transport;
   - memory-guard adoption for the orchestrator's goal/fleet state;
   - orchestrator self-containment + policy gating + fleet-wide audit;
