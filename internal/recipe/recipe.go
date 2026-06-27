@@ -66,12 +66,16 @@ type ResultSink interface {
 // A Recipe is not directly executable. Instead, it is paired with a concrete
 // Executor (determined at dispatch time by the router) that actually performs
 // the work.
+//
+// The Name field is populated by SelectRecipe and carries the registered recipe
+// name (the registry key is the single source of truth).
 type Recipe struct {
-	GoalSource   GoalSource
-	RoutingSpec  RoutingSpec
-	GateFactory  GateFactory
-	ResultSink   ResultSink
-	BlockWiring  map[string]interface{} // opaque config for block integration
+	Name        string
+	GoalSource  GoalSource
+	RoutingSpec RoutingSpec
+	GateFactory GateFactory
+	ResultSink  ResultSink
+	BlockWiring map[string]interface{} // opaque config for block integration
 }
 
 // GateFactory is a factory function that creates a new Gate instance. It is
@@ -121,7 +125,8 @@ func Register(name string, factory RecipeFactory) {
 }
 
 // SelectRecipe returns the named recipe, or a non-nil error if the name is
-// empty or unrecognized.
+// empty or unrecognized. The returned Recipe has its Name field set to the
+// registered name (the registry key is the single source of truth).
 func SelectRecipe(name string) (Recipe, error) {
 	registryMu.RLock()
 	defer registryMu.RUnlock()
@@ -136,7 +141,14 @@ func SelectRecipe(name string) (Recipe, error) {
 	}
 
 	// Call the factory to get a fresh Recipe instance.
-	return factory()
+	r, err := factory()
+	if err != nil {
+		return Recipe{}, err
+	}
+
+	// Stamp the recipe with its registered name.
+	r.Name = name
+	return r, nil
 }
 
 // ListRecipes returns the set of registered recipe names in stable,

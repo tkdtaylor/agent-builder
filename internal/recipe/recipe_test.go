@@ -1,6 +1,7 @@
 package recipe
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/tkdtaylor/agent-builder/internal/gate"
@@ -130,6 +131,9 @@ func TestSelectRecipeEmptyName(t *testing.T) {
 	if err == nil {
 		t.Error("expected error for empty recipe name, got nil")
 	}
+	if err != nil && !strings.Contains(err.Error(), "empty") {
+		t.Errorf("error message should mention emptiness, got: %v", err)
+	}
 	if r.GoalSource != nil || r.GateFactory != nil {
 		t.Error("expected zero Recipe on error")
 	}
@@ -142,6 +146,9 @@ func TestSelectRecipeUnknownName(t *testing.T) {
 	r, err := SelectRecipe("does-not-exist")
 	if err == nil {
 		t.Error("expected error for unknown recipe name, got nil")
+	}
+	if err != nil && !strings.Contains(err.Error(), "does-not-exist") {
+		t.Errorf("error message should mention the recipe name, got: %v", err)
 	}
 	if r.GoalSource != nil || r.GateFactory != nil {
 		t.Error("expected zero Recipe on error")
@@ -170,6 +177,12 @@ func TestDuplicateRegisterPanics(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
 			t.Error("expected panic on duplicate Register, got nil")
+		} else {
+			// Check that the panic message mentions the duplicate name.
+			panicMsg := r.(string)
+			if !strings.Contains(panicMsg, "test-dup") {
+				t.Errorf("panic message should mention the duplicate name, got: %s", panicMsg)
+			}
 		}
 	}()
 
@@ -215,6 +228,11 @@ func TestRegisterAndSelectRoundTrip(t *testing.T) {
 		t.Errorf("MinCapability = %d, want 1", r.RoutingSpec.MinCapability)
 	}
 
+	// Verify the Name field equals the registered name.
+	if r.Name != "test-fake" {
+		t.Errorf("Name = %q, want %q", r.Name, "test-fake")
+	}
+
 	// Verify there is no ExecutorFactory field (by verifying the struct compiles
 	// without it; this is a compile-time check).
 
@@ -227,6 +245,11 @@ func TestRegisterAndSelectRoundTrip(t *testing.T) {
 	// Verify they are independent (different pointers for the goal source instances).
 	if r.GoalSource == r2.GoalSource {
 		t.Error("expected independent Recipe values on two SelectRecipe calls")
+	}
+
+	// Verify both have the same Name (it should be set by SelectRecipe).
+	if r2.Name != "test-fake" {
+		t.Errorf("second recipe Name = %q, want %q", r2.Name, "test-fake")
 	}
 }
 
