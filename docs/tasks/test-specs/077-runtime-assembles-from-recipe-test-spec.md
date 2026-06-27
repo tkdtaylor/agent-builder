@@ -6,32 +6,36 @@
 registration and the `SelectRecipe("coding-agent")` assertion; dropped the stale
 import-graph assertion that `internal/runtime` stops importing concretes — it still
 imports them, but via the recipe binding, not inline in `Run`; clarified the
-structural property being tested in TC-077-03)
+structural property being tested in TC-077-03); 2026-06-27 (ADR 043 amendment —
+coding-agent recipe carries `RoutingSpec` not `ExecutorFactory`; stub resolver
+introduced; TC-077-01 updated; TC-077-07 added)
 **Status:** ready
 
 ## Context
 
-Task 076 provides the `Recipe` type and registry mechanism. This task has two tightly-
-coupled responsibilities:
+Task 076 provides the `Recipe` type, the `RoutingSpec`/`Sensitivity` value types, and
+the registry mechanism. This task has two tightly-coupled responsibilities:
 
 1. **Register `"coding-agent"`.** The coding-agent concrete bindings
-   (`tasksource.New`, `executor.NewClaudeCLI`, `newProductionGate`,
-   `branchpub.NewGitHubCLI`) live in `internal/runtime` (or a sub-package it imports).
-   The registration call (`recipe.Register("coding-agent", ...)`) is made from
-   `internal/runtime`'s `init()` or an explicit `RegisterBuiltins()` call that `Run`
-   invokes. This is the correct home: `internal/runtime` already imports all four
-   concretes and is the only package that should.
+   (`tasksource.New`, `newProductionGate`, `branchpub.NewGitHubCLI`) live in
+   `internal/runtime` (or a sub-package it imports). The recipe carries a
+   `RoutingSpec{MinCapability: 1}` (or whatever tier Claude is assigned) rather than
+   an `ExecutorFactory` — per ADR 043. The registration call
+   (`recipe.Register("coding-agent", ...)`) is made from `internal/runtime`'s `init()`
+   or an explicit `RegisterBuiltins()` call that `Run` invokes.
 
-2. **Refactor `runtime.Run` to be a thin assembler.** Instead of constructing the
-   concretes inline (hardwired `tasksource.New`, `executor.NewClaudeCLI`, etc.),
-   `Run` calls `recipe.SelectRecipe(config.RecipeName)` and uses the recipe's seam
-   factories. `internal/runtime` continues to import the concretes — they just move
-   from being constructed inline in `Run` to being bound inside the recipe factory.
-   The `go list -deps ./internal/runtime/...` output does not change materially.
+2. **Refactor `runtime.Run` to be a thin assembler with a stub executor resolver.**
+   Instead of constructing the concretes inline, `Run` calls
+   `recipe.SelectRecipe(config.RecipeName)`, uses the recipe's seam factories, and
+   resolves the recipe's `RoutingSpec` to a concrete `supervisor.Executor` via a
+   **stub resolver** (`stubResolveExecutor` or similar) that returns
+   `executor.NewClaudeCLI(...)` unconditionally. The stub carries a comment:
+   `// stubResolver — replaced by registry+router in task 095`.
 
 **Zero behavior change for the existing coding agent** is the primary acceptance
 criterion. The env-var surface stays identical. All existing tests must pass without
-modification.
+modification. The stub resolver is the designed, explicit placeholder for the real
+router; it is not a workaround.
 
 ## Requirements coverage
 
@@ -41,6 +45,7 @@ modification.
 | REQ-077-02 | TC-077-02, TC-077-03 | yes      |
 | REQ-077-03 | TC-077-04, TC-077-05 | yes      |
 | REQ-077-04 | TC-077-06            | yes      |
+| REQ-077-05 | TC-077-07            | yes      |
 
 ## Pre-implementation checklist
 
@@ -54,7 +59,7 @@ modification.
 
 ## Test cases
 
-### TC-077-01 — SelectRecipe("coding-agent") returns a non-nil Recipe after this task
+### TC-077-01 — SelectRecipe("coding-agent") returns a non-nil Recipe with RoutingSpec after this task
 
 - **Requirement:** REQ-077-01
 - **Level:** L2 (unit test)
@@ -64,14 +69,17 @@ modification.
 
 **Expected output:**
 - Returns `(Recipe, nil)` — no error.
-- The returned `Recipe` has non-nil `GoalSource`, `ExecutorFactory`, `GateFactory`,
-  and `ResultSink` fields.
+- The returned `Recipe` has non-nil `GoalSource`, `GateFactory`, and `ResultSink` fields.
+- The returned `Recipe` has a non-zero `RoutingSpec` (at minimum `MinCapability >= 1`).
+- There is NO `ExecutorFactory` field on the returned recipe (the type does not have
+  that field — it was removed by the ADR 043 amendment in task 076).
 - The recipe name field equals `"coding-agent"`.
 - `recipe.ListRecipes()` includes `"coding-agent"`.
 
 **Note:** This test was NOT part of task 076 (the recipe type/registry task). Task
 076 left the registry empty at the end of the test. This task registers the real
-coding-agent recipe and asserts it resolves.
+coding-agent recipe and asserts it resolves. The stub resolver in `internal/runtime`
+maps this recipe's `RoutingSpec` to `executor.NewClaudeCLI(...)` for now.
 
 ---
 
@@ -165,6 +173,41 @@ today (same env vars, same fake-launcher injection via `AGENT_BUILDER_EXEC_BOX_L
 
 ---
 
+### TC-077-07 — Stub resolver exists, is named, routes any RoutingSpec to Claude; zero-drift check
+
+- **Requirement:** REQ-077-05
+- **Level:** L2 (structural test — source inspection + e2e regression)
+- **Test file / harness:** source code inspection (recorded in verify commit) + e2e harness
+
+**Input A (source inspection):** Review `internal/runtime/` post-task.
+
+**Expected output A:**
+- A function named `stubResolveExecutor` (or a clearly-named equivalent) exists in
+  `internal/runtime` package.
+- The function takes a `recipe.RoutingSpec` (or equivalent) and returns a
+  `supervisor.Executor` (or equivalent seam value).
+- The function body calls `executor.NewClaudeCLI(...)` unconditionally.
+- The function carries a source comment containing the text `task 095` (its planned
+  replacement task) so the replacement site is unambiguous.
+
+**Input B (zero-drift e2e):** Run the same Phase-0 and Phase-1 e2e tests as before
+the task:
+```
+go test -count=1 ./tests/e2e/... -run 'TestPhase0EndToEndAcceptance|TestPhase1EndToEndAcceptance'
+```
+
+**Expected output B:**
+- Both tests pass without any modification to the test files.
+- The behavior is identical to the pre-refactor run: same run record format, same
+  containment label, same audit events.
+
+**Note:** This is the load-bearing "zero-drift" check that proves the stub resolver
+introduces no behavioral regression. The ADR 043 cluster of tasks (087–095) does not
+change behavior for the coding-agent recipe — only task 095 does, and it carries its
+own zero-drift assertion.
+
+---
+
 ## Verification plan
 
 - **Highest level achievable:** L5 — the existing end-to-end acceptance harness
@@ -192,7 +235,9 @@ today (same env vars, same fake-launcher injection via `AGENT_BUILDER_EXEC_BOX_L
 - The runtime gate-existence assertion for generated recipes (task 078).
 - Any change to `internal/tasksource`, `internal/executor`, `internal/gate`, or
   `internal/publisher` packages — they remain untouched; only their construction
-  site moves from inline in `Run` to a recipe factory.
+  site moves from inline in `Run` to a recipe factory + stub resolver.
 - Making `internal/runtime`'s import graph smaller — it still imports all four
   concrete packages. That import-graph cleanup is a separate concern and NOT a
   goal of this refactor.
+- The real registry+router that replaces the stub resolver — that is task 095. The
+  stub is the intentional, named placeholder.

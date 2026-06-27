@@ -1,22 +1,29 @@
 # Orchestrator decomposition — sequencing plan
 
 **Created:** 2026-06-27
-**Motivated by:** ADR 041 (agent-recipe seam) and ADR 042 (secure two-tier orchestrator)
+**Motivated by:** ADR 041 (agent-recipe seam), ADR 042 (secure two-tier orchestrator),
+ADR 043 (executor registry + model router)
 **Branch:** `plan/orchestrator-decomposition`
 
 ## Summary
 
-This plan decomposes the "builder of purpose-built agents" forward arc (ADR 040/041/042)
-into 11 sequenced tasks (076–086). The eight task clusters map to a dependency DAG
-rooted at Cluster A (the recipe seam), which is the critical path that unblocks
-everything else.
+This plan decomposes two forward arcs:
+
+1. **The recipe seam + orchestrator arc** (ADR 040/041/042): 11 tasks (076–086).
+   Cluster A (recipe seam, 076–079) is the critical path that unblocks everything.
+2. **The executor registry + model router arc** (ADR 043): 9 tasks (087–095).
+   ADR 043 amends ADR 041 — tasks 076 and 077 are updated at source to use `RoutingSpec`
+   instead of `ExecutorFactory`. Task 095 is the final integration point that replaces
+   the stub resolver from 077 with the real registry+router.
 
 ## Task ID map
 
+### Arc 1 — Recipe seam + orchestrator (ADR 041/042)
+
 | Cluster | Letter | Task IDs | Title | Status |
 |---------|--------|----------|-------|--------|
-| A | Recipe seam + selectable IO seams | 076 | Recipe type + in-process selector | backlog |
-| A | Recipe seam + selectable IO seams | 077 | runtime.Run assembles from a recipe | backlog |
+| A | Recipe seam + selectable IO seams | 076 | Recipe type + in-process selector (RoutingSpec — ADR 043 amended) | backlog |
+| A | Recipe seam + selectable IO seams | 077 | runtime.Run assembles from a recipe (stub resolver) | backlog |
 | A | Recipe seam + selectable IO seams | 078 | Runtime gate-existence assertion for generated recipes | backlog |
 | A | Recipe seam + selectable IO seams | 079 | Docs-fix recipe (second proof recipe) | backlog |
 | B | Telegram channel adapter | 080 | Telegram channel adapter + Ed25519 envelope + armor guard | backlog |
@@ -27,11 +34,27 @@ everything else.
 | G | Orchestrator containment + policy + audit | 085 | Orchestrator self-containment + policy gating + fleet audit | backlog |
 | H | Multi-worker concurrent dispatch | 086 | Multi-worker concurrent dispatch | backlog |
 
+### Arc 2 — Executor registry + model router (ADR 043)
+
+| Cluster | Sub | Task IDs | Title | Status |
+|---------|-----|----------|-------|--------|
+| I | Registry + entry config | 087 | Executor registry type + entry config | backlog |
+| I | Vault per-provider auth | 088 | Vault-brokered per-provider auth | backlog |
+| I | Codex harness | 089 | Codex harness adapter | backlog |
+| I | Gemini harness | 090 | Gemini harness adapter | backlog |
+| I | Local entry | 091 | Local entry + translation-proxy seam | backlog |
+| J | Router | 092 | Router + capability/cost model + escalation | backlog |
+| J | Quota tracking | 093 | Usage/quota tracking | backlog |
+| K | Local eval | 094 | Local-model evaluation (operator-run, hardware-specific) | backlog |
+| L | Integration | 095 | Recipe RoutingSpec wired to real router (replaces 077 stub) | backlog |
+
 ## Dependency DAG
 
+### Arc 1 — Recipe seam + orchestrator
+
 ```
-076 (recipe type)
- └─ 077 (runtime assembles from recipe)
+076 (recipe type + RoutingSpec)
+ └─ 077 (runtime assembles from recipe — stub resolver)
      └─ 078 (gate-existence assertion)
          └─ 079 (docs-fix proof recipe)
              ├─ 080 (Telegram channel adapter)      [Cluster B]
@@ -44,13 +67,38 @@ everything else.
              └─ 082 (agent-builder worker)           [also needs 076,077,078]
 ```
 
+### Arc 2 — Executor registry + router
+
+```
+087 (registry type + entry config)
+ ├─ 088 (vault per-provider auth)
+ │   ├─ 089 (Codex harness adapter)    ─┐
+ │   ├─ 090 (Gemini harness adapter)   ─┤─ 092 (router + capability/cost)
+ │   └─ 091 (local entry + proxy seam) ─┘      └─ 093 (quota tracking)
+ │                                                     └─ 095 (wire real router — depends also on 077)
+ └─ 094 (local-model evaluation — operator-run; parallel with 092,093)
+```
+
+### Cross-arc dependency
+
+Task 095 (wire real router) depends on both arcs:
+- From Arc 1: task 077 (stub resolver it replaces)
+- From Arc 2: tasks 092 + 093 (the real router + quota tracking)
+
 ### Linear ordering (one possible sequencing for a single executor)
 
-1. 076 → 2. 077 → 3. 078 → 4. 079 → 5. 080 → 6. 082 → 7. 081 → 8. 083 → 9. 084 → 10. 085 → 11. 086
+**Arc 1:** 076 → 077 → 078 → 079 → 080 → 082 → 081 → 083 → 084 → 085 → 086
 
-Note: 080 (channel adapter) and 082 (worker recipe) can be worked in parallel after
-079 (both need only Cluster A, not each other). 083 and 084 can likewise be worked
-in parallel after 081.
+**Arc 2:** 087 → 088 → 089 → 090 → 091 → 092 → 093 → 095
+(094 can run in parallel with 092/093 once 091 is done)
+
+**Parallel opportunities within Arc 2:**
+- 089, 090, 091 can all be worked in parallel after 087+088 land.
+- 094 can be worked in parallel with 092+093 once 091 lands.
+- Arc 1 (076–079) and Arc 2 (087–091) can be worked in parallel from the start.
+
+Note: 095 is the final integration point and must wait for both arcs (077 done + all
+of 087–093 done).
 
 ## Cluster descriptions and rationale
 
@@ -135,6 +183,49 @@ One task: concurrency layer on top of the sequential dispatch from 081 and the
 signed-envelope transport from 083. The concurrency model (goroutines + channels vs
 worker-pool) and partial-failure policy must be decided before implementation.
 
+### Cluster I — Registry + adapters (087–091) [first tasks in Arc 2]
+
+Five tasks, mostly parallelizable after the first two land:
+
+- **087** — the `RegistryEntry` struct, `HarnessDriver` discriminator, `QuotaBudget`,
+  `Availability` types, the in-process catalog, and `LoadFromEnv()`. Leaf package
+  (`internal/registry`): stdlib-only. Critical-path root for Arc 2.
+- **088** — extend `secrets.SecretSource` with `NamedProviderToken(ref string)` so
+  each entry's `SecretRef` can be resolved independently. Additive — existing
+  `ProviderToken()` unchanged. Depends on 087.
+- **089** — `executor.CodexCLI` adapter (new harness). Depends on 087+088.
+- **090** — `executor.GeminiCLI` adapter (new harness). Depends on 087+088.
+  Parallel with 089.
+- **091** — local entry config + translation-proxy seam documentation. Not a new
+  harness: uses the existing `ClaudeCLI` pointed at a local proxy endpoint. Extends
+  `ClaudeCLI` to accept a `RegistryEntry`. Depends on 087+088. Parallel with 089/090.
+
+### Cluster J — Router + quota tracking (092–093)
+
+Two tasks in dependency order:
+
+- **092** — the `router.Router` with capability/cost-first selection, the two-axis
+  fallback (gate failure = climb quality ladder; quota exhaustion = route sideways),
+  in-memory state only. Depends on 087+089+090+091 (needs adapters to construct).
+- **093** — adds persistence (file), the injected `Clock` seam for deterministic
+  testing, reactive exhaustion (429/`Retry-After`), proactive budget checks, and the
+  rolling-window auto-recovery. Depends on 092.
+
+### Cluster K — Local-model evaluation (094) [parallel with J]
+
+One operator-run task: empirical benchmark on the target hardware
+(Intel Core Ultra 9 185H / 62 GiB RAM / RTX 4060 Laptop 8 GB VRAM / Ubuntu 26.04
+/ CUDA). Finds the highest-capability model that fits in VRAM for the local entry.
+Output is config (`ModelID`, `Endpoint`), not code. Verification is L5/L6 operator-
+observed (recorded in the verify commit). Can be worked in parallel with 092/093
+once 091 lands.
+
+### Cluster L — Integration (095)
+
+One task: replaces the `stubResolveExecutor` from task 077 with the real
+registry+router. Zero-drift check: existing e2e tests pass. Depends on 077 (the stub)
+and 087+092+093 (the real router). Final task in Arc 2.
+
 ## Open questions (blocking or near-blocking)
 
 | # | Question | Affects | Blocking? |
@@ -146,6 +237,9 @@ worker-pool) and partial-failure policy must be decided before implementation.
 | OQ-5 | Generated recipe output format: `.go` source file or struct literal? | 082 | Yes — determines how the gate-existence assertion inspects the output |
 | OQ-6 | memory-guard Go API vs binary IPC | 084 | Yes — same concern as OQ-1 for agent-mesh |
 | OQ-7 | Policy schema for orchestrator actions (what subjects/actions does policy-engine gate?) | 085 | Near-blocking — the policy schema must be specified before the decide-gate can be wired |
+| OQ-8 | Codex CLI exact flag/output format (argv, branch output convention) | 089 | Near-blocking — the adapter must know the subprocess protocol; the test uses a stub, but the real CLI interface must be confirmed before L6 |
+| OQ-9 | Gemini CLI exact flag/output format | 090 | Near-blocking — same as OQ-8 for Gemini |
+| OQ-10 | Translation-proxy choice: LiteLLM vs claude-code-router vs other | 091, 094 | Near-blocking for 094 operator run — both are known to work; pick one and document in the verify commit |
 
 ## Scoping decisions
 
@@ -166,3 +260,22 @@ worker-pool) and partial-failure policy must be decided before implementation.
 - **ADR decisions before starting B–H.** Each cluster's "Readiness gate" lists the
   open questions and surveys needed. Block API surveys (agent-mesh, memory-guard) and
   any resulting ADRs should precede implementation, not be done during it.
+
+- **Arc 2 (087–095) is parallel with Arc 1 (076–079).** 087 and 088 depend on
+  nothing but stdlib (087 is a leaf; 088 depends on 087). Arc 1 and Arc 2 can be
+  worked in parallel from the start. Task 095 is the only cross-arc dependency.
+
+- **Tasks 076 and 077 are amended at source, not superseded.** ADR 043 changes the
+  executor seam field from `ExecutorFactory` to `RoutingSpec`. Since neither 076 nor
+  077 is implemented yet, the task files and test specs are updated in place to reflect
+  the ADR 043 amendment. This avoids the waste of building `ExecutorFactory` only to
+  remove it in task 095.
+
+- **Task 094 (local-model evaluation) is operator-run, not CI-automatable.** The
+  hardware is specific (RTX 4060 Laptop) and the benchmark is empirical. It is
+  deliberately separated from the code tasks so CI does not block on it, and the
+  code tasks (091, 092, 093) do not block on 094 either.
+
+- **The translation proxy is an external tool.** LiteLLM, claude-code-router, and
+  similar are not built or shipped by this repo. Task 091 names the seam and the
+  pattern; the operator chooses and operates the proxy.
