@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/tkdtaylor/agent-builder/internal/audit"
@@ -111,7 +112,7 @@ func (a *Adapter) Next() (supervisor.Task, bool, error) {
 		var env envelope.Envelope
 		if err := json.Unmarshal([]byte(update.Message.Text), &env); err != nil {
 			a.logger.Debug("envelope parse failed", "error", err)
-			a.emitAuditEvent("envelope_parse_failed", err.Error())
+			a.emitAuditEvent("envelope_parse_failed: " + err.Error())
 			continue
 		}
 
@@ -127,7 +128,15 @@ func (a *Adapter) Next() (supervisor.Task, bool, error) {
 		if err != nil {
 			// Reject before armor invocation (unknown key, replay, or decryption failure)
 			a.logger.Debug("envelope verification/decryption failed", "error", err)
-			a.emitAuditEvent("envelope_rejected", err.Error())
+			// Parse error to determine the specific rejection type
+			reason := "envelope_rejected"
+			errStr := err.Error()
+			if strings.Contains(errStr, "replay") || strings.Contains(errStr, "nonce") {
+				reason = "replay_detected"
+			} else if strings.Contains(errStr, "unknown_key") || strings.Contains(errStr, "bad_signature") {
+				reason = "unknown_key"
+			}
+			a.emitAuditEvent(reason)
 			continue
 		}
 
@@ -148,7 +157,7 @@ func (a *Adapter) Next() (supervisor.Task, bool, error) {
 		})
 		if err != nil {
 			a.logger.Debug("content candidate creation failed", "error", err)
-			a.emitAuditEvent("candidate_invalid", err.Error())
+			a.emitAuditEvent("candidate_invalid")
 			continue
 		}
 
@@ -156,7 +165,7 @@ func (a *Adapter) Next() (supervisor.Task, bool, error) {
 		decision, err := a.contentGuard.DecideContent(context.Background(), candidate)
 		if err != nil {
 			a.logger.Debug("armor guard error", "error", err)
-			a.emitAuditEvent("armor_error", err.Error())
+			a.emitAuditEvent("armor_error")
 			continue
 		}
 
@@ -165,7 +174,7 @@ func (a *Adapter) Next() (supervisor.Task, bool, error) {
 		// If armor blocks or quarantines, emit audit and skip.
 		if decision.Outcome != ingestion.DecisionAllow {
 			a.logger.Debug("armor rejected", "reason", decision.Reason)
-			a.emitAuditEvent("armor_block", decision.Reason)
+			a.emitAuditEvent("armor_blocked: " + decision.Reason)
 			continue
 		}
 
@@ -229,22 +238,21 @@ func (a *Adapter) getUpdates() ([]Update, error) {
 	return result.Result, nil
 }
 
-// emitAuditEvent emits a rejection event to the audit sink.
+// emitAuditEvent emits a channel-reject event to the audit sink with the given reason.
 // Never includes sensitive data (bot token, keys, full plaintext).
-func (a *Adapter) emitAuditEvent(action, reason string) {
+func (a *Adapter) emitAuditEvent(reason string) {
 	if a.auditSink == nil {
 		return
 	}
 
-	// Construct a minimal audit event for rejection.
-	// Using existing audit infrastructure; no new action types needed.
-	// We emit via a rejection event that logs the reason (not sensitive data).
+	// Emit a channel-reject audit event with the reason.
 	ev := audit.AuditEvent{
-		Action: audit.ActionFinish,
+		Action: audit.ActionChannelReject,
 		RunID:  "telegram-channel",
 		TaskID: "telegram-inbound",
-		Outcome: audit.OutcomeFailed,
-		Detail: audit.EventDetail{},
+		Detail: audit.EventDetail{
+			Reason: reason,
+		},
 	}
 
 	// Try to append; if it fails, silently ignore to avoid breaking the channel loop.

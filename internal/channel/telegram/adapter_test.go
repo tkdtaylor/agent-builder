@@ -8,9 +8,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,18 +75,37 @@ func TestTC080_01_WellFormedEnvelopeDecrypted(t *testing.T) {
 		t.Fatalf("failed to marshal envelope: %v", err)
 	}
 
-	// Stub Telegram server that returns one update
+	// Track offset advances
+	var recordedOffsets []int64
+	callCount := 0
+
+	// Stub Telegram server that records offset on each call
 	stubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]interface{}{
-			"ok": true,
-			"result": []map[string]interface{}{
-				{
+		offset := r.URL.Query().Get("offset")
+		if offset != "" {
+			var offsetVal int64
+			_, _ = sscanf(offset, "%d", &offsetVal)
+			recordedOffsets = append(recordedOffsets, offsetVal)
+		}
+
+		callCount++
+		var result []interface{}
+		if callCount == 1 {
+			// First call: return update_id 100
+			result = []interface{}{
+				map[string]interface{}{
 					"update_id": 100,
 					"message": map[string]interface{}{
 						"text": string(envJSON),
 					},
 				},
-			},
+			}
+		}
+		// Subsequent calls return empty result
+
+		response := map[string]interface{}{
+			"ok":     true,
+			"result": result,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
@@ -144,6 +165,30 @@ func TestTC080_01_WellFormedEnvelopeDecrypted(t *testing.T) {
 	if stubGuard.invocationCount != 1 {
 		t.Errorf("armor invocation count = %d, want 1", stubGuard.invocationCount)
 	}
+
+	// TC-080-01c: Verify no rejection events on happy path
+	auditEvents := stubAudit.Events()
+	if len(auditEvents) != 0 {
+		t.Errorf("expected zero audit rejection events on happy path, got %d", len(auditEvents))
+	}
+
+	// TC-080-01b: Verify offset was advanced
+	// Call Next() again to trigger another poll which will show the advanced offset
+	_, ok2, err2 := adapter.Next()
+	if err2 != nil {
+		t.Fatalf("second Next() returned error: %v", err2)
+	}
+	// Second call should return no goal (empty result)
+	if ok2 {
+		t.Errorf("second Next() returned ok=true, expected false (empty update list)")
+	}
+
+	// Now check the recorded offsets from both calls
+	if len(recordedOffsets) < 2 {
+		t.Errorf("expected at least 2 offset records, got %d: %v", len(recordedOffsets), recordedOffsets)
+	} else if recordedOffsets[1] != 101 {
+		t.Errorf("expected second offset 101 (after consuming update_id 100), got %d", recordedOffsets[1])
+	}
 }
 
 // TestTC080_02_UnknownEdKeyRejectedBeforeArmor tests that an unknown Ed25519 key
@@ -202,18 +247,37 @@ func TestTC080_02_UnknownEdKeyRejectedBeforeArmor(t *testing.T) {
 		t.Fatalf("failed to marshal envelope: %v", err)
 	}
 
+	// Track offset advances
+	var recordedOffsets []int64
+	callCount := 0
+
 	// Stub server
 	stubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]interface{}{
-			"ok": true,
-			"result": []map[string]interface{}{
-				{
+		offset := r.URL.Query().Get("offset")
+		if offset != "" {
+			var offsetVal int64
+			_, _ = sscanf(offset, "%d", &offsetVal)
+			recordedOffsets = append(recordedOffsets, offsetVal)
+		}
+
+		callCount++
+		var result []interface{}
+		if callCount == 1 {
+			// First call: return the rejected envelope
+			result = []interface{}{
+				map[string]interface{}{
 					"update_id": 100,
 					"message": map[string]interface{}{
 						"text": string(envJSON),
 					},
 				},
-			},
+			}
+		}
+		// Subsequent calls return empty result
+
+		response := map[string]interface{}{
+			"ok":     true,
+			"result": result,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
@@ -258,10 +322,31 @@ func TestTC080_02_UnknownEdKeyRejectedBeforeArmor(t *testing.T) {
 		t.Errorf("armor invocation count = %d, want 0", stubGuard.invocationCount)
 	}
 
-	// TC-080-02: Audit event should have been emitted
+	// TC-080-02: Audit event should have been emitted with recognizable reason
 	events := stubAudit.Events()
 	if len(events) == 0 {
 		t.Errorf("no audit events emitted, expected at least one rejection event")
+	} else {
+		found := false
+		for _, ev := range events {
+			if ev.Action == audit.ActionChannelReject && strings.Contains(ev.Detail.Reason, "unknown_key") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected audit event with ActionChannelReject and 'unknown_key' in reason, got: %#v", events)
+		}
+	}
+
+	// TC-080-02d: Offset should be advanced (message consumed, not re-polled)
+	// Call Next() again to trigger another poll with the advanced offset
+	_, _, _ = adapter.Next()
+
+	if len(recordedOffsets) < 2 {
+		t.Errorf("expected at least 2 offset records, got %d", len(recordedOffsets))
+	} else if recordedOffsets[1] != 101 {
+		t.Errorf("expected second offset 101 after rejection, got %d", recordedOffsets[1])
 	}
 }
 
@@ -311,9 +396,19 @@ func TestTC080_03_ReplayedNonceRejected(t *testing.T) {
 		t.Fatalf("failed to marshal envelope: %v", err)
 	}
 
-	// Track which update_id we're returning
+	// Track offset advances
+	var recordedOffsets []int64
+
+	// Track which call we're on
 	callCount := 0
 	stubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		offset := r.URL.Query().Get("offset")
+		if offset != "" {
+			var offsetVal int64
+			_, _ = sscanf(offset, "%d", &offsetVal)
+			recordedOffsets = append(recordedOffsets, offsetVal)
+		}
+
 		callCount++
 		var result []interface{}
 		switch callCount {
@@ -391,10 +486,44 @@ func TestTC080_03_ReplayedNonceRejected(t *testing.T) {
 		t.Errorf("second task.Spec = %q, expected empty", task2.Spec)
 	}
 
-	// TC-080-03: Audit events should include a replay rejection
+	// TC-080-03c: Audit events should include a replay rejection with reason
 	events := stubAudit.Events()
 	if len(events) == 0 {
 		t.Errorf("no audit events emitted")
+	} else {
+		found := false
+		for _, ev := range events {
+			if ev.Action == audit.ActionChannelReject && (strings.Contains(ev.Detail.Reason, "replay") || strings.Contains(ev.Detail.Reason, "nonce")) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected audit event with 'replay' or 'nonce' in reason, got: %#v", events)
+		}
+	}
+
+	// TC-080-03e: Offset advanced past both update_ids
+	// Call Next() again to see the third poll with offset 202
+	_, _, _ = adapter.Next()
+
+	if len(recordedOffsets) < 3 {
+		t.Errorf("expected at least 3 offset records, got %d: %v", len(recordedOffsets), recordedOffsets)
+	} else {
+		// First poll: offset 0 (initial)
+		if recordedOffsets[0] != 0 {
+			t.Errorf("first offset = %d, want 0", recordedOffsets[0])
+		}
+		// After first Next(), offset advances to 201
+		// Second poll: offset 201
+		if recordedOffsets[1] != 201 {
+			t.Errorf("second offset = %d, want 201", recordedOffsets[1])
+		}
+		// After second Next(), offset advances to 202
+		// Third poll: offset 202
+		if recordedOffsets[2] != 202 {
+			t.Errorf("third offset = %d, want 202", recordedOffsets[2])
+		}
 	}
 }
 
@@ -443,17 +572,36 @@ func TestTC080_04_ArmorBlocksPromptInjection(t *testing.T) {
 		t.Fatalf("failed to marshal envelope: %v", err)
 	}
 
+	// Track offset advances
+	var recordedOffsets []int64
+	callCount := 0
+
 	stubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]interface{}{
-			"ok": true,
-			"result": []map[string]interface{}{
-				{
+		offset := r.URL.Query().Get("offset")
+		if offset != "" {
+			var offsetVal int64
+			_, _ = sscanf(offset, "%d", &offsetVal)
+			recordedOffsets = append(recordedOffsets, offsetVal)
+		}
+
+		callCount++
+		var result []interface{}
+		if callCount == 1 {
+			// First call: return the injection payload
+			result = []interface{}{
+				map[string]interface{}{
 					"update_id": 300,
 					"message": map[string]interface{}{
 						"text": string(envJSON),
 					},
 				},
-			},
+			}
+		}
+		// Subsequent calls return empty result
+
+		response := map[string]interface{}{
+			"ok":     true,
+			"result": result,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
@@ -499,10 +647,31 @@ func TestTC080_04_ArmorBlocksPromptInjection(t *testing.T) {
 		t.Errorf("armor invocation count = %d, want 1", stubGuard.invocationCount)
 	}
 
-	// TC-080-04: Audit event should have been emitted
+	// TC-080-04c: Audit event should have been emitted with reason from armor decision
 	events := stubAudit.Events()
 	if len(events) == 0 {
 		t.Errorf("no audit events emitted, expected armor block event")
+	} else {
+		found := false
+		for _, ev := range events {
+			if ev.Action == audit.ActionChannelReject && strings.Contains(ev.Detail.Reason, "prompt injection detected") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected audit event with armor decision reason, got: %#v", events)
+		}
+	}
+
+	// TC-080-04d: Offset should be advanced
+	// Call Next() again to trigger another poll with the advanced offset
+	_, _, _ = adapter.Next()
+
+	if len(recordedOffsets) < 2 {
+		t.Errorf("expected at least 2 offset records, got %d", len(recordedOffsets))
+	} else if recordedOffsets[1] != 301 {
+		t.Errorf("expected second offset 301 after armor block, got %d", recordedOffsets[1])
 	}
 }
 
@@ -519,13 +688,7 @@ func TestTC080_06_NoBotTokenInLogs(t *testing.T) {
 	// Use a recognizable fake bot token
 	const botTokenSentinel = "BOT_TOKEN_SENTINEL_12345"
 
-	// Use recognizable fake Ed25519 private key bytes (32 bytes, all 0xAB)
-	fakeEdPriv := make([]byte, 32)
-	for i := range fakeEdPriv {
-		fakeEdPriv[i] = 0xAB
-	}
-
-	// Generate real keys for signing
+	// Generate real keys so we have the actual key bytes to check
 	operatorEdPub, operatorEdPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatalf("failed to generate operator Ed25519 key: %v", err)
@@ -618,19 +781,26 @@ func TestTC080_06_NoBotTokenInLogs(t *testing.T) {
 		t.Errorf("bot token sentinel found in logs: %s", botTokenSentinel)
 	}
 
-	// TC-080-06: Verify private key bytes are NOT in logs (hex encoding)
-	keyHex := hex.EncodeToString(fakeEdPriv)
+	// TC-080-06b/c: Verify actual private key bytes are NOT in logs
+	// Test with the orchestrator X25519 private key (actual bytes flowing through adapter)
+	keyHex := hex.EncodeToString(orchX25519Priv[:])
 	if bytes.Contains([]byte(logOutput), []byte(keyHex)) {
-		t.Errorf("private key hex found in logs: %s", keyHex)
+		t.Errorf("orchestrator X25519 private key hex found in logs: %s", keyHex)
 	}
 
-	// TC-080-06: Verify private key is NOT in logs (base64 encoding)
-	keyBase64 := base64.StdEncoding.EncodeToString(fakeEdPriv)
+	// Test with base64 encoding
+	keyBase64 := base64.StdEncoding.EncodeToString(orchX25519Priv[:])
 	if bytes.Contains([]byte(logOutput), []byte(keyBase64)) {
-		t.Errorf("private key base64 found in logs: %s", keyBase64)
+		t.Errorf("orchestrator X25519 private key base64 found in logs: %s", keyBase64)
 	}
 
-	// TC-080-06: Verify no PEM block format appears
+	// Also test operator Ed25519 private key (32 bytes)
+	edKeyHex := hex.EncodeToString(operatorEdPriv.Seed())
+	if bytes.Contains([]byte(logOutput), []byte(edKeyHex)) {
+		t.Errorf("operator Ed25519 private key hex found in logs")
+	}
+
+	// Verify no PEM block format appears
 	if bytes.Contains([]byte(logOutput), []byte("-----BEGIN")) {
 		t.Errorf("PEM block found in logs")
 	}
@@ -697,3 +867,21 @@ func (g *blockingGuard) DecideContent(ctx context.Context, candidate ingestion.C
 
 // Compile-time assertion for TC-080-05
 var _ supervisor.GoalSource = (*telegram.Adapter)(nil)
+
+// Helper to parse string to int64 (simulating fmt.Sscanf)
+func sscanf(str string, format string, args ...interface{}) (int, error) {
+	// Simple implementation for "%d" format
+	if len(args) != 1 {
+		return 0, fmt.Errorf("unsupported number of args")
+	}
+	if ptr, ok := args[0].(*int64); ok {
+		var val int64
+		_, err := fmt.Sscanf(str, format, &val)
+		if err != nil {
+			return 0, err
+		}
+		*ptr = val
+		return 1, nil
+	}
+	return 0, fmt.Errorf("unsupported arg type")
+}

@@ -490,6 +490,7 @@ ActionPublish         "publish"           branch pushed and PR artifact recorded
 ActionEscalate        "escalate"          retry exhausted; status written as needs-human
 ActionFinish          "finish"            run lifecycle complete; outcome recorded
 ActionPolicyDecision  "policy-decision"   policy engine decision recorded; emitted by audit_emit obligation (task 073)
+ActionChannelReject   "channel-reject"    secure channel (Telegram/worker transport) rejected a message; emitted with reason in EventDetail.Reason (task 080)
 ```
 
 - **Closed:** `AuditAction.Valid()` returns false for any value not in the constant set above. Raw stdout/stderr actions do not exist in this taxonomy (raw output stays in the 019 RunRecord).
@@ -524,10 +525,12 @@ Remote            string    git remote used for publication (publish events)
 Attempt           int       1-based attempt number (attempt/escalate events)
 PolicyDecision    string    policy engine decision string — "allow", "deny", or "require_approval" (policy-decision events; task 073)
 PolicyReason      string    human-readable reason from the policy engine response (policy-decision events; task 073)
+Reason            string    free-text reason for rejection or diagnostic events, e.g. "unknown_key", "replay_detected", "armor_blocked" (channel-reject events; task 080)
 ```
 
-- **Identity:** embedded in `AuditEvent`; carries only the non-zero fields relevant to the action. `PolicyDecision` and `PolicyReason` are set only for `ActionPolicyDecision` events; they are zero-valued on all other event types.
+- **Identity:** embedded in `AuditEvent`; carries only the non-zero fields relevant to the action. `PolicyDecision` and `PolicyReason` are set only for `ActionPolicyDecision` events; `Reason` is set only for `ActionChannelReject` events; they are zero-valued on all other event types.
 - **Lifecycle:** constructed at the call site with named fields (no `map[string]any`).
+- **Channel-reject note:** `ActionChannelReject` events are emitted to the `audit.Sink` seam by secure channel implementations (Telegram adapter in task 080, orchestrator↔worker transport in task 083). Serialization of `Reason` to the audit-trail block's CLI format is deferred to orchestrator integration (task 081) — no live `BlockSink` path today silently drops the field.
 
 #### Value: `audit.AuditVerdict`
 

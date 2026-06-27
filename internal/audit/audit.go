@@ -35,6 +35,7 @@ const (
 	ActionEscalate       AuditAction = "escalate"
 	ActionFinish         AuditAction = "finish"
 	ActionPolicyDecision AuditAction = "policy-decision"
+	ActionChannelReject  AuditAction = "channel-reject"
 )
 
 // validActions is the closed set of known actions. Used by Valid() and Validate.
@@ -47,6 +48,7 @@ var validActions = map[AuditAction]struct{}{
 	ActionEscalate:       {},
 	ActionFinish:         {},
 	ActionPolicyDecision: {},
+	ActionChannelReject:  {},
 }
 
 // Valid reports whether a is a known, non-empty action in the closed enum.
@@ -102,6 +104,11 @@ type EventDetail struct {
 	// PolicyReason is the human-readable reason returned by the policy engine.
 	// Only set for ActionPolicyDecision events (task 073).
 	PolicyReason string
+	// Reason is a free-text reason for rejection or diagnostic events, e.g. "channel-reject"
+	// (ActionChannelReject), "unknown_key", "replay_detected", "armor_blocked", etc.
+	// Channel-reject events are emitted to the audit.Sink seam and serialization
+	// to the audit-trail block is deferred to orchestrator integration (task 081).
+	Reason string
 }
 
 // AuditEvent is the structured, typed event that the supervisor writes through
