@@ -13,9 +13,12 @@ import (
 
 	"github.com/tkdtaylor/agent-builder/internal/audit"
 	"github.com/tkdtaylor/agent-builder/internal/gate"
+	"github.com/tkdtaylor/agent-builder/internal/recipe/docsfix"
 	runtimewiring "github.com/tkdtaylor/agent-builder/internal/runtime"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
+
+var _ = docsfix.DocsFixGate{} // ensure init() is triggered by importing docsfix
 
 const (
 	ExitOK      = 0

@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** agent-builder
-**Last updated:** 2026-06-19 (task 068 — checkpoint signer seam)
+**Last updated:** 2026-06-27 (task 079 — docs-fix recipe selection)
 
 Every knob the system exposes — env vars, config files, runtime parameters, deployment settings. Each entry is a public contract: changes to defaults or accepted values are observable.
 
@@ -90,6 +90,7 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `AGENT_BUILDER_RUN_TIMEOUT` | duration string | none | yes for `agent-builder run` | Explicit supervisor wall-clock timeout and sandbox request timeout for one default run |
 | `AGENT_BUILDER_MAX_ATTEMPTS` | non-negative integer | none | yes for `agent-builder run` | Explicit bounded retry attempt count for the selected task |
 | `AGENT_BUILDER_PUBLISH_REMOTE` | string | none | yes for `agent-builder run` | Git remote name or URL used by the branch publisher after Gate success |
+| `AGENT_BUILDER_RECIPE` | enum: `coding-agent`, `docs-fix` | `coding-agent` | no | Pluggable recipe selector: determines the goal source, gate, and result sink for the run (ADR 041, tasks 076–079). `coding-agent` is the default (solves coding tasks via the Claude CLI, gates via Go tooling); `docs-fix` is the second proof recipe (documentation fixes, gates via markdown linter + code-scanner). Unknown recipe names return an error before sandbox creation. |
 | `AGENT_BUILDER_GIT_CLI` | path/name | `git` | no | Git executable used by branch publication |
 | `AGENT_BUILDER_GH_CLI` | path/name | `gh` | no | GitHub CLI executable used to find or create the PR artifact |
 | `AGENT_BUILDER_GIT_TOKEN` | secret string | none | no | Optional token exposed to the publication subprocess as `GIT_TOKEN` and redacted from publisher errors/run records |
