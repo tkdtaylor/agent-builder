@@ -43,7 +43,7 @@ beyond the Go-tooling suite.
 
 - [ ] [REQ-079-01] TC-079-01: `SelectRecipe("docs-fix")` returns non-nil Recipe with a distinct gate type; `ListRecipes()` includes `"docs-fix"`
 - [ ] [REQ-079-02] TC-079-02: Docs-fix gate returns PASS on a well-formed `.md` fixture and FAIL on a malformed `.md` fixture; no `go build`/`go test`/`golangci-lint` subprocess is spawned
-- [ ] [REQ-079-03] TC-079-03: `go list -deps ./internal/recipe/docsfix/...` does not contain `internal/sandbox` directly; block-wiring fields match those of the coding-agent recipe
+- [ ] [REQ-079-03] TC-079-03: `go list -f '{{range .Imports}}{{.}} {{end}}' ./internal/recipe/docsfix/` (direct imports, not `-deps`) does not contain `internal/sandbox`; block-wiring fields match those of the coding-agent recipe (transitive sandbox via supervisor is expected — supervisor owns containment)
 - [ ] [REQ-079-03] TC-079-04: Runtime gate-existence assertion (task 078) passes for the docs-fix recipe
 - [ ] [REQ-079-04] TC-079-05: `git diff HEAD~1 -- internal/runtime/ internal/supervisor/` is empty (seam self-test; recorded in verify commit)
 

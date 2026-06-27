@@ -3,7 +3,9 @@ package docsfix
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tkdtaylor/agent-builder/internal/gate"
@@ -381,12 +383,20 @@ func TestTC079_03_NoSandboxDependency(t *testing.T) {
 		t.Errorf("BlockWiring = %v, want nil or empty", r.BlockWiring)
 	}
 
-	// Sub-test 2: Direct imports do not contain internal/sandbox.
-	// (This would be checked via `go list -f '{{range .Imports}}{{.}}\n{{end}}' ./internal/recipe/docsfix/`
-	//  in the harness — transitive presence via internal/supervisor is expected and correct.)
-	// The proof that we don't directly import sandbox: this test file imports only
-	// testing, filepath, and internal packages (recipe, gate, supervisor), none of which
-	// directly import sandbox.
+	// Sub-test 2: the docsfix package does not DIRECTLY import internal/sandbox.
+	// Containment is block-wiring owned by internal/supervisor, not an IO seam the
+	// recipe owns; transitive presence of internal/sandbox via supervisor is expected
+	// and correct. The binding property is the absence of a DIRECT import, so we query
+	// direct imports only (`{{.Imports}}`), not the transitive closure (`-deps`).
+	// `go test` runs with the package directory as the working directory, so "." is
+	// the docsfix package.
+	out, err := exec.Command("go", "list", "-f", "{{range .Imports}}{{.}} {{end}}", ".").CombinedOutput()
+	if err != nil {
+		t.Fatalf("go list direct imports failed: %v\n%s", err, out)
+	}
+	if strings.Contains(string(out), "github.com/tkdtaylor/agent-builder/internal/sandbox") {
+		t.Errorf("docsfix package directly imports internal/sandbox; containment must stay block-wiring via supervisor, not a recipe-owned dependency.\ndirect imports: %s", out)
+	}
 }
 
 // TestTC079_AllRecipesIncludeDocsFix verifies "docs-fix" is in ListRecipes.

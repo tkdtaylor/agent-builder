@@ -92,7 +92,7 @@ or equivalent).
 
 - **Requirement:** REQ-079-02
 - **Level:** L2 / L3 (structural test)
-- **Test file / harness:** source inspection + `go list -deps`
+- **Test file / harness:** source inspection + `go list -f '{{range .Imports}}{{.}} {{end}}'` (direct imports only; not `-deps`, which is the transitive closure)
 
 **Input:** Inspect the docs-fix recipe definition and the coding-agent recipe
 definition.
