@@ -6,6 +6,7 @@
 package supervisor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -65,6 +66,36 @@ type Executor interface {
 // dep-scan/code-scanner). A Task is never "done" unattended unless Verify passes.
 type Gate interface {
 	Verify(repoPath string) gate.Verdict
+}
+
+// GoalSource is the seam interface for reading the task/goal that an agent
+// must work on. It returns the next available task, a boolean indicating whether
+// a task was found, and an optional error.
+type GoalSource interface {
+	Next() (task Task, ok bool, err error)
+}
+
+// PublishRequest is the payload passed to a ResultSink.Publish call.
+// It mirrors the concrete internal/publisher.Request structure at the seam boundary.
+type PublishRequest struct {
+	Task     Task   // the task that was completed
+	Worktree string // path to the ephemeral worktree
+	Branch   string // the branch the executor created
+	Remote   string // the git remote to publish to
+}
+
+// PublishResult is the response from a ResultSink.Publish call.
+// It mirrors the concrete internal/publisher.Result structure at the seam boundary.
+type PublishResult struct {
+	Branch string // the branch that was published
+	PRURL  string // URL to the pull request (if created)
+	PRID   string // pull request ID (if created)
+}
+
+// ResultSink is the seam interface for writing the result of an agent's work
+// back to persistent storage or a callback.
+type ResultSink interface {
+	Publish(ctx context.Context, req PublishRequest) (PublishResult, error)
 }
 
 // BoxHandle identifies a created containment box for one dispatched task.

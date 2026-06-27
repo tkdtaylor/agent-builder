@@ -1,6 +1,7 @@
 package recipe
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -8,24 +9,25 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
 
-// TestFakeGoalSource is a test-local fake implementation of GoalSource.
+// TestFakeGoalSource is a test-local fake implementation of supervisor.GoalSource.
 type TestFakeGoalSource struct {
-	goal string
+	task supervisor.Task
+	ok   bool
 	err  error
 }
 
-func (f *TestFakeGoalSource) FetchGoal() (string, error) {
-	return f.goal, f.err
+func (f *TestFakeGoalSource) Next() (supervisor.Task, bool, error) {
+	return f.task, f.ok, f.err
 }
 
-// TestFakeResultSink is a test-local fake implementation of ResultSink.
+// TestFakeResultSink is a test-local fake implementation of supervisor.ResultSink.
 type TestFakeResultSink struct {
-	results []string
+	results []supervisor.PublishRequest
 }
 
-func (f *TestFakeResultSink) WriteResult(result string) error {
-	f.results = append(f.results, result)
-	return nil
+func (f *TestFakeResultSink) Publish(ctx context.Context, req supervisor.PublishRequest) (supervisor.PublishResult, error) {
+	f.results = append(f.results, req)
+	return supervisor.PublishResult{Branch: req.Branch}, nil
 }
 
 // TestFakeGate is a test-local fake implementation of supervisor.Gate.
@@ -36,10 +38,12 @@ func (f *TestFakeGate) Verify(repoPath string) gate.Verdict {
 }
 
 // TestRecipeTypeCompiles tests TC-076-01: Recipe type compiles with all four
-// seam fields present; nil Gate is rejected; RoutingSpec round-trips.
+// seam factories present; nil Gate is rejected; RoutingSpec round-trips.
 func TestRecipeTypeCompiles(t *testing.T) {
-	// Create test-local fakes for all four seam fields.
-	goalSource := &TestFakeGoalSource{goal: "test goal"}
+	// Create test-local factories for all seam types.
+	goalSourceFactory := func(cfg SeamConfig) (supervisor.GoalSource, error) {
+		return &TestFakeGoalSource{task: supervisor.Task{ID: "test"}, ok: true}, nil
+	}
 	routingSpec := RoutingSpec{
 		MinCapability:   2,
 		SensitivityHint: SensitivitySensitive,
@@ -47,21 +51,23 @@ func TestRecipeTypeCompiles(t *testing.T) {
 	gateFactory := func() supervisor.Gate {
 		return &TestFakeGate{}
 	}
-	resultSink := &TestFakeResultSink{}
+	resultSinkFactory := func(cfg SeamConfig) (supervisor.ResultSink, error) {
+		return &TestFakeResultSink{}, nil
+	}
 	blockWiring := map[string]interface{}{}
 
-	// Create a Recipe with all fields populated.
-	r := New(goalSource, routingSpec, gateFactory, resultSink, blockWiring)
+	// Create a Recipe with all factory fields populated.
+	r := New(goalSourceFactory, routingSpec, gateFactory, resultSinkFactory, blockWiring)
 
 	// Verify the Recipe is valid and non-zero.
-	if r.GoalSource == nil {
-		t.Error("GoalSource is nil")
+	if r.GoalSourceFactory == nil {
+		t.Error("GoalSourceFactory is nil")
 	}
 	if r.GateFactory == nil {
 		t.Error("GateFactory is nil")
 	}
-	if r.ResultSink == nil {
-		t.Error("ResultSink is nil")
+	if r.ResultSinkFactory == nil {
+		t.Error("ResultSinkFactory is nil")
 	}
 
 	// Verify RoutingSpec round-trips correctly.
@@ -90,23 +96,66 @@ func TestNilGateFactoryPanics(t *testing.T) {
 		}
 	}()
 
-	goalSource := &TestFakeGoalSource{goal: "test"}
-	New(goalSource, RoutingSpec{}, nil, &TestFakeResultSink{}, nil)
+	goalSourceFactory := func(cfg SeamConfig) (supervisor.GoalSource, error) {
+		return &TestFakeGoalSource{}, nil
+	}
+	resultSinkFactory := func(cfg SeamConfig) (supervisor.ResultSink, error) {
+		return &TestFakeResultSink{}, nil
+	}
+	New(goalSourceFactory, RoutingSpec{}, nil, resultSinkFactory, nil)
+}
+
+// TestNilGoalSourceFactoryPanics tests that nil GoalSourceFactory panics.
+func TestNilGoalSourceFactoryPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for nil GoalSourceFactory, but no panic occurred")
+		}
+	}()
+
+	gateFactory := func() supervisor.Gate {
+		return &TestFakeGate{}
+	}
+	resultSinkFactory := func(cfg SeamConfig) (supervisor.ResultSink, error) {
+		return &TestFakeResultSink{}, nil
+	}
+	New(nil, RoutingSpec{}, gateFactory, resultSinkFactory, nil)
+}
+
+// TestNilResultSinkFactoryPanics tests that nil ResultSinkFactory panics.
+func TestNilResultSinkFactoryPanics(t *testing.T) {
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic for nil ResultSinkFactory, but no panic occurred")
+		}
+	}()
+
+	goalSourceFactory := func(cfg SeamConfig) (supervisor.GoalSource, error) {
+		return &TestFakeGoalSource{}, nil
+	}
+	gateFactory := func() supervisor.Gate {
+		return &TestFakeGate{}
+	}
+	New(goalSourceFactory, RoutingSpec{}, gateFactory, nil, nil)
 }
 
 // TestRecipeConstructor tests that a Recipe constructed with New has all
-// expected fields set.
+// expected factory fields set.
 func TestRecipeConstructor(t *testing.T) {
-	goalSource := &TestFakeGoalSource{}
+	goalSourceFactory := func(cfg SeamConfig) (supervisor.GoalSource, error) {
+		return &TestFakeGoalSource{}, nil
+	}
 	routingSpec := RoutingSpec{MinCapability: 1, SensitivityHint: SensitivityNone}
 	gateFactory := func() supervisor.Gate { return &TestFakeGate{} }
-	resultSink := &TestFakeResultSink{}
+	resultSinkFactory := func(cfg SeamConfig) (supervisor.ResultSink, error) {
+		return &TestFakeResultSink{}, nil
+	}
 	blockWiring := map[string]interface{}{"key": "value"}
 
-	r := New(goalSource, routingSpec, gateFactory, resultSink, blockWiring)
+	r := New(goalSourceFactory, routingSpec, gateFactory, resultSinkFactory, blockWiring)
 
-	if r.GoalSource != goalSource {
-		t.Error("GoalSource not set correctly")
+	if r.GoalSourceFactory == nil {
+		t.Error("GoalSourceFactory not set correctly")
 	}
 	if r.RoutingSpec != routingSpec {
 		t.Error("RoutingSpec not set correctly")
@@ -114,8 +163,8 @@ func TestRecipeConstructor(t *testing.T) {
 	if r.GateFactory == nil {
 		t.Error("GateFactory is nil after construction")
 	}
-	if r.ResultSink != resultSink {
-		t.Error("ResultSink not set correctly")
+	if r.ResultSinkFactory == nil {
+		t.Error("ResultSinkFactory not set correctly")
 	}
 	// BlockWiring is a map, so we can only compare to nil or length check
 	if len(r.BlockWiring) != len(blockWiring) {
@@ -134,7 +183,7 @@ func TestSelectRecipeEmptyName(t *testing.T) {
 	if err != nil && !strings.Contains(err.Error(), "empty") {
 		t.Errorf("error message should mention emptiness, got: %v", err)
 	}
-	if r.GoalSource != nil || r.GateFactory != nil {
+	if r.GoalSourceFactory != nil || r.GateFactory != nil {
 		t.Error("expected zero Recipe on error")
 	}
 }
@@ -150,7 +199,7 @@ func TestSelectRecipeUnknownName(t *testing.T) {
 	if err != nil && !strings.Contains(err.Error(), "does-not-exist") {
 		t.Errorf("error message should mention the recipe name, got: %v", err)
 	}
-	if r.GoalSource != nil || r.GateFactory != nil {
+	if r.GoalSourceFactory != nil || r.GateFactory != nil {
 		t.Error("expected zero Recipe on error")
 	}
 }
@@ -161,13 +210,14 @@ func TestDuplicateRegisterPanics(t *testing.T) {
 	resetRegistry()
 
 	factory := func() (Recipe, error) {
-		return New(
-			&TestFakeGoalSource{},
-			RoutingSpec{},
-			func() supervisor.Gate { return &TestFakeGate{} },
-			&TestFakeResultSink{},
-			nil,
-		), nil
+		goalSourceFactory := func(cfg SeamConfig) (supervisor.GoalSource, error) {
+			return &TestFakeGoalSource{}, nil
+		}
+		gateFactory := func() supervisor.Gate { return &TestFakeGate{} }
+		resultSinkFactory := func(cfg SeamConfig) (supervisor.ResultSink, error) {
+			return &TestFakeResultSink{}, nil
+		}
+		return New(goalSourceFactory, RoutingSpec{}, gateFactory, resultSinkFactory, nil), nil
 	}
 
 	// Register the first time — should succeed.
@@ -193,15 +243,16 @@ func TestDuplicateRegisterPanics(t *testing.T) {
 func TestRegisterAndSelectRoundTrip(t *testing.T) {
 	resetRegistry()
 
-	// Create a factory that returns a Recipe with all seam fields populated.
+	// Create a factory that returns a Recipe with all seam factories populated.
 	factory := func() (Recipe, error) {
-		return New(
-			&TestFakeGoalSource{goal: "task"},
-			RoutingSpec{MinCapability: 1},
-			func() supervisor.Gate { return &TestFakeGate{} },
-			&TestFakeResultSink{},
-			nil,
-		), nil
+		goalSourceFactory := func(cfg SeamConfig) (supervisor.GoalSource, error) {
+			return &TestFakeGoalSource{task: supervisor.Task{ID: "task"}}, nil
+		}
+		gateFactory := func() supervisor.Gate { return &TestFakeGate{} }
+		resultSinkFactory := func(cfg SeamConfig) (supervisor.ResultSink, error) {
+			return &TestFakeResultSink{}, nil
+		}
+		return New(goalSourceFactory, RoutingSpec{MinCapability: 1}, gateFactory, resultSinkFactory, nil), nil
 	}
 
 	Register("test-fake", factory)
@@ -212,15 +263,15 @@ func TestRegisterAndSelectRoundTrip(t *testing.T) {
 		t.Fatalf("SelectRecipe failed: %v", err)
 	}
 
-	// Verify all seam fields are non-nil.
-	if r.GoalSource == nil {
-		t.Error("GoalSource is nil")
+	// Verify all seam factory fields are non-nil.
+	if r.GoalSourceFactory == nil {
+		t.Error("GoalSourceFactory is nil")
 	}
 	if r.GateFactory == nil {
 		t.Error("GateFactory is nil")
 	}
-	if r.ResultSink == nil {
-		t.Error("ResultSink is nil")
+	if r.ResultSinkFactory == nil {
+		t.Error("ResultSinkFactory is nil")
 	}
 
 	// Verify RoutingSpec is non-zero.
@@ -236,15 +287,11 @@ func TestRegisterAndSelectRoundTrip(t *testing.T) {
 	// Verify there is no ExecutorFactory field (by verifying the struct compiles
 	// without it; this is a compile-time check).
 
-	// Test that two calls to SelectRecipe return independent values.
+	// Test that two calls to SelectRecipe return independent Recipe values
+	// (the factories themselves are the same, but each call creates a new Recipe).
 	r2, err := SelectRecipe("test-fake")
 	if err != nil {
 		t.Fatalf("second SelectRecipe failed: %v", err)
-	}
-
-	// Verify they are independent (different pointers for the goal source instances).
-	if r.GoalSource == r2.GoalSource {
-		t.Error("expected independent Recipe values on two SelectRecipe calls")
 	}
 
 	// Verify both have the same Name (it should be set by SelectRecipe).
@@ -259,13 +306,14 @@ func TestListRecipes(t *testing.T) {
 
 	factory := func(name string) RecipeFactory {
 		return func() (Recipe, error) {
-			return New(
-				&TestFakeGoalSource{goal: name},
-				RoutingSpec{},
-				func() supervisor.Gate { return &TestFakeGate{} },
-				&TestFakeResultSink{},
-				nil,
-			), nil
+			goalSourceFactory := func(cfg SeamConfig) (supervisor.GoalSource, error) {
+				return &TestFakeGoalSource{task: supervisor.Task{ID: name}}, nil
+			}
+			gateFactory := func() supervisor.Gate { return &TestFakeGate{} }
+			resultSinkFactory := func(cfg SeamConfig) (supervisor.ResultSink, error) {
+				return &TestFakeResultSink{}, nil
+			}
+			return New(goalSourceFactory, RoutingSpec{}, gateFactory, resultSinkFactory, nil), nil
 		}
 	}
 
@@ -297,7 +345,7 @@ func TestListRecipes(t *testing.T) {
 		}
 	}
 
-	// Verify "coding-agent" is NOT in the list (task 077).
+	// Verify "coding-agent" is NOT in the list (task 076).
 	for _, name := range list1 {
 		if name == "coding-agent" {
 			t.Error("coding-agent should not be registered in task 076")

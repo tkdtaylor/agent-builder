@@ -1,14 +1,15 @@
 // Package recipe defines the pluggable agent recipe seam: the Recipe type,
-// the IO seam interfaces (GoalSource, ResultSink), the RoutingSpec value type,
-// and the in-process registry.
+// the RoutingSpec value type, and the in-process registry. The seam interfaces
+// (GoalSource, ResultSink, Gate) live in internal/supervisor; recipe is a true
+// leaf that depends only on supervisor and stdlib.
 //
-// A Recipe declares what one agent needs (capability tier, sensitivity hint)
-// and the seam factories (goal source, gate, result sink) it uses. The routing
-// spec does NOT bind a concrete executor — that is the router's responsibility
-// (a deferred feature, task 095).
+// A Recipe declares what seams an agent needs (via factory functions) and how
+// it should be routed (capability tier, sensitivity hint via RoutingSpec).
+// The routing spec does NOT bind a concrete executor — that is the router's
+// responsibility (a deferred feature, task 095).
 //
 // Package recipe is a true leaf: it imports only internal/supervisor (for the
-// Gate interface) plus stdlib. It imports NO concrete seam implementation
+// seam interface types) plus stdlib. It imports NO concrete seam implementation
 // (executor, tasksource, publisher, etc.), NO registry/router code, and NO
 // vault/policy/secrets.
 package recipe
@@ -34,34 +35,44 @@ const (
 	SensitivitySensitive
 )
 
+// SeamConfig is the narrow, leaf-defined accessor interface that seam factories
+// receive at assembly time. runtime.Config satisfies it; the leaf names no
+// runtime type. This is option (b) from ADR 044: a small, typed interface for
+// config-flow that keeps the leaf pure.
+type SeamConfig interface {
+	TaskRoot() string
+	PublishRemote() string
+	GitToken() string
+	GitHubToken() string
+	GitCLI() string
+	GitHubCLI() string
+	Worktree() string
+}
+
 // RoutingSpec is a plain value type that declares what capability tier and
 // sensitivity profile a recipe needs. The router (task 095) uses this to
 // resolve to a concrete executor at dispatch.
 type RoutingSpec struct {
-	MinCapability  int         // minimum capability tier (e.g., 1 = basic, 2 = advanced)
+	MinCapability   int         // minimum capability tier (e.g., 1 = basic, 2 = advanced)
 	SensitivityHint Sensitivity // soft hint: none or sensitive
 }
 
-// GoalSource is a seam interface for reading the task/goal that this agent
-// must work on.
-type GoalSource interface {
-	// FetchGoal returns the task description or goal for the agent to pursue.
-	// It is the responsibility of the implementation to return a valid,
-	// actionable goal.
-	FetchGoal() (string, error)
-}
+// GoalSourceFactory is a factory function that creates a GoalSource seam.
+// It takes a SeamConfig and returns a goal source or an error.
+type GoalSourceFactory func(cfg SeamConfig) (supervisor.GoalSource, error)
 
-// ResultSink is a seam interface for writing the result of the agent's work
-// back to persistent storage or a callback.
-type ResultSink interface {
-	// WriteResult persists the agent's result (success, failure, branch info,
-	// logs). The implementation may block on I/O or network calls.
-	WriteResult(result string) error
-}
+// GateFactory is a factory function that creates a new Gate instance. It is
+// called once per task execution and takes no config (the production gate is
+// built from compiled-in defaults). See ADR 044 §4.
+type GateFactory func() supervisor.Gate
 
-// Recipe is the pluggable agent definition. It declares what seams the agent
-// needs (goal source, gate for verification, result sink) and how it should
-// be routed (capability and sensitivity hints via RoutingSpec).
+// ResultSinkFactory is a factory function that creates a ResultSink seam.
+// It takes a SeamConfig and returns a result sink or an error.
+type ResultSinkFactory func(cfg SeamConfig) (supervisor.ResultSink, error)
+
+// Recipe is the pluggable agent definition. It declares what factories the agent
+// needs (goal source, gate, result sink) and how it should be routed (capability
+// and sensitivity hints via RoutingSpec).
 //
 // A Recipe is not directly executable. Instead, it is paired with a concrete
 // Executor (determined at dispatch time by the router) that actually performs
@@ -70,36 +81,39 @@ type ResultSink interface {
 // The Name field is populated by SelectRecipe and carries the registered recipe
 // name (the registry key is the single source of truth).
 type Recipe struct {
-	Name        string
-	GoalSource  GoalSource
-	RoutingSpec RoutingSpec
-	GateFactory GateFactory
-	ResultSink  ResultSink
-	BlockWiring map[string]interface{} // opaque config for block integration
+	Name                string
+	GoalSourceFactory   GoalSourceFactory
+	RoutingSpec         RoutingSpec
+	GateFactory         GateFactory
+	ResultSinkFactory   ResultSinkFactory
+	BlockWiring         map[string]interface{} // opaque config for block integration
 }
 
-// GateFactory is a factory function that creates a new Gate instance. It is
-// called once per task execution to obtain the verification gate.
-type GateFactory func() supervisor.Gate
-
 // New constructs a Recipe from the provided seam factories. It validates that
-// GateFactory is non-nil (panics if nil).
+// GoalSourceFactory, GateFactory, and ResultSinkFactory are non-nil (panics if
+// any is nil) — a Recipe with missing seams cannot do useful work.
 func New(
-	goalSource GoalSource,
+	goalSourceFactory GoalSourceFactory,
 	routingSpec RoutingSpec,
 	gateFactory GateFactory,
-	resultSink ResultSink,
+	resultSinkFactory ResultSinkFactory,
 	blockWiring map[string]interface{},
 ) Recipe {
+	if goalSourceFactory == nil {
+		panic("recipe.New: GoalSourceFactory is nil — a Recipe must have a GoalSource")
+	}
 	if gateFactory == nil {
 		panic("recipe.New: GateFactory is nil — a Recipe must have a Gate")
 	}
+	if resultSinkFactory == nil {
+		panic("recipe.New: ResultSinkFactory is nil — a Recipe must have a ResultSink")
+	}
 	return Recipe{
-		GoalSource:  goalSource,
-		RoutingSpec: routingSpec,
-		GateFactory: gateFactory,
-		ResultSink:  resultSink,
-		BlockWiring: blockWiring,
+		GoalSourceFactory:   goalSourceFactory,
+		RoutingSpec:         routingSpec,
+		GateFactory:         gateFactory,
+		ResultSinkFactory:   resultSinkFactory,
+		BlockWiring:         blockWiring,
 	}
 }
 

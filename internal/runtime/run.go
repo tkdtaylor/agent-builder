@@ -116,6 +116,20 @@ type Config struct {
 	AuditCheckpointPublicKey string // path to Ed25519 PEM public key (task 069 consume)
 }
 
+// seamConfigAdapter wraps Config to implement recipe.SeamConfig (ADR 044, task 077).
+// This avoids the Go limitation where a type can't have both a field and method of the same name.
+type seamConfigAdapter struct {
+	config *Config
+}
+
+func (a *seamConfigAdapter) TaskRoot() string      { return a.config.TaskRoot }
+func (a *seamConfigAdapter) PublishRemote() string { return a.config.PublishRemote }
+func (a *seamConfigAdapter) GitToken() string      { return a.config.GitToken }
+func (a *seamConfigAdapter) GitHubToken() string   { return a.config.GitHubToken }
+func (a *seamConfigAdapter) GitCLI() string        { return a.config.GitCLI }
+func (a *seamConfigAdapter) GitHubCLI() string     { return a.config.GitHubCLI }
+func (a *seamConfigAdapter) Worktree() string      { return a.config.Worktree }
+
 // RunFromEnv builds and runs one configured Phase 0 pipeline from environment
 // variables. The optional writer receives a short user-visible run summary.
 func RunFromEnv(stdout io.Writer) error {
@@ -241,30 +255,90 @@ func init() {
 }
 
 // newCodingAgentRecipe is the factory that constructs the coding-agent Recipe.
+// It returns factory functions that will construct the real seams at assembly time (ADR 044, task 077).
 func newCodingAgentRecipe() (recipe.Recipe, error) {
+	// GoalSourceFactory: constructs a tasksource.Source from config at assembly time.
+	goalSourceFactory := func(cfg recipe.SeamConfig) (supervisor.GoalSource, error) {
+		return tasksource.New(os.DirFS(cfg.TaskRoot()), tasksource.DefaultRoadmapPath, tasksource.DefaultTaskDirs...), nil
+	}
+
+	// ResultSinkFactory: constructs a GitHub publisher wrapped in a ResultSink adapter.
+	resultSinkFactory := func(cfg recipe.SeamConfig) (supervisor.ResultSink, error) {
+		pub := branchpub.NewGitHubCLI(branchpub.GitHubCLIConfig{
+			GitPath:     cfg.GitCLI(),
+			GHPath:      cfg.GitHubCLI(),
+			Worktree:    cfg.Worktree(),
+			Remote:      cfg.PublishRemote(),
+			GitToken:    cfg.GitToken(),
+			GitHubToken: cfg.GitHubToken(),
+		})
+		return &publisherAdapter{pub}, nil
+	}
+
 	return recipe.New(
-		nilGoalSource{},
+		goalSourceFactory,
 		recipe.RoutingSpec{MinCapability: 1, SensitivityHint: recipe.SensitivitySensitive},
 		newProductionGateFactory,
-		nilResultSink{},
+		resultSinkFactory,
 		nil,
 	), nil
 }
 
-// nilGoalSource is a dummy goal source used for the recipe definition.
-// The actual task selection happens in the Run function via tasksource.
-type nilGoalSource struct{}
-
-func (nilGoalSource) FetchGoal() (string, error) {
-	return "", nil
+// publisherAdapter wraps internal/publisher.GitHubCLI to satisfy supervisor.ResultSink.
+// This adapter is required because the concrete publisher lives in internal/publisher and
+// supervisor cannot import it (F-003 invariant).
+type publisherAdapter struct {
+	pub *branchpub.GitHubCLI
 }
 
-// nilResultSink is a dummy result sink used for the recipe definition.
-// The real result sink is handled by the publisher in the supervisor loop.
-type nilResultSink struct{}
+func (a *publisherAdapter) Publish(ctx context.Context, req supervisor.PublishRequest) (supervisor.PublishResult, error) {
+	// Translate supervisor.PublishRequest to publisher.Request.
+	pubReq := branchpub.Request{
+		Task:     req.Task,
+		Worktree: req.Worktree,
+		Branch:   req.Branch,
+		Remote:   req.Remote,
+	}
+	// Call the publisher.
+	pubRes, err := a.pub.Publish(ctx, pubReq)
+	if err != nil {
+		return supervisor.PublishResult{}, err
+	}
+	// Translate publisher.Result to supervisor.PublishResult.
+	return supervisor.PublishResult{
+		Branch: pubRes.Branch,
+		PRURL:  pubRes.PRURL,
+		PRID:   pubRes.PRID,
+	}, nil
+}
 
-func (nilResultSink) WriteResult(string) error {
-	return nil
+// resultSinkAdapter wraps supervisor.ResultSink to satisfy branchpub.Publisher.
+// This is the reverse adapter: converts the seam interface back to the concrete interface
+// for use in the retryingInBoxLoop, which predates the seam abstraction and still uses
+// the branchpub.Publisher interface directly.
+type resultSinkAdapter struct {
+	sink supervisor.ResultSink
+}
+
+func (a *resultSinkAdapter) Publish(ctx context.Context, req branchpub.Request) (branchpub.Result, error) {
+	// Translate branchpub.Request to supervisor.PublishRequest.
+	seamReq := supervisor.PublishRequest{
+		Task:     req.Task,
+		Worktree: req.Worktree,
+		Branch:   req.Branch,
+		Remote:   req.Remote,
+	}
+	// Call the sink.
+	seamRes, err := a.sink.Publish(ctx, seamReq)
+	if err != nil {
+		return branchpub.Result{}, err
+	}
+	// Translate supervisor.PublishResult to branchpub.Result.
+	return branchpub.Result{
+		Branch: seamRes.Branch,
+		PRURL:  seamRes.PRURL,
+		PRID:   seamRes.PRID,
+	}, nil
 }
 
 // newProductionGateFactory wraps newProductionGate to match the GateFactory signature.
@@ -301,8 +375,21 @@ func Run(config Config, stdout io.Writer) error {
 		return fmt.Errorf("run: select recipe: %w", err)
 	}
 
-	source := tasksource.New(os.DirFS(config.TaskRoot), tasksource.DefaultRoadmapPath, tasksource.DefaultTaskDirs...)
-	task, ok, err := source.Next()
+	// Assemble the four IO seams from the recipe's factories (ADR 044, task 077).
+	// This is the thin assembler pattern: all construction flows through the recipe.
+	seamConfig := &seamConfigAdapter{config: &config}
+
+	goalSource, err := r.GoalSourceFactory(seamConfig)
+	if err != nil {
+		return fmt.Errorf("run: construct goal source: %w", err)
+	}
+
+	resultSink, err := r.ResultSinkFactory(seamConfig)
+	if err != nil {
+		return fmt.Errorf("run: construct result sink: %w", err)
+	}
+
+	task, ok, err := goalSource.Next()
 	if err != nil {
 		return fmt.Errorf("run: pick task: %w", err)
 	}
@@ -318,6 +405,7 @@ func Run(config Config, stdout io.Writer) error {
 	}
 
 	// Resolve the recipe's RoutingSpec to a concrete executor via the stub resolver.
+	// stubResolveExecutor — replaced by registry+router in task 095.
 	exec := stubResolveExecutor(r.RoutingSpec, config)
 
 	// Select the run backend: if AGENT_BUILDER_EXEC_SANDBOX_BIN is set, use execsandbox
@@ -407,6 +495,9 @@ func Run(config Config, stdout io.Writer) error {
 		tier:     tierOverride,
 		limits:   limits,
 	}
+	// Adapt the supervisor.ResultSink to the branchpub.Publisher interface for the loop.
+	publisher := &resultSinkAdapter{sink: resultSink}
+
 	inBox := retryingInBoxLoop{
 		executor:     exec,
 		gate:         verifier,
@@ -414,14 +505,7 @@ func Run(config Config, stdout io.Writer) error {
 		launcher:     config.ExecBoxLauncher,
 		statusWriter: tasksource.NewStatusWriter(config.TaskRoot, tasksource.DefaultTaskDirs...),
 		policy:       policy,
-		publisher: branchpub.NewGitHubCLI(branchpub.GitHubCLIConfig{
-			GitPath:     config.GitCLI,
-			GHPath:      config.GitHubCLI,
-			Worktree:    config.Worktree,
-			Remote:      config.PublishRemote,
-			GitToken:    config.GitToken,
-			GitHubToken: config.GitHubToken,
-		}),
+		publisher:    publisher,
 		publishRemote: config.PublishRemote,
 		publishSecrets: []string{
 			config.GitToken,

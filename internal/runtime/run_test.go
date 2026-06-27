@@ -254,15 +254,15 @@ func TestSelectCodingAgentRecipe(t *testing.T) {
 		t.Errorf("Name = %q, want \"coding-agent\"", r.Name)
 	}
 
-	// Verify all required seam fields are non-nil.
-	if r.GoalSource == nil {
-		t.Error("GoalSource is nil")
+	// Verify all required seam factory fields are non-nil (ADR 044, task 077).
+	if r.GoalSourceFactory == nil {
+		t.Error("GoalSourceFactory is nil")
 	}
 	if r.GateFactory == nil {
 		t.Error("GateFactory is nil")
 	}
-	if r.ResultSink == nil {
-		t.Error("ResultSink is nil")
+	if r.ResultSinkFactory == nil {
+		t.Error("ResultSinkFactory is nil")
 	}
 
 	// Verify the RoutingSpec is non-zero (has MinCapability set).
