@@ -199,6 +199,59 @@ only the names and where they come from are documented here.
 
 ---
 
+## Local model registry entry (task 094 evaluation, re-run June 2026)
+
+For operators who wish to use locally-hosted models (e.g., on-premise deployments, low-bandwidth environments, hardware-constrained hosts, or as the quota-free / privacy-preserving backstop per ADR 043), the following describes the evaluated local model setup.
+
+**Retained local models (two entries):** the host keeps **both** finalists, routed per task by the registry/router (ADR 043; tasks 092/095):
+- **Qwen3 8B** (`ollama/qwen3:8b`) — the **generalist** local entry (general reasoning, decomposition, docs, non-code sub-tasks).
+- **Qwen2.5-Coder 7B** (`ollama/qwen2.5-coder:7b`) — the **coder** local entry (code generation for the coding recipe).
+
+Both are small (~4.7–5.3 GB), VRAM-resident on 8 GB, and fast; keeping both costs little disk and gives the router a code-vs-general choice. All other benchmarked models were removed.
+
+**Hardware evaluated:** NVIDIA RTX 4060 Laptop (8 GB VRAM), Intel Core Ultra 9 185H, 62 GiB RAM, Ubuntu 26.04 LTS
+
+**Benchmark results (task 094 re-run, 2026-06-27) — warm runs, code + general prompts:**
+
+| Model | Type | Code TTFT | Code TPS | VRAM | Disposition |
+|-------|------|-----------|----------|------|-------------|
+| **Qwen3 8B** | Generalist (+code) | 8.27s | 44.16 | 5.34 GB | **RETAINED — generalist entry** |
+| **Qwen2.5-Coder 7B** | Code-specialized | 3.38s | 52.40 | 4.72 GB | **RETAINED — coder entry** |
+| Mistral 7B | General | 1.54s | 53.82 | 4.75 GB | removed |
+| Llama3.1 8B | General | 2.39s | 49.78 | 5.19 GB | removed |
+| Qwen2.5 14B | General | 7.95s | 11.40 | 7.08 GB | removed (low TPS) |
+
+**Selection rationale:** Among the 7–8B candidates, speed and VRAM are **non-differentiators** (all VRAM-resident, 44–54 TPS, sub-8s TTFT once warm) — the earlier TTFT-based elimination was a cold-load artifact. The choice is therefore about capability, which this speed benchmark does not measure. Rather than force a single pick, both finalists are retained: **Qwen3 8B** for its stronger general reasoning (the system-wide quota-free backstop must be a good generalist) and **Qwen2.5-Coder 7B** for its stronger code ability (the coding reference build). The router selects between them per task. See `docs/plans/sprints/094-local-model-benchmark.md` for full methodology.
+
+> **Routing-between-locals is a follow-up (tasks 092/095).** Both local entries have ~zero cost, so the capability/cost-first router cannot yet distinguish "use the coder for code, the generalist for everything else." Exploiting both entries needs a **specialization/domain dimension** on the entry + `RoutingSpec` (e.g. a `code` vs `general` hint) — flagged for ADR 043's router/recipe tasks.
+
+**Translation proxy:** LiteLLM (`pip install 'litellm[proxy]'`).
+
+**Setup (re-runnable):**
+
+1. Install Ollama (https://ollama.ai/) and pull both models: `ollama pull qwen3:8b && ollama pull qwen2.5-coder:7b`
+2. Start Ollama: `ollama serve` (http://localhost:11434)
+3. Install + start LiteLLM against the desired model, e.g. the coder:
+   ```bash
+   litellm --model ollama/qwen2.5-coder:7b --api_base http://localhost:11434 --port 8000 --host 127.0.0.1
+   ```
+4. Point the Claude harness at the proxy (final wiring is tasks 091/092):
+   ```bash
+   export ANTHROPIC_BASE_URL="http://localhost:8000"
+   export ANTHROPIC_AUTH_TOKEN="sk-local"   # any non-empty value; the local proxy ignores it
+   ```
+
+**Validation (task 094, REQ-094-02) — honest status:**
+- ✓ LiteLLM proxy exposes the Ollama models over an Anthropic/OpenAI-compatible endpoint; raw `curl` round-trips return valid completions.
+- ⚠ **The actual `claude` CLI round-trip against the proxy was NOT confirmed** — the CLI appeared to constrain model names. Whether the Claude *harness* truly drives a local model via the proxy (the core ADR-043 local-entry assumption) **must be proven in task 091** (likely via `ANTHROPIC_MODEL` / model aliasing). Do not treat the harness-via-proxy path as validated until then.
+
+**Future improvements:**
+- Task 091 will provide dedicated local-entry registry plumbing (replacing manual env-var config)
+- Task 092 will integrate the local entry into routing (allowing fallback to local models)
+- Periodic re-evaluation recommended as new models are released (benchmark methodology documented for reproducibility)
+
+---
+
 ## Defaults policy
 
 Defaults are safe and bounded. The execution-box profile starts from read-only, non-root, no-new-privileges, dropped workload capabilities, no host-home or container-engine socket mounts, explicit resource quotas, default-deny egress, and the agent workload mapped to `runsc`. Overrides may tune quota sizes, choose a different allowlist file, or select `runc`/`kata` explicitly, but must not weaken the underlying containment guarantees without an ADR.
