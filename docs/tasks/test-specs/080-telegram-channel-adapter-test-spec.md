@@ -119,7 +119,7 @@ The adapter is configured with:
 **Step:** Call `adapter.Next()` (the `supervisor.GoalSource.Next` method).
 
 **Expected output:**
-- Returns `(supervisor.Task{Goal: "build the auth module"}, true, nil)`.
+- Returns `(supervisor.Task{Spec: "build the auth module"}, true, nil)` (note: the plaintext goal is mapped to `Task.Spec` field, not `Task.Goal` — see CRITICAL INTEGRATION FACTS).
 - The stub Telegram server receives a second `getUpdates` call with `offset = 101`
   (update_id + 1), confirming offset was advanced.
 - The `audit.Sink` received no rejection events (happy path).
@@ -173,7 +173,7 @@ The adapter shares a single `ReplayCache` instance across both `Next()` calls.
 **Step:** Call `adapter.Next()` twice.
 
 **Expected output (call 1):**
-- Returns `(supervisor.Task{Goal: "build the auth module"}, true, nil)`.
+- Returns `(supervisor.Task{Spec: "build the auth module"}, true, nil)` (plaintext mapped to `Task.Spec` field).
 
 **Expected output (call 2):**
 - Returns `(supervisor.Task{}, false, nil)` (or similar "no valid goal" signal).
