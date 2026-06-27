@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/tkdtaylor/agent-builder/internal/executor"
+	"github.com/tkdtaylor/agent-builder/internal/recipe"
 )
 
 func TestConfigFromEnvAcceptsOAuthTokenOnly(t *testing.T) {
@@ -236,5 +237,115 @@ func TestRunTimeoutParsing(t *testing.T) {
 	expectedTimeout := 10 * time.Minute
 	if config.RunTimeout != expectedTimeout {
 		t.Fatalf("RunTimeout = %v, want %v", config.RunTimeout, expectedTimeout)
+	}
+}
+
+// TC-077-01: SelectRecipe("coding-agent") returns a non-nil Recipe with all
+// required seam fields and a non-zero RoutingSpec.
+func TestSelectCodingAgentRecipe(t *testing.T) {
+	// Select the coding-agent recipe (registered by init() in this package).
+	r, err := recipe.SelectRecipe("coding-agent")
+	if err != nil {
+		t.Fatalf("SelectRecipe(\"coding-agent\") failed: %v", err)
+	}
+
+	// Verify the recipe name is set correctly.
+	if r.Name != "coding-agent" {
+		t.Errorf("Name = %q, want \"coding-agent\"", r.Name)
+	}
+
+	// Verify all required seam fields are non-nil.
+	if r.GoalSource == nil {
+		t.Error("GoalSource is nil")
+	}
+	if r.GateFactory == nil {
+		t.Error("GateFactory is nil")
+	}
+	if r.ResultSink == nil {
+		t.Error("ResultSink is nil")
+	}
+
+	// Verify the RoutingSpec is non-zero (has MinCapability set).
+	if r.RoutingSpec.MinCapability == 0 {
+		t.Error("RoutingSpec.MinCapability is zero")
+	}
+
+	// Verify the recipe is included in ListRecipes().
+	recipes := recipe.ListRecipes()
+	found := false
+	for _, name := range recipes {
+		if name == "coding-agent" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("\"coding-agent\" not found in ListRecipes()")
+	}
+}
+
+// TC-077-06: ConfigFromEnv defaults RecipeName to "coding-agent" when unset.
+func TestConfigFromEnvRecipeNameDefault(t *testing.T) {
+	getenv := func(key string) string {
+		switch key {
+		case "AGENT_BUILDER_TASK_ROOT":
+			return "/tmp/tasks"
+		case "AGENT_BUILDER_WORKTREE":
+			return "/tmp/work"
+		case executor.ClaudeCLIAuthEnv:
+			return "test-token"
+		case "AGENT_BUILDER_EXEC_BOX_LAUNCHER":
+			return "containment/execution-box/run.sh"
+		case "AGENT_BUILDER_RUN_TIMEOUT":
+			return "5m"
+		case "AGENT_BUILDER_MAX_ATTEMPTS":
+			return "2"
+		case "AGENT_BUILDER_PUBLISH_REMOTE":
+			return "origin"
+		default:
+			return ""
+		}
+	}
+
+	config, err := ConfigFromEnv(getenv)
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+	if config.RecipeName != "coding-agent" {
+		t.Errorf("RecipeName = %q, want \"coding-agent\"", config.RecipeName)
+	}
+}
+
+// TC-077-06: ConfigFromEnv reads AGENT_BUILDER_RECIPE when set.
+func TestConfigFromEnvRecipeNameExplicit(t *testing.T) {
+	getenv := func(key string) string {
+		switch key {
+		case "AGENT_BUILDER_TASK_ROOT":
+			return "/tmp/tasks"
+		case "AGENT_BUILDER_WORKTREE":
+			return "/tmp/work"
+		case executor.ClaudeCLIAuthEnv:
+			return "test-token"
+		case "AGENT_BUILDER_EXEC_BOX_LAUNCHER":
+			return "containment/execution-box/run.sh"
+		case "AGENT_BUILDER_RUN_TIMEOUT":
+			return "5m"
+		case "AGENT_BUILDER_MAX_ATTEMPTS":
+			return "2"
+		case "AGENT_BUILDER_PUBLISH_REMOTE":
+			return "origin"
+		case "AGENT_BUILDER_RECIPE":
+			return "test-recipe"
+		default:
+			return ""
+		}
+	}
+
+	config, err := ConfigFromEnv(getenv)
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() error = %v", err)
+	}
+	if config.RecipeName != "test-recipe" {
+		t.Errorf("RecipeName = %q, want \"test-recipe\"", config.RecipeName)
 	}
 }

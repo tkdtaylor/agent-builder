@@ -628,6 +628,77 @@ func lastRunRecordLine(t *testing.T, path string) string {
 	return lines[len(lines)-1]
 }
 
+func TestConfigFromEnvRecipeNameDefault(t *testing.T) {
+	// TC-077-06: ConfigFromEnv defaults RecipeName to "coding-agent" when unset.
+	validEnv := map[string]string{
+		runtimewiring.EnvTaskRoot:       "/tmp/tasks",
+		runtimewiring.EnvWorktree:       "/tmp/work",
+		runtimewiring.EnvClaudeCLI:      "claude",
+		"ANTHROPIC_API_KEY":             "test-token",
+		runtimewiring.EnvRunTimeout:     "5m",
+		runtimewiring.EnvMaxAttempts:    "3",
+		runtimewiring.EnvPublishRemote:  "origin",
+	}
+
+	getenv := func(key string) string {
+		return validEnv[key]
+	}
+
+	config, err := runtimewiring.ConfigFromEnv(getenv)
+	if err != nil {
+		t.Fatalf("ConfigFromEnv with valid config failed: %v", err)
+	}
+	if config.RecipeName != "coding-agent" {
+		t.Errorf("RecipeName = %q, want \"coding-agent\"", config.RecipeName)
+	}
+}
+
+func TestConfigFromEnvRecipeNameExplicit(t *testing.T) {
+	// TC-077-06: ConfigFromEnv reads AGENT_BUILDER_RECIPE when set.
+	validEnv := map[string]string{
+		runtimewiring.EnvTaskRoot:       "/tmp/tasks",
+		runtimewiring.EnvWorktree:       "/tmp/work",
+		runtimewiring.EnvClaudeCLI:      "claude",
+		"ANTHROPIC_API_KEY":             "test-token",
+		runtimewiring.EnvRunTimeout:     "5m",
+		runtimewiring.EnvMaxAttempts:    "3",
+		runtimewiring.EnvPublishRemote:  "origin",
+		runtimewiring.EnvRecipeName:     "test-recipe",
+	}
+
+	getenv := func(key string) string {
+		return validEnv[key]
+	}
+
+	config, err := runtimewiring.ConfigFromEnv(getenv)
+	if err != nil {
+		t.Fatalf("ConfigFromEnv with explicit recipe failed: %v", err)
+	}
+	if config.RecipeName != "test-recipe" {
+		t.Errorf("RecipeName = %q, want \"test-recipe\"", config.RecipeName)
+	}
+}
+
+func TestRunWithUnknownRecipeReturnsError(t *testing.T) {
+	// TC-077-04: Run with unknown recipe name returns error before sandbox creation.
+	binary := buildBinary(t)
+	fixture := newRunFixture(t, "ready")
+	env := fixture.env()
+	env[runtimewiring.EnvRecipeName] = "does-not-exist"
+
+	stdout, stderr, code := runBinaryExactEnv(t, binary, env, "run")
+	if code == 0 {
+		t.Fatalf("TC-077-04 unknown recipe exit code = 0, want non-zero; stdout=%q stderr=%q", stdout, stderr)
+	}
+	if !strings.Contains(stderr, "does-not-exist") {
+		t.Fatalf("TC-077-04 stderr = %q, want error naming unknown recipe", stderr)
+	}
+	// Verify no executor attempt was made (no sandbox creation).
+	if _, err := os.Stat(fixture.claudeLog); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("TC-077-04 unknown recipe executor log should not exist: %v", err)
+	}
+}
+
 func readRuntimeText(t *testing.T, path string) string {
 	t.Helper()
 	data, err := os.ReadFile(path)

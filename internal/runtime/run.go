@@ -18,6 +18,7 @@ import (
 	agentloop "github.com/tkdtaylor/agent-builder/internal/loop"
 	"github.com/tkdtaylor/agent-builder/internal/policy"
 	branchpub "github.com/tkdtaylor/agent-builder/internal/publisher"
+	"github.com/tkdtaylor/agent-builder/internal/recipe"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox/execsandbox"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox/podman"
@@ -43,6 +44,7 @@ const (
 	EnvGitHubCLI       = "AGENT_BUILDER_GH_CLI"
 	EnvGitToken        = "AGENT_BUILDER_GIT_TOKEN"
 	EnvGitHubToken     = "AGENT_BUILDER_GITHUB_TOKEN"
+	EnvRecipeName      = "AGENT_BUILDER_RECIPE"
 
 	// Vault wiring (ADR 036, task 066). Vault is opt-in: when EnvVaultBin is
 	// unset, vault wiring is skipped and the old env-forwarding behavior holds.
@@ -95,6 +97,7 @@ type Config struct {
 	GitHubCLI        string
 	GitToken         string
 	GitHubToken      string
+	RecipeName       string
 
 	// Vault wiring (ADR 036, task 066). VaultBin empty => vault disabled.
 	VaultBin       string
@@ -145,6 +148,11 @@ func configFromEnvWithSource(getenv func(string) string, src secrets.SecretSourc
 	authToken, oauthToken := src.ProviderToken()
 	gitToken, githubToken := src.PublisherTokens()
 
+	recipeName := strings.TrimSpace(getenv(EnvRecipeName))
+	if recipeName == "" {
+		recipeName = "coding-agent"
+	}
+
 	config := Config{
 		TaskRoot:         cleanPath(getenv(EnvTaskRoot)),
 		Worktree:         cleanPath(getenv(EnvWorktree)),
@@ -156,11 +164,14 @@ func configFromEnvWithSource(getenv func(string) string, src secrets.SecretSourc
 		RunRecordPath:    cleanPath(getenv(EnvRunRecord)),
 		AuditRecordPath:  cleanPath(getenv(EnvAuditRecord)),
 		AuditBin:         strings.TrimSpace(getenv(EnvAuditBin)),
+		RunTimeout:       0, // will be set below
+		MaxAttempts:      0, // will be set below
 		PublishRemote:    strings.TrimSpace(getenv(EnvPublishRemote)),
 		GitCLI:           strings.TrimSpace(getenv(EnvGitCLI)),
 		GitHubCLI:        strings.TrimSpace(getenv(EnvGitHubCLI)),
 		GitToken:         gitToken,
 		GitHubToken:      githubToken,
+		RecipeName:       recipeName,
 		VaultBin:         cleanPath(getenv(EnvVaultBin)),
 		VaultSocket:      cleanPath(getenv(EnvVaultSocket)),
 		VaultStorePath:   cleanPath(getenv(EnvVaultStorePath)),
@@ -224,6 +235,57 @@ func configFromEnvWithSource(getenv func(string) string, src secrets.SecretSourc
 	return config, nil
 }
 
+// init registers the coding-agent recipe at startup.
+func init() {
+	recipe.Register("coding-agent", newCodingAgentRecipe)
+}
+
+// newCodingAgentRecipe is the factory that constructs the coding-agent Recipe.
+func newCodingAgentRecipe() (recipe.Recipe, error) {
+	return recipe.New(
+		nilGoalSource{},
+		recipe.RoutingSpec{MinCapability: 1, SensitivityHint: recipe.SensitivitySensitive},
+		newProductionGateFactory,
+		nilResultSink{},
+		nil,
+	), nil
+}
+
+// nilGoalSource is a dummy goal source used for the recipe definition.
+// The actual task selection happens in the Run function via tasksource.
+type nilGoalSource struct{}
+
+func (nilGoalSource) FetchGoal() (string, error) {
+	return "", nil
+}
+
+// nilResultSink is a dummy result sink used for the recipe definition.
+// The real result sink is handled by the publisher in the supervisor loop.
+type nilResultSink struct{}
+
+func (nilResultSink) WriteResult(string) error {
+	return nil
+}
+
+// newProductionGateFactory wraps newProductionGate to match the GateFactory signature.
+func newProductionGateFactory() supervisor.Gate {
+	gate, _ := newProductionGate()
+	return gate
+}
+
+// stubResolveExecutor maps a RoutingSpec to a concrete supervisor.Executor.
+// This is a temporary stand-in that always returns the Claude CLI executor.
+// TODO: this function is replaced by the real registry+router in task 095.
+func stubResolveExecutor(spec recipe.RoutingSpec, config Config) supervisor.Executor {
+	_ = spec // ignore the routing spec for now; the stub always returns Claude CLI
+	return executor.NewClaudeCLI(executor.ClaudeCLIConfig{
+		CLIPath:    config.ClaudeCLI,
+		Worktree:   config.Worktree,
+		AuthToken:  config.ClaudeToken,
+		OAuthToken: config.ClaudeOAuthToken,
+	})
+}
+
 // Run dispatches at most one ready task through the concrete Phase 0 seams.
 func Run(config Config, stdout io.Writer) error {
 	if stdout == nil {
@@ -231,6 +293,12 @@ func Run(config Config, stdout io.Writer) error {
 	}
 	if err := validatePaths(config); err != nil {
 		return err
+	}
+
+	// Select the recipe and check it exists before creating any sandbox.
+	r, err := recipe.SelectRecipe(config.RecipeName)
+	if err != nil {
+		return fmt.Errorf("run: select recipe: %w", err)
 	}
 
 	source := tasksource.New(os.DirFS(config.TaskRoot), tasksource.DefaultRoadmapPath, tasksource.DefaultTaskDirs...)
@@ -243,21 +311,14 @@ func Run(config Config, stdout io.Writer) error {
 		return nil
 	}
 
-	verifier, err := newProductionGate()
-	if err != nil {
-		return err
-	}
+	verifier := r.GateFactory()
 	policy, err := agentloop.NewRetryPolicy(config.MaxAttempts, agentloop.BootstrapEscalationHook)
 	if err != nil {
 		return fmt.Errorf("run config: invalid %s: %w", EnvMaxAttempts, err)
 	}
 
-	exec := executor.NewClaudeCLI(executor.ClaudeCLIConfig{
-		CLIPath:    config.ClaudeCLI,
-		Worktree:   config.Worktree,
-		AuthToken:  config.ClaudeToken,
-		OAuthToken: config.ClaudeOAuthToken,
-	})
+	// Resolve the recipe's RoutingSpec to a concrete executor via the stub resolver.
+	exec := stubResolveExecutor(r.RoutingSpec, config)
 
 	// Select the run backend: if AGENT_BUILDER_EXEC_SANDBOX_BIN is set, use execsandbox
 	// as the default; otherwise fall back to the Podman launcher.
