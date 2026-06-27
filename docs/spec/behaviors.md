@@ -1,7 +1,7 @@
 # Behaviors
 
 **Project:** agent-builder
-**Last updated:** 2026-06-19 (task 073 — require_approval routing + audit_emit obligation)
+**Last updated:** 2026-06-27 (task 078 — runtime gate-existence assertion)
 
 What the system does, observably. Each behavior describes a triggering condition, the system's response, and any externally-visible side effects. This is the "you can verify this from outside the process" view.
 
@@ -198,6 +198,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Side effects:** One `audit-trail verify` subprocess is started and exits before `VerifyChain` returns. The on-disk logfile is read by the block subprocess; agent-builder does not read or mutate the logfile directly.
 - **Failure modes:** A missing or non-executable `binPath`, a logfile the block cannot read, or unparseable block output returns a non-nil error wrapping `audit.ErrVerifierUnavailable`. This is distinct from a clean `Valid == false` result: `ErrVerifierUnavailable` means the verifier could not produce a verdict at all; `Valid == false` means the verifier ran and detected a tamper. An unavailable verifier is never reported as "valid". The tamper detection algorithm itself (RFC 8785 canonicalization, first-broken-link detection, edit/reorder/truncation classification) is owned by the audit-trail block and is not re-implemented here.
 - **References:** ADR 026; `docs/tasks/test-specs/040-audit-verify-test-spec.md`; frozen block contract at `docs/CONTRACT.md` in `github.com/tkdtaylor/audit-trail`.
+
+### B-024: Reject recipes with nil or pass-through gates at assembly time
+
+- **Trigger:** `runtime.Run` is called with a recipe whose `GateFactory` is nil or produces a pass-through (always-OK, no checks) gate.
+- **Response:** Before constructing the supervisor or creating any sandbox, the assembler calls `GateFactory()`, checks that it returns a non-nil gate implementing the `Blocker` marker interface, and verifies that `Blocks() == true`. If any check fails, `Run` returns a non-nil error naming "gate" and the defect (nil factory, nil gate, missing Blocker interface, or `Blocks() == false`).
+- **Side effects:** No sandbox is created, no supervisor is constructed, no executor is dispatched, and no audit events are emitted when the gate-existence check fails.
+- **Failure modes:** A nil `GateFactory`, a gate returning `nil`, a gate not implementing `Blocker`, or a gate with `Blocks() == false` all return errors before assembly. This assertion applies unconditionally to every recipe path, regardless of whether the recipe is human-authored or generated, and cannot be disabled (no escape hatch / no `generated=true` flag exemption).
+- **References:** ADR 041; ADR 042; task 078; `docs/tasks/test-specs/078-runtime-gate-existence-assertion-test-spec.md`.
 
 ---
 

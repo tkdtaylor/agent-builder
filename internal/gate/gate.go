@@ -27,6 +27,14 @@ type Step interface {
 	Run(repoPath string) StepResult
 }
 
+// Blocker is a marker interface that identifies a gate as a real, blocking verifier.
+// A Gate that does not implement Blocker (or returns false from Blocks()) is
+// considered a pass-through (always-OK) gate and will be rejected at runtime
+// by the assembler (task 078).
+type Blocker interface {
+	Blocks() bool
+}
+
 // StepResult is the captured outcome for one verification Step.
 type StepResult struct {
 	Name     string
@@ -100,4 +108,10 @@ func (g *Gate) Verify(repoPath string) Verdict {
 	}
 
 	return verdict
+}
+
+// Blocks returns true, indicating this Gate is a real, blocking verifier.
+// It implements the Blocker marker interface (task 078).
+func (g *Gate) Blocks() bool {
+	return true
 }

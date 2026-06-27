@@ -360,6 +360,34 @@ func stubResolveExecutor(spec recipe.RoutingSpec, config Config) supervisor.Exec
 	})
 }
 
+// verifyGateExists asserts that the GateFactory is non-nil and produces a real,
+// blocking gate. This runtime check complements the compile-time guarantee for
+// human-authored recipes and provides defense-in-depth for generated recipes
+// (ADR 042, task 078). It rejects any recipe that binds no real blocking gate.
+func verifyGateExists(gateFactory recipe.GateFactory) error {
+	if gateFactory == nil {
+		return fmt.Errorf("runtime: gate assembly error: recipe's GateFactory is nil — a Recipe must have a real, blocking gate")
+	}
+
+	g := gateFactory()
+	if g == nil {
+		return fmt.Errorf("runtime: gate assembly error: GateFactory returned nil — gate must be a non-nil, blocking gate")
+	}
+
+	// Check if the gate implements the Blocker marker interface.
+	blocker, ok := g.(gate.Blocker)
+	if !ok {
+		return fmt.Errorf("runtime: gate assembly error: gate does not implement the Blocker marker interface — gate must be a real, blocking gate")
+	}
+
+	// Verify the gate reports it is blocking (not a pass-through).
+	if !blocker.Blocks() {
+		return fmt.Errorf("runtime: gate assembly error: gate.Blocks() returned false — gate must be a real, blocking gate")
+	}
+
+	return nil
+}
+
 // Run dispatches at most one ready task through the concrete Phase 0 seams.
 func Run(config Config, stdout io.Writer) error {
 	if stdout == nil {
@@ -373,6 +401,13 @@ func Run(config Config, stdout io.Writer) error {
 	r, err := recipe.SelectRecipe(config.RecipeName)
 	if err != nil {
 		return fmt.Errorf("run: select recipe: %w", err)
+	}
+
+	// Verify the recipe's GateFactory produces a real, blocking gate (ADR 042, task 078).
+	// This assembly-time check fires before any sandbox.Create or supervisor construction,
+	// rejecting any recipe that binds no real blocking gate.
+	if err := verifyGateExists(r.GateFactory); err != nil {
+		return err
 	}
 
 	// Assemble the four IO seams from the recipe's factories (ADR 044, task 077).
