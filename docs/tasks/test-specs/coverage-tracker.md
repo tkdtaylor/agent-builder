@@ -108,6 +108,7 @@
 | 093 | Usage/quota tracking | 093-usage-quota-tracking-test-spec.md | ✅ | ◻️ | not started — depends on 092 |
 | 094 | Local-model evaluation (hardware-specific, operator-run) | 094-local-model-evaluation-test-spec.md | ✅ | 🟡 | L6 operator-run (2026-06-27, re-run): **two local entries retained** — `qwen3:8b` (generalist) + `qwen2.5-coder:7b` (coder), both VRAM-resident on 8 GB (5.34 / 4.72 GB, 44–52 TPS); other candidates (mistral:7b, llama3.1:8b, qwen2.5:14b) benchmarked then removed. Speed/VRAM found non-differentiating among 7–8B; both kept for code-vs-general routing (092/095). LiteLLM proxy validated via **curl only**; actual `claude`-CLI-via-proxy round-trip NOT confirmed (model-name constraint) → must be proven in task 091. Methodology re-runnable; rationale in `docs/plans/sprints/094-local-model-benchmark.md` + `docs/spec/configuration.md`. Full agent-builder integration pends 091/092. |
 | 095 | Recipe RoutingSpec wired to real router (replaces task 077 stub) | 095-recipe-routing-spec-real-router-test-spec.md | ✅ | ◻️ | not started — depends on 077, 087, 089, 090, 091, 092, 093 |
+| 097 | Telegram channel adapter security hardening (SEC-001 body cap, SEC-002 guard timeout, SEC-003 sentinel errors) | 097-telegram-security-hardening-test-spec.md | ✅ | ◻️ | not started — depends on 080, 096 |
 
 ## Status key
 
