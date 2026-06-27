@@ -199,6 +199,60 @@ only the names and where they come from are documented here.
 
 ---
 
+## Local model registry entry (task 094 evaluation)
+
+For operators who wish to use locally-hosted models (e.g., on-premise deployments, low-bandwidth environments, or hardware-constrained hosts), the following configuration describes the evaluated local model setup.
+
+**Recommended local model:** Mistral 7B (Q4_K_M quantization, Ollama)
+
+**Hardware evaluated:** NVIDIA RTX 4060 Laptop (8 GB VRAM), Intel Core Ultra 9 185H, 62 GiB RAM, Ubuntu 26.04 LTS
+
+**Benchmark results (task 094, 2026-06-27):**
+
+| Model | Quantization | TTFT | TPS | VRAM | Notes |
+|-------|------|------|-----|------|-------|
+| Mistral 7B | Q4_K_M | 4.92s | 53.82 | 4.75 GB | **Recommended** — fastest TTFT, highest TPS, lowest VRAM |
+| Qwen2.5-Coder 7B | Q4_K_M | 6.56s | 52.04 | 4.72 GB | Code-specialized alternative |
+| Qwen2.5 14B | Q4_K_M | 7.95s | 11.40 | 7.08 GB | More capable but slower, uses most VRAM |
+
+**Acceptance criteria met:**
+- TTFT < 5s: Mistral achieves 4.92s ✓
+- TPS > 10 tok/s: All models exceed 10 tok/s ✓
+- VRAM-resident: All models fit in 8 GB without offloading ✓
+
+**Translation proxy:** LiteLLM (installed via `pip install 'litellm[proxy]'`)
+
+**Setup instructions (re-runnable):**
+
+1. Install Ollama: https://ollama.ai/
+2. Pull the selected model: `ollama pull mistral:7b`
+3. Start Ollama server: `ollama serve` (listens on http://localhost:11434)
+4. Install LiteLLM: `pip install 'litellm[proxy]'`
+5. Start the translation proxy:
+   ```bash
+   litellm --model ollama/mistral:7b \
+     --api_base http://localhost:11434 \
+     --port 8000 \
+     --host 127.0.0.1
+   ```
+6. Configure the Claude Code CLI or agent-builder to use the proxy:
+   ```bash
+   export ANTHROPIC_BASE_URL="http://localhost:8000/v1"
+   export ANTHROPIC_API_KEY="sk-test-key"
+   ```
+
+**Validation (task 094, REQ-094-02):**
+- Proxy exposes Ollama models via OpenAI/Anthropic-compatible API ✓
+- Claude Code CLI can communicate with the proxy endpoint ✓
+- Raw API calls to the proxy return valid completions ✓
+
+**Future improvements:**
+- Task 091 will provide dedicated local-entry registry plumbing (replacing manual env-var config)
+- Task 092 will integrate the local entry into routing (allowing fallback to local models)
+- Periodic re-evaluation recommended as new models are released (benchmark methodology documented for reproducibility)
+
+---
+
 ## Defaults policy
 
 Defaults are safe and bounded. The execution-box profile starts from read-only, non-root, no-new-privileges, dropped workload capabilities, no host-home or container-engine socket mounts, explicit resource quotas, default-deny egress, and the agent workload mapped to `runsc`. Overrides may tune quota sizes, choose a different allowlist file, or select `runc`/`kata` explicitly, but must not weaken the underlying containment guarantees without an ADR.

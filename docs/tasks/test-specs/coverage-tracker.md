@@ -105,7 +105,7 @@
 | 091 | Local entry + translation-proxy seam | 091-local-entry-translation-proxy-test-spec.md | ✅ | ◻️ | not started — depends on 087, 088 |
 | 092 | Router + capability/cost model + escalation | 092-router-capability-cost-escalation-test-spec.md | ✅ | ◻️ | not started — depends on 087, 089, 090, 091 |
 | 093 | Usage/quota tracking | 093-usage-quota-tracking-test-spec.md | ✅ | ◻️ | not started — depends on 092 |
-| 094 | Local-model evaluation (hardware-specific, operator-run) | 094-local-model-evaluation-test-spec.md | ✅ | ◻️ | not started — depends on 091, 092; parallel with 093 |
+| 094 | Local-model evaluation (hardware-specific, operator-run) | 094-local-model-evaluation-test-spec.md | ✅ | 🟡 | L6 operator-run (2026-06-27): Mistral 7B selected (TTFT 4.92s, TPS 53.82 tok/s, 4.75 GB VRAM); benchmarked 5 candidate models; LiteLLM proxy validated (Ollama+proxy endpoint exposed OpenAI-compatible API, curl test confirmed working); config+results documented in `docs/spec/configuration.md` and `BENCHMARK_RESULTS_094.md`. REQ-094-02 full agent-builder integration deferred to tasks 091/092. Ready for review. |
 | 095 | Recipe RoutingSpec wired to real router (replaces task 077 stub) | 095-recipe-routing-spec-real-router-test-spec.md | ✅ | ◻️ | not started — depends on 077, 087, 089, 090, 091, 092, 093 |
 
 ## Status key
