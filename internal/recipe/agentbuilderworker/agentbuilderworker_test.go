@@ -206,6 +206,7 @@ func TestTC082_02B_DepScanCVEFindingFailsVerdict(t *testing.T) {
 
 // ----------------------------------------------------------------------------
 // TC-082-03: Gate applies gate-existence assertion on generated recipe output
+// NEGATIVE TESTS (SEC-001, SEC-002, SEC-003)
 // ----------------------------------------------------------------------------
 
 // TestTC082_03A_GeneratedRecipeWithNoGateFails tests TC-082-03 sub-test A:
@@ -319,6 +320,200 @@ func TestTC082_03C_GeneratedRecipeWithValidGatePasses(t *testing.T) {
 	}
 	if !gateExistResult.OK {
 		t.Errorf("generated-gate-existence StepResult.OK = false, want true; output: %s", gateExistResult.Output)
+	}
+}
+
+// SEC-001(a): GateFactory only in a comment must FAIL.
+func TestTC082_03_SEC001a_GateFactoryInCommentOnlyFails(t *testing.T) {
+	binDir := t.TempDir()
+	writeScript(t, filepath.Join(binDir, "code-scanner"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	writeScript(t, filepath.Join(binDir, "dep-scan"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	t.Setenv("PATH", binDir)
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "evasion.go"), `
+package generated
+
+import "github.com/tkdtaylor/agent-builder/internal/recipe"
+
+// GateFactory is not a real binding, just a comment
+func newRecipe() (recipe.Recipe, error) {
+	return recipe.Recipe{}, nil
+}
+`)
+
+	step := GeneratedGateExistenceStep{}
+	result := step.Run(dir)
+	if result.OK {
+		t.Errorf("GateFactory-in-comment should fail gate-existence check; got OK=true")
+	}
+	if !containsAny(result.Output, "GateFactory", "no recipes") {
+		t.Errorf("output should mention missing GateFactory or no recipes; got: %q", result.Output)
+	}
+}
+
+// SEC-001(b): GateFactory only in a string literal must FAIL.
+func TestTC082_03_SEC001b_GateFactoryInStringOnlyFails(t *testing.T) {
+	binDir := t.TempDir()
+	writeScript(t, filepath.Join(binDir, "code-scanner"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	writeScript(t, filepath.Join(binDir, "dep-scan"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	t.Setenv("PATH", binDir)
+
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "evasion.go"), `
+package generated
+
+import "github.com/tkdtaylor/agent-builder/internal/recipe"
+
+func newRecipe() (recipe.Recipe, error) {
+	msg := "GateFactory is here in a string"
+	_ = msg
+	return recipe.Recipe{}, nil
+}
+`)
+
+	step := GeneratedGateExistenceStep{}
+	result := step.Run(dir)
+	if result.OK {
+		t.Errorf("GateFactory-in-string should fail gate-existence check; got OK=true")
+	}
+}
+
+// SEC-001(c): GateFactory with extra whitespace and cast-to-nil must FAIL.
+// Test both variations: (1) extra whitespace in GateFactory: nil, and (2) cast-to-nil pattern.
+func TestTC082_03_SEC001c_ExtraWhitespaceFails(t *testing.T) {
+	binDir := t.TempDir()
+	writeScript(t, filepath.Join(binDir, "code-scanner"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	writeScript(t, filepath.Join(binDir, "dep-scan"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	t.Setenv("PATH", binDir)
+
+	dir := t.TempDir()
+	// Use nilGateRecipeSource which has explicit GateFactory: nil
+	writeFile(t, filepath.Join(dir, "nil_gate.go"), nilGateRecipeSource)
+
+	step := GeneratedGateExistenceStep{}
+	result := step.Run(dir)
+	if result.OK {
+		t.Errorf("GateFactory: nil should fail; got OK=true")
+	}
+	if !containsAny(result.Output, "nil", "GateFactory") {
+		t.Errorf("output should name the nil binding; got: %q", result.Output)
+	}
+}
+
+// SEC-001(c) variant: cast-to-nil must also FAIL.
+func TestTC082_03_SEC001c_CastToNilFails(t *testing.T) {
+	binDir := t.TempDir()
+	writeScript(t, filepath.Join(binDir, "code-scanner"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	writeScript(t, filepath.Join(binDir, "dep-scan"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	t.Setenv("PATH", binDir)
+
+	dir := t.TempDir()
+	// Use castNilRecipeSource which has GateFactory: (recipe.GateFactory)(nil)
+	writeFile(t, filepath.Join(dir, "cast_nil.go"), castNilRecipeSource)
+
+	step := GeneratedGateExistenceStep{}
+	result := step.Run(dir)
+	if result.OK {
+		t.Errorf("cast-to-nil GateFactory should fail; got OK=true")
+	}
+	if !containsAny(result.Output, "nil", "GateFactory") {
+		t.Errorf("output should name the nil binding; got: %q", result.Output)
+	}
+}
+
+// SEC-001(d): DECOY file — clean file + gate-less recipe in another file must FAIL.
+func TestTC082_03_SEC001d_DecoyFileWithGatelessRecipeFails(t *testing.T) {
+	binDir := t.TempDir()
+	writeScript(t, filepath.Join(binDir, "code-scanner"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	writeScript(t, filepath.Join(binDir, "dep-scan"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	t.Setenv("PATH", binDir)
+
+	dir := t.TempDir()
+	// Decoy file with the GateFactory token (should not pass the inspection).
+	writeFile(t, filepath.Join(dir, "decoy.go"), `
+package generated
+
+// GateFactory is mentioned here
+// This is just a helper file
+func Helper() {}
+`)
+	// Real recipe file with no gate binding (the defect).
+	writeFile(t, filepath.Join(dir, "recipe.go"), noGateRecipeSource)
+
+	step := GeneratedGateExistenceStep{}
+	result := step.Run(dir)
+	if result.OK {
+		t.Errorf("recipe with no GateFactory should fail even with a decoy file present; got OK=true")
+	}
+}
+
+// SEC-003: File that doesn't parse must FAIL (not silently skipped).
+func TestTC082_03_SEC003_NonParsingFileFails(t *testing.T) {
+	binDir := t.TempDir()
+	writeScript(t, filepath.Join(binDir, "code-scanner"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	writeScript(t, filepath.Join(binDir, "dep-scan"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	t.Setenv("PATH", binDir)
+
+	dir := t.TempDir()
+	// Write a .go file that doesn't parse (syntax error).
+	writeFile(t, filepath.Join(dir, "broken.go"), `
+package generated
+
+func NewRecipe() {
+	this is not valid go syntax!!!
+}
+`)
+
+	step := GeneratedGateExistenceStep{}
+	result := step.Run(dir)
+	if result.OK {
+		t.Errorf("unparseable .go file should fail gate-existence check; got OK=true")
+	}
+	if !containsAny(result.Output, "parse", "Parse") {
+		t.Errorf("output should mention parse failure; got: %q", result.Output)
+	}
+}
+
+// SEC-002: Recursive directory walk — recipe in a subdir is inspected.
+func TestTC082_03_SEC002_RecursiveWalkFindSubdirRecipe(t *testing.T) {
+	binDir := t.TempDir()
+	writeScript(t, filepath.Join(binDir, "code-scanner"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	writeScript(t, filepath.Join(binDir, "dep-scan"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	t.Setenv("PATH", binDir)
+
+	dir := t.TempDir()
+	// Create a subdirectory with a valid recipe.
+	subdir := filepath.Join(dir, "subpkg")
+	if err := os.Mkdir(subdir, 0o755); err != nil {
+		t.Fatalf("mkdir subdir: %v", err)
+	}
+	writeFile(t, filepath.Join(subdir, "recipe.go"), validGateRecipeSource)
+
+	step := GeneratedGateExistenceStep{}
+	result := step.Run(dir)
+	if !result.OK {
+		t.Errorf("recipe in subdirectory should be found and inspected (recursive walk); got OK=false, output: %s", result.Output)
+	}
+}
+
+// Test recipes skipped: _test.go files are not inspected by generated-gate-existence.
+func TestTC082_03_TestFilesSkipped(t *testing.T) {
+	binDir := t.TempDir()
+	writeScript(t, filepath.Join(binDir, "code-scanner"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	writeScript(t, filepath.Join(binDir, "dep-scan"), "#!/bin/sh\nprintf 'clean\\n'\nexit 0\n")
+	t.Setenv("PATH", binDir)
+
+	dir := t.TempDir()
+	// Write a _test.go file with a valid recipe (should be skipped).
+	writeFile(t, filepath.Join(dir, "recipe_test.go"), validGateRecipeSource)
+	// Write a non-test file with no gate (the defect).
+	writeFile(t, filepath.Join(dir, "recipe.go"), noGateRecipeSource)
+
+	step := GeneratedGateExistenceStep{}
+	result := step.Run(dir)
+	if result.OK {
+		t.Errorf("non-test file with no gate should fail even if _test.go has valid gate; got OK=true")
 	}
 }
 
@@ -542,49 +737,6 @@ func TestGeneratedGateExistenceStep_ValidGateFactory(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
-// Unit tests for inspectTextForGate
-// ----------------------------------------------------------------------------
-
-func TestInspectTextForGate_NoGateFactory(t *testing.T) {
-	src := `package example
-func NewRecipe() Recipe {
-	return Recipe{}
-}`
-	result := inspectTextForGate(src)
-	if result.hasGateFactory {
-		t.Error("hasGateFactory = true for source with no GateFactory, want false")
-	}
-}
-
-func TestInspectTextForGate_NilGateFactory(t *testing.T) {
-	src := `package example
-func NewRecipe() Recipe {
-	return Recipe{GateFactory: nil}
-}`
-	result := inspectTextForGate(src)
-	if !result.hasGateFactory {
-		t.Error("hasGateFactory = false, want true")
-	}
-	if !result.isNilBinding {
-		t.Error("isNilBinding = false, want true")
-	}
-}
-
-func TestInspectTextForGate_ValidGateFactory(t *testing.T) {
-	src := `package example
-func NewRecipe() Recipe {
-	return Recipe{GateFactory: newGateFactory}
-}`
-	result := inspectTextForGate(src)
-	if !result.hasGateFactory {
-		t.Error("hasGateFactory = false, want true")
-	}
-	if result.isNilBinding {
-		t.Error("isNilBinding = true for valid binding, want false")
-	}
-}
-
-// ----------------------------------------------------------------------------
 // Fixture sources
 // ----------------------------------------------------------------------------
 
@@ -616,9 +768,17 @@ func init() {
 // noGateRecipeSource is a generated recipe stub with no GateFactory reference at all.
 const noGateRecipeSource = `package generatedrecipe
 
-// This is a generated recipe with no gate binding — should fail gate-existence check.
-func placeholder() {
-	_ = "no gate here"
+import "github.com/tkdtaylor/agent-builder/internal/recipe"
+
+func newBadRecipe() (recipe.Recipe, error) {
+	return recipe.Recipe{
+		GoalSourceFactory: func(cfg recipe.SeamConfig) (supervisor.GoalSource, error) { return nil, nil },
+		ResultSinkFactory: func(cfg recipe.SeamConfig) (supervisor.ResultSink, error) { return nil, nil },
+	}, nil
+}
+
+func init() {
+	recipe.Register("bad-recipe", newBadRecipe)
 }
 `
 
@@ -636,6 +796,31 @@ func newBadRecipe() (recipe.Recipe, error) {
 		GateFactory: nil,
 		ResultSinkFactory: func(cfg recipe.SeamConfig) (supervisor.ResultSink, error) { return nil, nil },
 	}, nil
+}
+
+func init() {
+	recipe.Register("nil-gate-recipe", newBadRecipe)
+}
+`
+
+// castNilRecipeSource is a generated recipe stub with a cast-to-nil GateFactory pattern: (recipe.GateFactory)(nil).
+const castNilRecipeSource = `package generatedrecipe
+
+import (
+	"github.com/tkdtaylor/agent-builder/internal/recipe"
+	"github.com/tkdtaylor/agent-builder/internal/supervisor"
+)
+
+func newCastNilRecipe() (recipe.Recipe, error) {
+	return recipe.Recipe{
+		GoalSourceFactory: func(cfg recipe.SeamConfig) (supervisor.GoalSource, error) { return nil, nil },
+		GateFactory: (recipe.GateFactory)(nil),
+		ResultSinkFactory: func(cfg recipe.SeamConfig) (supervisor.ResultSink, error) { return nil, nil },
+	}, nil
+}
+
+func init() {
+	recipe.Register("cast-nil-recipe", newCastNilRecipe)
 }
 `
 

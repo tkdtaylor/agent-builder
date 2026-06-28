@@ -22,9 +22,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/tkdtaylor/agent-builder/internal/audit"
 	"github.com/tkdtaylor/agent-builder/internal/gate"
@@ -51,14 +53,13 @@ func (g *AgentBuilderWorkerGate) Blocks() bool {
 
 // GeneratedGateExistenceStep is a gate step that inspects the generated `.go`
 // recipe output for a non-nil GateFactory binding (ADR 047 point 1). It walks
-// all `.go` files in the target directory and verifies that at least one of them
-// declares a `GateFactory` field assignment that is not `nil`.
+// all `.go` files (recursively) in the target directory and verifies that
+// every recipe registered in the generated code binds a non-nil GateFactory.
 //
-// This is a static text analysis step — it does not compile the generated code.
-// It checks for:
-//   - Presence of a `GateFactory` identifier in the source text
-//   - The binding is not nil (i.e. "GateFactory: nil" or "GateFactory =  nil"
-//     patterns are absent while "GateFactory" is present with a non-nil value)
+// This step uses AST parsing (go/parser + go/ast) for semantic validation — it
+// does NOT rely on substring matching. This defeats evasions like comments,
+// string literals, whitespace variation, and cast-to-nil patterns. Parse
+// failures are gate failures (SEC-001, SEC-002, SEC-003).
 type GeneratedGateExistenceStep struct{}
 
 // Name returns the step identifier used in gate.Verdict.Results.
@@ -66,22 +67,21 @@ func (s GeneratedGateExistenceStep) Name() string {
 	return "generated-gate-existence"
 }
 
-// Run inspects all `.go` files in repoPath for a valid GateFactory binding.
-// Returns OK=false if no `.go` files exist, if none declares a GateFactory
-// binding, or if every GateFactory binding is set to nil.
+// Run inspects all `.go` files (recursively) in repoPath for valid GateFactory
+// bindings. Every recipe registered in the generated output must bind a non-nil
+// GateFactory. Returns OK=false if:
+//   - No `.go` files exist
+//   - Any `.go` file fails to parse (SEC-003: parse errors are gate failures)
+//   - A recipe is registered with no GateFactory binding
+//   - A recipe's GateFactory is bound to nil or a nil identifier
+//   - No recipes are registered at all (detected as zero gates)
 func (s GeneratedGateExistenceStep) Run(repoPath string) gate.StepResult {
-	entries, err := os.ReadDir(repoPath)
+	// Walk the directory recursively, collecting all .go files.
+	goFiles, err := findGoFiles(repoPath)
 	if err != nil {
 		return gate.StepResult{
 			OK:     false,
-			Output: fmt.Sprintf("generated-gate-existence: read dir %q: %v", repoPath, err),
-		}
-	}
-
-	goFiles := make([]string, 0)
-	for _, e := range entries {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") {
-			goFiles = append(goFiles, filepath.Join(repoPath, e.Name()))
+			Output: fmt.Sprintf("generated-gate-existence: walk directory %q: %v", repoPath, err),
 		}
 	}
 
@@ -92,66 +92,272 @@ func (s GeneratedGateExistenceStep) Run(repoPath string) gate.StepResult {
 		}
 	}
 
-	// Inspect each .go file for a GateFactory binding that is not nil.
-	for _, goFile := range goFiles {
-		result := inspectFileForGate(goFile)
-		if result.hasGateFactory && !result.isNilBinding {
+	// Parse each file and collect recipes. Track parse failures as gate failures.
+	var parseErrors []string
+	recipes := make([]*RecipeBinding, 0)
+
+	for _, filePath := range goFiles {
+		src, readErr := os.ReadFile(filePath)
+		if readErr != nil {
+			parseErrors = append(parseErrors,
+				fmt.Sprintf("%s: read failed: %v", filepath.Base(filePath), readErr))
+			continue
+		}
+
+		fset := token.NewFileSet()
+		f, parseErr := parser.ParseFile(fset, filePath, src, 0)
+		if parseErr != nil {
+			parseErrors = append(parseErrors,
+				fmt.Sprintf("%s: parse failed: %v", filepath.Base(filePath), parseErr))
+			continue
+		}
+
+		// Extract recipe bindings from this file.
+		fileRecipes := extractRecipeBindings(f)
+		recipes = append(recipes, fileRecipes...)
+	}
+
+	// If any file failed to parse, that is a gate failure (SEC-003).
+	if len(parseErrors) > 0 {
+		output := "generated-gate-existence: parse error(s) in generated code (gate failure — generated recipe must be valid Go):\n"
+		for _, msg := range parseErrors {
+			output += "  " + msg + "\n"
+		}
+		return gate.StepResult{
+			OK:     false,
+			Output: output,
+		}
+	}
+
+	// No recipes registered — gate failure (a generated recipe must define at least one).
+	if len(recipes) == 0 {
+		return gate.StepResult{
+			OK:     false,
+			Output: "generated-gate-existence: no recipes registered in generated code; a generated recipe must call recipe.Register()",
+		}
+	}
+
+	// Every recipe must have a non-nil GateFactory binding (SEC-001d: check all, not first).
+	for _, rb := range recipes {
+		if !rb.HasGateFactory {
 			return gate.StepResult{
-				OK:     true,
-				Output: fmt.Sprintf("generated-gate-existence: found non-nil GateFactory binding in %s", filepath.Base(goFile)),
+				OK:     false,
+				Output: fmt.Sprintf("generated-gate-existence: recipe %q has no GateFactory binding; a recipe must bind a non-nil, blocking gate (ADR 044, ADR 047)", rb.Name),
+			}
+		}
+		if rb.IsNilBinding {
+			return gate.StepResult{
+				OK:     false,
+				Output: fmt.Sprintf("generated-gate-existence: recipe %q binds GateFactory to nil; a recipe must bind a non-nil, blocking gate (ADR 044, ADR 047)", rb.Name),
 			}
 		}
 	}
 
-	// No file had a valid non-nil gate binding.
+	// All recipes have valid non-nil gate bindings.
 	return gate.StepResult{
-		OK:     false,
-		Output: "generated-gate-existence: no non-nil GateFactory binding found in generated recipe output; a recipe must bind a non-nil, blocking gate (ADR 044, ADR 047)",
+		OK:     true,
+		Output: fmt.Sprintf("generated-gate-existence: verified %d recipe binding(s) with non-nil GateFactory", len(recipes)),
 	}
 }
 
-// gateInspectionResult captures what a single file scan found.
-type gateInspectionResult struct {
-	hasGateFactory bool
-	isNilBinding   bool
+// RecipeBinding captures the gate-binding status of a single registered recipe.
+type RecipeBinding struct {
+	Name           string
+	HasGateFactory bool
+	IsNilBinding   bool
 }
 
-// inspectFileForGate reads a single .go file and determines whether it contains
-// a non-nil GateFactory binding using static text analysis.
-func inspectFileForGate(path string) gateInspectionResult {
-	src, err := os.ReadFile(path)
-	if err != nil {
-		return gateInspectionResult{}
-	}
-	return inspectTextForGate(string(src))
+// findGoFiles walks repoPath recursively and returns all .go file paths
+// (excluding _test.go files per convention for generated recipes).
+func findGoFiles(repoPath string) ([]string, error) {
+	var files []string
+	err := filepath.Walk(repoPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && filepath.Ext(path) == ".go" {
+			// Skip test files — generated recipes are production code.
+			base := filepath.Base(path)
+			if len(base) < 8 || base[len(base)-8:] != "_test.go" {
+				files = append(files, path)
+			}
+		}
+		return nil
+	})
+	return files, err
 }
 
-// inspectTextForGate performs text-based GateFactory detection. It looks for:
-//   - `GateFactory` present in the source (indicates the field is referenced)
-//   - None of the nil-binding patterns are present (GateFactory: nil, etc.)
-//
-// A file with "GateFactory" present and no nil binding is treated as having a
-// valid (non-nil) gate factory assignment.
-func inspectTextForGate(src string) gateInspectionResult {
-	if !strings.Contains(src, "GateFactory") {
-		return gateInspectionResult{}
-	}
+// extractRecipeBindings walks the AST and extracts all recipe.Register() calls,
+// returning RecipeBindings that indicate whether each recipe binds a non-nil GateFactory.
+func extractRecipeBindings(f *ast.File) []*RecipeBinding {
+	var bindings []*RecipeBinding
 
-	// Check for explicit nil binding patterns.
-	nilPatterns := []string{
-		"GateFactory: nil",
-		"GateFactory:nil",
-		"GateFactory: nil,",
-		"GateFactory:nil,",
-	}
-	for _, pattern := range nilPatterns {
-		if strings.Contains(src, pattern) {
-			return gateInspectionResult{hasGateFactory: true, isNilBinding: true}
+	// First pass: collect all function definitions so we can resolve named factories.
+	functionBodies := make(map[string]*ast.FuncDecl)
+	for _, decl := range f.Decls {
+		if fn, ok := decl.(*ast.FuncDecl); ok {
+			functionBodies[fn.Name.Name] = fn
 		}
 	}
 
-	// GateFactory is present and not bound to nil — valid gate reference.
-	return gateInspectionResult{hasGateFactory: true, isNilBinding: false}
+	ast.Inspect(f, func(n ast.Node) bool {
+		// Look for recipe.Register(...) calls.
+		if call, ok := n.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if x, ok := sel.X.(*ast.Ident); ok && x.Name == "recipe" && sel.Sel.Name == "Register" {
+					// Found recipe.Register() call. Extract the recipe name and binding.
+					// Signature: recipe.Register(name string, factory RecipeFactory func() (Recipe, error))
+					if len(call.Args) >= 2 {
+						// Extract name if it's a string literal
+						recipeName := ""
+						if lit, ok := call.Args[0].(*ast.BasicLit); ok {
+							recipeName = lit.Value
+						}
+						rb := extractRecipeBindingFromFactory(call.Args[1], recipeName, functionBodies)
+						if rb != nil {
+							bindings = append(bindings, rb)
+						}
+					}
+				}
+			}
+		}
+
+		// Also look for recipe.New(...) calls to extract GateFactory binding directly.
+		if call, ok := n.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if x, ok := sel.X.(*ast.Ident); ok && x.Name == "recipe" && sel.Sel.Name == "New" {
+					// recipe.New(goalSourceFactory, routingSpec, gateFactory, resultSinkFactory, blockWiring)
+					// The 3rd argument (index 2) is the gateFactory.
+					if len(call.Args) >= 3 {
+						rb := &RecipeBinding{
+							Name:           "(recipe.New direct)",
+							HasGateFactory: !isNilExpr(call.Args[2]),
+							IsNilBinding:   isNilExpr(call.Args[2]),
+						}
+						if rb.HasGateFactory && !rb.IsNilBinding {
+							bindings = append(bindings, rb)
+						}
+					}
+				}
+			}
+		}
+
+		return true
+	})
+	return bindings
+}
+
+// extractRecipeBindingFromFactory analyzes a recipe factory function to extract
+// the recipe binding. This handles:
+// 1. Function literals that call recipe.New() or return a Recipe{...} struct literal
+// 2. Function identifiers (named factory functions) - resolved via functionBodies
+func extractRecipeBindingFromFactory(arg ast.Expr, recipeName string, functionBodies map[string]*ast.FuncDecl) *RecipeBinding {
+	// Case 1: If the factory is a function literal, inspect its body for recipe.New() or
+	// Recipe{...} struct literal.
+	if lit, ok := arg.(*ast.FuncLit); ok {
+		var gateExpr ast.Expr
+
+		ast.Inspect(lit, func(n ast.Node) bool {
+			// Case 1a: recipe.New(...) call
+			if call, ok := n.(*ast.CallExpr); ok {
+				if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+					if x, ok := sel.X.(*ast.Ident); ok && x.Name == "recipe" && sel.Sel.Name == "New" {
+						if len(call.Args) >= 3 {
+							gateExpr = call.Args[2]
+						}
+					}
+				}
+			}
+
+			// Case 1b: recipe.Recipe{...} struct literal (direct construction)
+			if comp, ok := n.(*ast.CompositeLit); ok {
+				if sel, ok := comp.Type.(*ast.SelectorExpr); ok {
+					if x, ok := sel.X.(*ast.Ident); ok && x.Name == "recipe" && sel.Sel.Name == "Recipe" {
+						// Find the GateFactory field in the struct literal.
+						for _, elt := range comp.Elts {
+							if kv, ok := elt.(*ast.KeyValueExpr); ok {
+								if ident, ok := kv.Key.(*ast.Ident); ok && ident.Name == "GateFactory" {
+									gateExpr = kv.Value
+									break
+								}
+							}
+						}
+					}
+				}
+			}
+			return true
+		})
+
+		if gateExpr != nil {
+			return &RecipeBinding{
+				Name:           recipeName,
+				HasGateFactory: true,
+				IsNilBinding:   isNilExpr(gateExpr),
+			}
+		}
+	}
+
+	// Case 2: If the factory is a plain identifier (named function), resolve it via functionBodies.
+	if ident, ok := arg.(*ast.Ident); ok {
+		if fn, found := functionBodies[ident.Name]; found {
+			// Recursively analyze the named function's body
+			var gateExpr ast.Expr
+			ast.Inspect(fn, func(n ast.Node) bool {
+				// Look for recipe.Recipe{...} struct literal
+				if comp, ok := n.(*ast.CompositeLit); ok {
+					if sel, ok := comp.Type.(*ast.SelectorExpr); ok {
+						if x, ok := sel.X.(*ast.Ident); ok && x.Name == "recipe" && sel.Sel.Name == "Recipe" {
+							for _, elt := range comp.Elts {
+								if kv, ok := elt.(*ast.KeyValueExpr); ok {
+									if ident, ok := kv.Key.(*ast.Ident); ok && ident.Name == "GateFactory" {
+										gateExpr = kv.Value
+										break
+									}
+								}
+							}
+						}
+					}
+				}
+				// Look for recipe.New(...) call
+				if call, ok := n.(*ast.CallExpr); ok {
+					if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+						if x, ok := sel.X.(*ast.Ident); ok && x.Name == "recipe" && sel.Sel.Name == "New" {
+							if len(call.Args) >= 3 {
+								gateExpr = call.Args[2]
+							}
+						}
+					}
+				}
+				return true
+			})
+			if gateExpr != nil {
+				return &RecipeBinding{
+					Name:           recipeName,
+					HasGateFactory: true,
+					IsNilBinding:   isNilExpr(gateExpr),
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// isNilExpr checks whether an AST expression is the nil identifier or a
+// conversion-to-nil pattern like (T)(nil). This defeats string-matching evasions.
+func isNilExpr(expr ast.Expr) bool {
+	if ident, ok := expr.(*ast.Ident); ok && ident.Name == "nil" {
+		return true
+	}
+	// Check for (T)(nil) cast pattern.
+	if call, ok := expr.(*ast.CallExpr); ok {
+		if len(call.Args) >= 1 {
+			if arg, ok := call.Args[0].(*ast.Ident); ok && arg.Name == "nil" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // AgentBuilderWorkerGoalSource is the goal source for the agent-builder-worker
