@@ -3,9 +3,9 @@
 //
 // Security (load-bearing):
 //   - All path-accepting tools confine paths to the worktree:
-//     - Reject absolute paths before path construction
-//     - Reject symlinks (os.Lstat check before any FS operation)
-//     - Confine via filepath.Join + realpath of parent + prefix check
+//   - Reject absolute paths before path construction
+//   - Reject symlinks (os.Lstat check before any FS operation)
+//   - Confine via filepath.Join + realpath of parent + prefix check
 //   - run_command enforces an explicit allowlist before any subprocess construction
 //   - run_command rejects dangerous arguments (-C, -c for git; -C for go) to prevent
 //     argument-level escape from CWD confinement
@@ -254,7 +254,7 @@ func (s *ToolSet) minimalEnv() []string {
 
 	// Add hardened git config to prevent hook execution and secret leakage
 	env = append(env,
-		"GIT_CONFIG_NOSYSTEM=1",     // Don't read system-wide git config
+		"GIT_CONFIG_NOSYSTEM=1",       // Don't read system-wide git config
 		"GIT_CONFIG_GLOBAL=/dev/null", // Don't read user git config
 	)
 
@@ -344,10 +344,10 @@ func isAllowedCommand(cmd string) bool {
 // Exported for the allowlist enumeration test.
 func AllowedCommands() map[string]struct{} {
 	return map[string]struct{}{
-		"git":            {},
-		"go":             {},
-		"gofmt":          {},
-		"golangci-lint":  {},
+		"git":           {},
+		"go":            {},
+		"gofmt":         {},
+		"golangci-lint": {},
 	}
 }
 

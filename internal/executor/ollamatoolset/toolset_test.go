@@ -564,9 +564,6 @@ func TestRunCommandMinimalEnv(t *testing.T) {
 		t.Fatalf("NewToolSet failed: %v", err)
 	}
 
-	// Initialize a git repo
-	runInWorktree(t, tmpDir, "git", "init", "--initial-branch=main", ".")
-
 	// Set a sentinel environment variable in the parent
 	oldVal, oldSet := os.LookupEnv("TEST_SENTINEL_SECRET")
 	_ = os.Setenv("TEST_SENTINEL_SECRET", "secret_value")
@@ -578,28 +575,46 @@ func TestRunCommandMinimalEnv(t *testing.T) {
 		}
 	}()
 
-	// Run a git command that would output environment variables if they were set
-	// Use git config to print all config (which includes environment-influenced values)
-	argsJSON := `{"command":"git","args":["config","--show-origin","--list"]}`
+	// Write a small Go program that prints environment variables
+	envprobeSrc := `package main
+import (
+	"fmt"
+	"os"
+)
+func main() {
+	// Print the sentinel secret (should be empty/absent)
+	fmt.Println("TEST_SENTINEL_SECRET=" + os.Getenv("TEST_SENTINEL_SECRET"))
+	// Print PATH (should be present, as it's in minimalEnv)
+	pathLen := len(os.Getenv("PATH"))
+	if pathLen > 0 {
+		fmt.Println("PATH_PRESENT=true")
+	} else {
+		fmt.Println("PATH_PRESENT=false")
+	}
+}
+`
+	envprobeFile := filepath.Join(tmpDir, "envprobe.go")
+	if err := os.WriteFile(envprobeFile, []byte(envprobeSrc), 0644); err != nil {
+		t.Fatalf("failed to write envprobe.go: %v", err)
+	}
+
+	// Run the Go program in the subprocess
+	argsJSON := `{"command":"go","args":["run","envprobe.go"]}`
 	result, err := ts.Dispatch("run_command", argsJSON)
 	if err != nil {
 		t.Fatalf("run_command failed: %v", err)
 	}
 
-	// The sentinel environment variable should NOT be visible in the output
-	// (It shouldn't affect git's behavior or be passed through)
-	// We can't directly check env inheritance, but we can verify the command succeeded
-	// with minimal environment
-	if result == "" {
-		t.Fatal("result is empty")
+	// REAL ASSERTION: The sentinel secret must NOT be present in the output
+	// If subprocess inherited os.Environ(), TEST_SENTINEL_SECRET=secret_value would appear
+	if strings.Contains(result, "TEST_SENTINEL_SECRET=secret_value") {
+		t.Fatalf("REGRESSION: sentinel secret leaked to subprocess: %s", result)
 	}
 
-	// Verify that GIT_CONFIG_GLOBAL is set to /dev/null by running git config
-	argsJSON = `{"command":"git","args":["config","--show-origin","user.name"]}`
-	_, err = ts.Dispatch("run_command", argsJSON)
-	// If the command succeeds or fails normally, the minimal env is working
-	// (we don't check the result because git may or may not find user.name)
-	_ = err
+	// POSITIVE CONTROL: PATH should be present (we explicitly include it in minimalEnv)
+	if !strings.Contains(result, "PATH_PRESENT=true") {
+		t.Fatalf("PATH not passed to subprocess (minimalEnv broken): %s", result)
+	}
 }
 
 // Helpers
