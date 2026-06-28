@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-26
+**Last updated:** 2026-06-27
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -105,6 +105,8 @@ C4Component
         Component(armorAdapter, "Armor Guard Adapter", "internal/armor", "External armor invocation adapter for ingestion decisions")
         Component(executorHarness, "Executor Ingestion Harness", "internal/executorharness", "Executor-facing event wrapper that emits broker-reviewed release values")
         Component(executor, "Claude CLI Executor", "internal/executor", "Concrete supervisor.Executor adapter with explicit web/tool policy")
+        Component(modelRouter, "Model Router", "internal/router", "Capability/cost-first router (ADR 043); Select() picks the cheapest eligible registry entry per dispatch and resolves it to a supervisor.Executor")
+        Component(executorRegistry, "Executor Registry", "internal/registry", "In-process catalog of executor entries + env-var loader (LoadFromEnv); holds SecretRef, never a secret")
         Component(sandbox, "exec-sandbox Run Adapter", "internal/sandbox", "Typed contained-command seam and test fake")
         Component(podmanAdapter, "Podman Adapter", "internal/sandbox/podman", "Concrete Podman-backed sandbox.Runner via the execution-box launcher")
         Component(execsandboxAdapter, "exec-sandbox Backend Adapter", "internal/sandbox/execsandbox", "Block-backed sandbox.Runner; default backend when AGENT_BUILDER_EXEC_SANDBOX_BIN is set (ADR 035)")
@@ -120,7 +122,10 @@ C4Component
     Rel(main, cli, "Delegates to cli.Main")
     Rel(cli, runtime, "Dispatches run to the default pipeline")
     Rel(runtime, tasksource, "Selects one ready task")
-    Rel(runtime, executor, "Constructs")
+    Rel(runtime, modelRouter, "Resolves RoutingSpec → entry via Select (ADR 043)")
+    Rel(modelRouter, executorRegistry, "Selects cheapest eligible entry from catalog")
+    Rel(runtime, executorRegistry, "Builds catalog via LoadFromEnv (default Claude entry when empty)")
+    Rel(runtime, executor, "Constructs from the selected entry's harness driver")
     Rel(runtime, gate, "Constructs production Gate")
     Rel(runtime, podmanAdapter, "Constructs (fallback backend)")
     Rel(runtime, execsandboxAdapter, "Constructs (default backend when bin set)")
