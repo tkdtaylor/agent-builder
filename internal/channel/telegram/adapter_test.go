@@ -971,8 +971,18 @@ func TestTC097_01b_OverlengthMessageSkipped(t *testing.T) {
 	}
 
 	// Stub server returning two updates: one oversized, one valid
+	// Record offset from each getUpdates poll to verify offset advances
+	var recordedOffsets []int64
 	callCount := 0
 	stubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Record offset query param
+		offset := r.URL.Query().Get("offset")
+		if offset != "" {
+			var offsetVal int64
+			_, _ = sscanf(offset, "%d", &offsetVal)
+			recordedOffsets = append(recordedOffsets, offsetVal)
+		}
+
 		callCount++
 		var result []interface{}
 		if callCount == 1 {
@@ -1049,6 +1059,24 @@ func TestTC097_01b_OverlengthMessageSkipped(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected audit event with 'text_too_long' reason, got: %#v", events)
+	}
+
+	// TC-097-01b: Verify offset advances past both updates (200 and 201 consumed)
+	// Call Next() again to trigger another poll which will show the advanced offset
+	_, ok2, err2 := adapter.Next()
+	if err2 != nil {
+		t.Fatalf("second Next() returned error: %v", err2)
+	}
+	// Second call should return no goal (empty result)
+	if ok2 {
+		t.Errorf("second Next() returned ok=true, expected false (empty update list)")
+	}
+
+	// Verify offset was advanced to 202 (both updates 200 and 201 consumed)
+	if len(recordedOffsets) < 2 {
+		t.Errorf("expected at least 2 offset records, got %d: %v", len(recordedOffsets), recordedOffsets)
+	} else if recordedOffsets[1] != 202 {
+		t.Errorf("expected second offset 202 (both updates 200 and 201 consumed), got %d", recordedOffsets[1])
 	}
 }
 
@@ -1201,17 +1229,36 @@ func TestTC097_02a_GuardTimeoutDropsGoal(t *testing.T) {
 		t.Fatalf("failed to marshal envelope: %v", err)
 	}
 
+	// Record offset from each getUpdates poll
+	var recordedOffsets []int64
+	callCount := 0
 	stubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		response := map[string]interface{}{
-			"ok": true,
-			"result": []interface{}{
+		// Record offset query param
+		offset := r.URL.Query().Get("offset")
+		if offset != "" {
+			var offsetVal int64
+			_, _ = sscanf(offset, "%d", &offsetVal)
+			recordedOffsets = append(recordedOffsets, offsetVal)
+		}
+
+		callCount++
+		var result []interface{}
+		if callCount == 1 {
+			// First call: return the update
+			result = []interface{}{
 				map[string]interface{}{
 					"update_id": 100,
 					"message": map[string]interface{}{
 						"text": string(envJSON),
 					},
 				},
-			},
+			}
+		}
+		// Subsequent calls return empty result
+
+		response := map[string]interface{}{
+			"ok":     true,
+			"result": result,
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(response)
@@ -1267,6 +1314,24 @@ func TestTC097_02a_GuardTimeoutDropsGoal(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected audit event with armor_error on timeout, got: %#v", events)
+	}
+
+	// TC-097-02a: Verify offset advanced to 101 (the timed-out update is consumed, not re-polled)
+	// Call Next() again to trigger another poll which will show the advanced offset
+	_, ok2, err2 := adapter.Next()
+	if err2 != nil {
+		t.Fatalf("second Next() returned error: %v", err2)
+	}
+	// Second call should return no goal (empty result)
+	if ok2 {
+		t.Errorf("second Next() returned ok=true, expected false (empty update list)")
+	}
+
+	// Verify offset was advanced to 101 (update 100 consumed despite timeout)
+	if len(recordedOffsets) < 2 {
+		t.Errorf("expected at least 2 offset records, got %d: %v", len(recordedOffsets), recordedOffsets)
+	} else if recordedOffsets[1] != 101 {
+		t.Errorf("expected second offset 101 (update 100 consumed after timeout), got %d", recordedOffsets[1])
 	}
 }
 
@@ -1367,39 +1432,74 @@ func TestTC097_02b_FastGuardNoTimeout(t *testing.T) {
 	}
 }
 
-// TestTC097_03a — Sentinel errors work with errors.Is
+// TestTC097_03a — Sentinel errors produced by real envelope functions match via errors.Is
 func TestTC097_03a_SentinelErrorsMatchViaIs(t *testing.T) {
-	// Test ErrUnknownKey
-	unknownKeyErr := fmt.Errorf("outer: %w", envelope.ErrUnknownKey)
-	if !errors.Is(unknownKeyErr, envelope.ErrUnknownKey) {
-		t.Errorf("errors.Is(ErrUnknownKey wrapper) returned false, expected true")
+	// Generate test keys
+	_, correctPriv, _ := ed25519.GenerateKey(rand.Reader)
+
+	_, wrongPriv, _ := ed25519.GenerateKey(rand.Reader)
+	wrongPub := wrongPriv.Public().(ed25519.PublicKey)
+
+	// Create a valid signed envelope
+	env := envelope.Envelope{
+		From:    "test",
+		To:      "test",
+		Nonce:   "00000000000000000000000000000000",
+		TS:      "2026-01-01T00:00:00Z",
+		Payload: "00000000000000000000000000000000",
+		Sig:     "",
+	}
+	env, _ = envelope.Sign(env, correctPriv)
+
+	// Test ErrUnknownKey: Verify with wrong-sized public key
+	invalidKeyErr := envelope.Verify(env, ed25519.PublicKey{})
+	if !errors.Is(invalidKeyErr, envelope.ErrUnknownKey) {
+		t.Errorf("errors.Is(invalidKeyErr, ErrUnknownKey) returned false, expected true. Error: %v", invalidKeyErr)
 	}
 
-	// Test ErrBadSignature
-	badSigErr := fmt.Errorf("outer: %w", envelope.ErrBadSignature)
-	if !errors.Is(badSigErr, envelope.ErrBadSignature) {
-		t.Errorf("errors.Is(ErrBadSignature wrapper) returned false, expected true")
+	// Test ErrBadSignature: Verify with correct key size but wrong key
+	wrongKeyErr := envelope.Verify(env, wrongPub)
+	if !errors.Is(wrongKeyErr, envelope.ErrBadSignature) {
+		t.Errorf("errors.Is(wrongKeyErr, ErrBadSignature) returned false, expected true. Error: %v", wrongKeyErr)
 	}
 
-	// Test ErrReplay
-	replayErr := fmt.Errorf("outer: %w", envelope.ErrReplay)
+	// Test ErrReplay: Check same nonce twice
+	cache := envelope.NewReplayCache(60 * time.Second)
+	nonce := "fresh-nonce"
+	ts := time.Now()
+	_ = cache.Check(nonce, ts)
+	replayErr := cache.Check(nonce, ts)
 	if !errors.Is(replayErr, envelope.ErrReplay) {
-		t.Errorf("errors.Is(ErrReplay wrapper) returned false, expected true")
+		t.Errorf("errors.Is(replayErr, ErrReplay) returned false, expected true. Error: %v", replayErr)
 	}
 
-	// Test ErrStaleTimestamp
-	staleErr := fmt.Errorf("outer: %w", envelope.ErrStaleTimestamp)
+	// Test ErrStaleTimestamp: Check with stale timestamp
+	cache2 := envelope.NewReplayCache(60 * time.Second)
+	staleTime := time.Now().Add(-120 * time.Second)
+	staleErr := cache2.Check("fresh-nonce", staleTime)
 	if !errors.Is(staleErr, envelope.ErrStaleTimestamp) {
-		t.Errorf("errors.Is(ErrStaleTimestamp wrapper) returned false, expected true")
+		t.Errorf("errors.Is(staleErr, ErrStaleTimestamp) returned false, expected true. Error: %v", staleErr)
 	}
 
 	// Test that sentinels do NOT cross-match
-	if errors.Is(badSigErr, envelope.ErrReplay) {
-		t.Errorf("errors.Is(badSigErr, ErrReplay) returned true, expected false")
+	if errors.Is(wrongKeyErr, envelope.ErrReplay) {
+		t.Errorf("errors.Is(wrongKeyErr, ErrReplay) returned true, expected false")
 	}
 
-	if errors.Is(replayErr, envelope.ErrUnknownKey) {
-		t.Errorf("errors.Is(replayErr, ErrUnknownKey) returned true, expected false")
+	if errors.Is(wrongKeyErr, envelope.ErrStaleTimestamp) {
+		t.Errorf("errors.Is(wrongKeyErr, ErrStaleTimestamp) returned true, expected false")
+	}
+
+	if errors.Is(replayErr, envelope.ErrBadSignature) {
+		t.Errorf("errors.Is(replayErr, ErrBadSignature) returned true, expected false")
+	}
+
+	if errors.Is(staleErr, envelope.ErrReplay) {
+		t.Errorf("errors.Is(staleErr, ErrReplay) returned true, expected false")
+	}
+
+	if errors.Is(invalidKeyErr, envelope.ErrBadSignature) {
+		t.Errorf("errors.Is(invalidKeyErr, ErrBadSignature) returned true, expected false")
 	}
 }
 // TestTC097_03b — Adapter classifies each sentinel to specific audit reason
