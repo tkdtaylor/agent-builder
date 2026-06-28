@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** agent-builder
-**Last updated:** 2026-06-19 (task 069 — verify-checkpoint CLI surface)
+**Last updated:** 2026-06-27 (task 089 — Codex harness adapter)
 
 The system's contact surface — everything that calls into the system, everything the system calls out to, and the public boundaries within the system. Each interface is a stable contract: changes here are breaking changes.
 
@@ -72,6 +72,7 @@ explicitly so failure modes and version pinning are visible.
 |------------|-------------|-------------------|--------------|
 | Podman | `podman build`, `podman pod create`, `podman create`, `podman inspect`, `podman start`, `podman run --runtime <oci-runtime>`, `podman logs`, `podman pod rm`, and `podman rm` from `containment/execution-box/run.sh`; `podman info` for graph-driver and backing-FS detection (storage quota enforceability) | process `PATH`; rootless Podman for the current non-root user; configured OCI runtime names `runc`, `runsc`, or future `kata`; Gate scanner/linter tools mounted from `EXEC_BOX_GATE_TOOLS` / `--gate-tools` | Missing binary, failed `podman info`, unavailable selected OCI runtime, missing Gate toolchain artifact, failed image build, failed `podman create` / `podman run` (exits non-zero with a named error — never exit 0 on a non-started box), absent load-bearing CPU/memory/PID/SHM fields in TC-003 inspect, egress sidecar startup failure, or failed in-box probe exits non-zero and names the failing check. The per-container disk quota (`--storage-opt size=...`) degrades gracefully on non-XFS hosts (flag omitted, `WARNING` emitted, box still launches — see ADR 027). |
 | Claude Code CLI | `claude -p <prompt>` in the configured task worktree | process `PATH` or `executor.ClaudeCLIConfig.CLIPath`; auth supplied through `ANTHROPIC_API_KEY` | Missing binary, blank config, missing token, subprocess non-zero exit, or missing/blank produced branch file fails the executor attempt |
+| Codex CLI | `codex --model <model-id> --approval-policy never-require <prompt>` in the configured task worktree | process `PATH`; auth supplied through `OPENAI_API_KEY` resolved from `entry.SecretRef` via `secrets.SecretSource.NamedProviderToken` | Missing binary, `ErrSecretNotFound` on secret resolution, subprocess non-zero exit, or missing `BRANCH: <name>` marker in stdout fails the executor attempt |
 | armor | armor-compatible command configured by `armor.Config.Command` and invoked with JSON stdin/stdout | process `PATH` or caller-supplied command path; fakeable through `armor.Runner` | Missing command, subprocess timeout, non-zero exit, malformed JSON, malformed decision, or armor error output maps to a fail-closed `block` decision |
 | Go toolchain | `go build ./...`, `go vet ./...`, `go test ./...` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `go` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
 | gofmt | `gofmt -l .` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `gofmt` fails the Step; non-zero exit fails the Step; non-empty output fails the Step as formatting drift |
@@ -161,6 +162,20 @@ func (e *ClaudeCLI) HandleToolCall(ctx context.Context, event executorharness.To
 - **Branch contract:** the prompt names an executor-owned temp file where the CLI must write the produced branch. The executor trims that file and copies it into `supervisor.Result.Branch`.
 - **Web/tool policy:** `IngestionPolicy` defaults to `disabled`. `disabled` fails closed for Claude-facing web/tool events while preserving ordinary subprocess execution. `reviewed` requires `IngestionHarness` and routes web/tool events through it before any continuation or tool executor can run. Unknown policy values and reviewed-without-harness configurations fail before subprocess start.
 - **Auth contract:** the executor accepts either `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (OAuth token preferred when both are set). Exactly one credential is injected into subprocess env; the other is stripped. Host `HOME`/XDG dirs are replaced with temp dirs. Both credential values are redacted from subprocess failure output. The executor fails before subprocess start when both are absent.
+
+### Concrete executor: `executor.CodexCLI`
+
+```go
+const CodexAPIKeyEnv = "OPENAI_API_KEY"
+
+func NewCodexCLI(entry registry.RegistryEntry, secretSource secrets.SecretSource, worktree string) *CodexCLI
+func (c *CodexCLI) Run(task supervisor.Task) (supervisor.Result, error)
+```
+
+- **Outbound call:** `codex --model <model-id> --approval-policy never-require <prompt>` with `cmd.Dir` set to the configured worktree.
+- **Branch contract:** the prompt instructs the CLI to write `BRANCH: <branch-name>` as the last output line. The executor extracts the branch name by scanning stdout in reverse for the `BRANCH:` prefix.
+- **Auth contract:** the API key is resolved at dispatch time via `secretSource.NamedProviderToken(entry.SecretRef)`. The resolved key is injected as `OPENAI_API_KEY` into the subprocess env; `ErrSecretNotFound` fails the run before subprocess start. The key is redacted from subprocess failure output. It is never stored on the struct beyond the `Run` call.
+- **Supervisor isolation:** `internal/executor` imports `internal/supervisor` (for types); `internal/supervisor` never imports `internal/executor` (F-003 invariant, enforced by `make fitness-supervisor-isolation`).
 
 ### Executor Registry Interface
 
