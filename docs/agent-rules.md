@@ -147,3 +147,47 @@ The right tools for "compare to prior state":
 - `git stash` + work + `git stash pop` — safe but easy to forget the pop
 - `git worktree add ../baseline <ref>` — strongest, forces the comparison into a different directory
 - `git diff <ref> -- <path>` / `git show <ref>:<path>` — for read-only comparisons, no checkout needed at all
+
+### Verify external-tool behavior against the live tool, not the spec's assumption
+
+When a task's correctness depends on how an **external tool** behaves (a CLI's auth
+semantics, an API's accepted fields, an env var a subprocess honors), a unit test that
+asserts *your side* of the contract — "we inject env var X" — does **not** prove the
+tool honors X. The assumption is unverified until you run the real tool.
+
+Task 101 shipped injecting a placeholder into `ANTHROPIC_API_KEY` for local
+translation-proxy entries, with green unit tests, a spec-verifier APPROVE, and a
+security-auditor SAFE. All three validated *the spec's assumption* (a non-empty
+`ANTHROPIC_API_KEY` satisfies the CLI). The live run proved the assumption false:
+Claude CLI v2.1.150 validates `ANTHROPIC_API_KEY` as a real credential and prints
+`Not logged in` for a placeholder, making **zero** proxy requests. The working var is
+`ANTHROPIC_AUTH_TOKEN` (the gateway bearer-token, passed through unvalidated). The
+unit tests, verifier, and auditor could not catch this — they never invoked the CLI.
+
+Rule: if a REQ encodes assumed external-tool behavior, the verification plan's L5/L6
+must exercise that tool for real before ✅. Treat "the tool accepts X" as a claim to
+test, not a given. **Retro source:** task 101, live L6 run 2026-06-28 — placeholder
+`ANTHROPIC_API_KEY` → `Not logged in`; `ANTHROPIC_AUTH_TOKEN` → working round-trip.
+
+### Operator gotchas: running the orchestrator live (L6)
+
+Surfaced during the task 101 live round-trip on 2026-06-28; recorded so the next L6
+run doesn't re-debug them:
+
+- **gate-tools are gitignored, so a worktree has none.** Running `go run
+  ./cmd/agent-builder run` from a `.claude/worktrees/<task>/` checkout fails box
+  creation with the misleading `sandbox: create probe exited 1` — the runner swallows
+  the launcher's real stderr (`missing Gate tool golangci-lint in
+  …/worktrees/…/containment/execution-box/gate-tools`). Run the orchestrator from the
+  **main checkout** (which has populated `gate-tools`), or copy them into the worktree.
+- **The agent workload defaults to the `runsc` (gVisor) runtime.** If only `runc` is
+  registered (`podman info` → OCIRuntime `runc`), set `EXEC_BOX_RUNTIME=runc` or the
+  create probe fails. `containment/execution-box/run.sh --print-runtime-plan` shows
+  the selected runtime; `--probe --runtime runc` validates the box in isolation.
+- **Local 7–8B models clear auth/plumbing but do not reliably complete the executor
+  protocol.** With corrected task 101, `qwen2.5-coder:7b` authenticated and
+  round-tripped through the proxy but edited the wrong file and never wrote the
+  produced-branch file (escalated); `qwen3:8b` is a reasoning model returning
+  thinking-only/empty text unsuitable for the harness. The verify-gate correctly
+  escalated. Full branch+gate L6 (REQ-094-02) needs a more capable executor or
+  harness/prompt adaptation for small local models.
