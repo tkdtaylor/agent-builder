@@ -180,16 +180,17 @@ Availability     registry.Availability   available or exhausted-until ResetAt
 #### Value: `registry.HarnessDriver`
 
 ```
-value          notes
-────────────────────────────────────────────────────────────
-claude-cli     Claude Code CLI harness (also used for local models via translation proxy)
-codex-cli      Codex CLI harness
-gemini-cli     Google Gemini CLI harness
+value           notes
+─────────────────────────────────────────────────────────────────
+claude-cli      Claude Code CLI harness (also used for local models via translation proxy)
+codex-cli       Codex CLI harness
+gemini-cli      Google Gemini CLI harness
+ollama-native   Native Ollama executor harness (direct /api/chat invocation; no translation proxy)
 ```
 
 - **Identity:** discriminates the executor harness to run.
 - **Lifecycle:** set at entry construction from environment; immutable for the entry's lifetime.
-- **Relationships:** **one harness can back many entries** — e.g., `claude-cli` backs both `claude-oauth` (cloud) and `local-qwen` (local model via proxy).
+- **Relationships:** **one harness can back many entries** — e.g., `claude-cli` backs both `claude-oauth` (cloud) and `local-qwen` (local model via proxy); `ollama-native` backs `local-ollama` and any other Ollama-native entries.
 
 #### Value: `registry.QuotaBudget`
 

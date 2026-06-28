@@ -209,9 +209,10 @@ func (g *GeminiCLI) Run(task supervisor.Task) (supervisor.Result, error)
 type HarnessDriver string
 
 const (
-    HarnessClaudeCLI HarnessDriver = "claude-cli"
-    HarnessCodexCLI  HarnessDriver = "codex-cli"
-    HarnessGeminiCLI HarnessDriver = "gemini-cli"
+    HarnessClaudeCLI    HarnessDriver = "claude-cli"
+    HarnessCodexCLI     HarnessDriver = "codex-cli"
+    HarnessGeminiCLI    HarnessDriver = "gemini-cli"
+    HarnessOllamaNative HarnessDriver = "ollama-native"
 )
 
 func (h HarnessDriver) String() string
@@ -267,7 +268,7 @@ func LoadFromEnv() ([]RegistryEntry, error)
 - **Consumers:** router (task 092), harness adapters (tasks 089–091), dispatcher/runtime wiring.
 - **Stability:** governed by ADR 043 and updated with any task that changes executor registration, entry structure, or env-var config surface.
 - **Required behavior:**
-  - `HarnessDriver` discriminates which harness CLI runs the loop; three values are supported (`claude-cli`, `codex-cli`, `gemini-cli`).
+  - `HarnessDriver` discriminates which harness runs the loop; four values are supported (`claude-cli`, `codex-cli`, `gemini-cli`, `ollama-native`).
   - `String()` returns human-readable harness names.
   - `TranslationProxySeam` is a named constant identifying the local-entry pattern: local model → translation proxy (LiteLLM / claude-code-router) → Claude CLI redirected via `ANTHROPIC_BASE_URL`. Consumers may reference this constant for documentation or routing logic.
   - `QuotaBudget` with `Limit == 0` means unlimited (no cap). Non-zero limit caps dispatches over the rolling window.
@@ -374,7 +375,7 @@ var ErrUnknownHarness error
   - **Quota-free backstop:** `RecordDispatch`, `OnRateLimit`, and `OnQuotaExhausted` are all silent no-ops for an entry with `Budget.Limit == 0` (every local entry — `IsUnlimited()` true) and for an unknown entry ID. A local entry is never marked exhausted.
   - **State persistence:** `SaveState(path)` writes current `Usage` and `Availability` for all entries as a plain-text (JSON) file. `LoadState(path)` restores that state; a corrupted or malformed file returns a descriptive error, never a silent zero value.
   - **Clock seam:** `New` uses the real wall clock (`time.Now()`). `NewWithClock` takes an explicit `Clock` so tests can inject `FakeClock` and advance time programmatically without `time.Sleep`.
-  - **`ResolveExecutor`:** selects an entry via `Select`, then constructs the concrete `supervisor.Executor` for the entry's harness (`HarnessClaudeCLI` → `executor.NewClaudeCLIFromEntry`, `HarnessCodexCLI` → `executor.NewCodexCLI`, `HarnessGeminiCLI` → `executor.NewGeminiCLI`), returning it alongside the selected entry so the caller can feed the entry ID back into the fallback hooks. Returns `ErrNoEligibleExecutor` when selection fails, or `ErrUnknownHarness` for an unrecognized harness driver. This is the executor-side boundary: the caller receives a `supervisor.Executor` seam, not a router.
+  - **`ResolveExecutor`:** selects an entry via `Select`, then constructs the concrete `supervisor.Executor` for the entry's harness (`HarnessClaudeCLI` → `executor.NewClaudeCLIFromEntry`, `HarnessCodexCLI` → `executor.NewCodexCLI`, `HarnessGeminiCLI` → `executor.NewGeminiCLI`, `HarnessOllamaNative` → `executor.NewOllamaNative`), returning it alongside the selected entry so the caller can feed the entry ID back into the fallback hooks. Returns `ErrNoEligibleExecutor` when selection fails, or `ErrUnknownHarness` for an unrecognized harness driver. This is the executor-side boundary: the caller receives a `supervisor.Executor` seam, not a router.
 
 ### Interface: `supervisor.Reporter`
 

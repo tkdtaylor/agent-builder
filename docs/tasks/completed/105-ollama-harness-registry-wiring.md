@@ -1,6 +1,6 @@
 # Task 105 — Ollama native harness: registry enum + runtime wiring
 
-**Status:** backlog
+**Status:** completed
 **ID:** 105
 **Slug:** ollama-harness-registry-wiring
 **Priority:** must-have

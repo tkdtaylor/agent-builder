@@ -14,6 +14,7 @@ import (
 
 	"github.com/tkdtaylor/agent-builder/internal/audit"
 	"github.com/tkdtaylor/agent-builder/internal/executor"
+	"github.com/tkdtaylor/agent-builder/internal/executor/ollamatoolset"
 	"github.com/tkdtaylor/agent-builder/internal/gate"
 	agentloop "github.com/tkdtaylor/agent-builder/internal/loop"
 	"github.com/tkdtaylor/agent-builder/internal/policy"
@@ -482,6 +483,21 @@ func buildExecutorForEntry(entry registry.RegistryEntry, config Config) (supervi
 		return executor.NewCodexCLI(entry, src, config.Worktree), nil
 	case registry.HarnessGeminiCLI:
 		return executor.NewGeminiCLI(entry, src, config.Worktree), nil
+	case registry.HarnessOllamaNative:
+		toolset, err := ollamatoolset.NewToolSet(config.Worktree)
+		if err != nil {
+			return nil, fmt.Errorf("run: create ollama toolset: %w", err)
+		}
+		ollama, err := executor.NewOllamaNative(executor.OllamaNativeConfig{
+			Endpoint:      entry.Endpoint,
+			Model:         entry.ModelID,
+			MaxIterations: 0, // Use default
+			Worktree:      config.Worktree,
+		}, toolset)
+		if err != nil {
+			return nil, fmt.Errorf("run: create ollama executor: %w", err)
+		}
+		return ollama, nil
 	default:
 		return nil, fmt.Errorf("run: entry %q names unknown harness driver %q", entry.ID, entry.Harness)
 	}
