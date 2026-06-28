@@ -296,7 +296,9 @@ fitness-diagrams-render:
 #
 # It scans recipe source (internal/recipe, excluding _test.go and import lines) for
 # the own-repo path appearing alongside a sink/remote/publish token on the same
-# line. SELF_REPO_SINK_DIR overrides the scan root so the Go fixture test
+# line. This catches hardcoded sinks; it does NOT cover config-file or env-var sinks
+# (those are out of scope for a static check and rely on the runtime deny in the
+# orchestrator). SELF_REPO_SINK_DIR overrides the scan root so the Go fixture test
 # (TestTC085_05_FitnessCheckFiresOnViolation) can point it at a violation fixture
 # and assert a non-zero exit.
 SELF_REPO_SINK_DIR ?= internal/recipe

@@ -109,11 +109,128 @@ func containsToken(haystack, needle string) bool {
 	return false
 }
 
+// CanonicalizeRepo normalizes a repository reference into a canonical form for
+// comparison. It handles multiple formats:
+//   - https://github.com/tkdtaylor/agent-builder → github.com/tkdtaylor/agent-builder
+//   - git@github.com:tkdtaylor/agent-builder → github.com/tkdtaylor/agent-builder
+//   - ssh://git@github.com/tkdtaylor/agent-builder → github.com/tkdtaylor/agent-builder
+//   - github.com/tkdtaylor/agent-builder.git → github.com/tkdtaylor/agent-builder
+//   - Uppercase paths → lowercased
+//   - Trailing slashes → stripped
+//
+// Empty input returns empty (not an error). Non-canonical forms (unparseable)
+// return empty; the caller (targetsOwnRepo) is responsible for fail-closed logic
+// when canonicalization fails.
+func CanonicalizeRepo(s string) string {
+	if s == "" {
+		return ""
+	}
+
+	// Strip scheme: https://, ssh://, http://, git://
+	for _, scheme := range []string{"https://", "http://", "ssh://", "git://"} {
+		if len(s) > len(scheme) && s[:len(scheme)] == scheme {
+			s = s[len(scheme):]
+			break
+		}
+	}
+
+	// Strip scp-form: git@host:path → host/path (convert : to /) or git@host/path → host/path
+	if containsToken(s, "git@") {
+		idx := indexOfToken(s, "git@")
+		if idx >= 0 {
+			s = s[idx+4:] // skip "git@"
+			// Replace first colon with slash if present (scp-style: host:path → host/path)
+			// Otherwise the path already has slashes (e.g., git@github.com/path)
+			for i := 0; i < len(s); i++ {
+				if s[i] == ':' {
+					s = s[:i] + "/" + s[i+1:]
+					break
+				}
+			}
+		}
+	}
+
+	// Strip trailing slashes FIRST so .git suffix detection works correctly
+	for len(s) > 0 && s[len(s)-1] == '/' {
+		s = s[:len(s)-1]
+	}
+
+	// Strip trailing .git
+	if len(s) >= 4 && s[len(s)-4:] == ".git" {
+		s = s[:len(s)-4]
+	}
+
+	// Lowercase for case-insensitive comparison
+	s = toLower(s)
+
+	return s
+}
+
+// toLower lowercases a string without importing strings package.
+func toLower(s string) string {
+	b := make([]byte, len(s))
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c = c - 'A' + 'a'
+		}
+		b[i] = c
+	}
+	return string(b)
+}
+
+// indexOfToken returns the byte index of needle in haystack, or -1 if not found.
+func indexOfToken(haystack, needle string) int {
+	if needle == "" {
+		return -1
+	}
+	for i := 0; i+len(needle) <= len(haystack); i++ {
+		if haystack[i:i+len(needle)] == needle {
+			return i
+		}
+	}
+	return -1
+}
+
 // targetsOwnRepo reports whether a sub-goal's target repo or result sink is the
 // agent-builder self-repo. It is the runtime predicate behind REQ-085-05a: a true
 // return means the orchestrator must refuse to dispatch the worker, fail-closed,
-// regardless of the policy decision. Matching is exact on OwnRepo (the policy
-// resource carries the canonical repo path).
+// regardless of the policy decision.
+//
+// The check is performed in three places:
+//   1. sub.Task.Repo — set by the planner from the inbound goal.Repo; this is the
+//      worker's EFFECTIVE target (what decides where the worker writes).
+//   2. sub.TargetRepo — optional override set by test or future dynamic routing.
+//   3. sub.Sink — optional override for result-sink target.
+//
+// All three are canonicalized before comparison so the guard catches all forms of
+// the own-repo path (https://, git@, .git suffix, case variations, trailing slash).
+// If canonicalization fails (empty result from a non-empty input), the guard
+// treats it conservatively as a potential match (fail-closed: when in doubt, deny).
 func targetsOwnRepo(sub SubGoal) bool {
-	return sub.TargetRepo == OwnRepo || sub.Sink == OwnRepo
+	canonOwnRepo := CanonicalizeRepo(OwnRepo)
+
+	// Check the worker's effective target (Task.Repo set by the planner).
+	if sub.Task.Repo != "" {
+		if canonical := CanonicalizeRepo(sub.Task.Repo); canonical == "" {
+			// Failed to canonicalize a non-empty repo — fail-closed: treat as a match.
+			return true
+		} else if canonical == canonOwnRepo {
+			return true
+		}
+	}
+
+	// Check optional explicit overrides (used by tests or future dynamic routing).
+	for _, target := range []string{sub.TargetRepo, sub.Sink} {
+		if target != "" {
+			if canonical := CanonicalizeRepo(target); canonical == "" {
+				// Failed to canonicalize a non-empty target — fail-closed.
+				return true
+			} else if canonical == canonOwnRepo {
+				return true
+			}
+		}
+	}
+
+	return false
 }

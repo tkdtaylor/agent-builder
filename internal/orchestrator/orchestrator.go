@@ -389,10 +389,21 @@ func (o *Orchestrator) dispatchPlan(ctx context.Context, plan Plan) (PlanResult,
 		// and overrides the policy decision fail-closed. A non-allow decision skips
 		// the dispatch, records a denied outcome, and reports the denial.
 		decision, denyReason := o.decideSpawnWorker(sub)
-		o.emitFleetEvent(audit.AuditEvent{
+		// For deny events, include the deny reason in the audit event (SEC-004: distinguish
+		// policy deny from self-repo deny). For allow, record just the recipe name.
+		auditReason := sub.RecipeName
+		if decision != policy.DecisionAllow {
+			auditReason = denyReason
+		}
+		// SEC-003: deny events must succeed in audit — if the append fails, that is
+		// a hard error that halts the plan (not silent). Use emitFleetEventForDeny
+		// for security-relevant denials; other events are best-effort.
+		if err := o.emitFleetEventForDeny(audit.AuditEvent{
 			Action: audit.ActionSpawnDecided, TaskID: sub.Task.ID, RunID: plan.GoalID,
-			Detail: audit.EventDetail{PolicyDecision: string(decision), Reason: sub.RecipeName},
-		})
+			Detail: audit.EventDetail{PolicyDecision: string(decision), Reason: auditReason},
+		}, decision != policy.DecisionAllow); err != nil {
+			return result, fmt.Errorf("orchestrator: audit spawn-decided deny: %w", err)
+		}
 		if decision != policy.DecisionAllow {
 			outcome.Success = false
 			outcome.Detail = denyReason
@@ -476,6 +487,31 @@ func (o *Orchestrator) emitFleetEvent(ev audit.AuditEvent) {
 		return
 	}
 	_ = o.auditSink.Append(ev)
+}
+
+// emitFleetEventForDeny appends a fleet-audit event with special handling for
+// security-relevant deny events (SEC-003). When isDeny is true, the event must
+// succeed in the audit chain or an error is returned (the orchestrator halts the
+// plan). When isDeny is false, it behaves as emitFleetEvent (best-effort, errors
+// dropped). This asymmetry ensures that denials are never silently lost while
+// benign events are best-effort.
+func (o *Orchestrator) emitFleetEventForDeny(ev audit.AuditEvent, isDeny bool) error {
+	if o.auditSink == nil {
+		// If policy gating is active but no sink is configured, require a sink for
+		// deny events (fail-closed: if we can't audit the deny, don't proceed).
+		if isDeny {
+			return fmt.Errorf("orchestrator: policy gating enabled but no audit sink configured; cannot audit deny")
+		}
+		return nil
+	}
+	if err := o.auditSink.Append(ev); err != nil {
+		// For deny events, a failed append is a hard error.
+		if isDeny {
+			return fmt.Errorf("orchestrator: failed to audit spawn-decided deny: %w", err)
+		}
+		// For benign events, drop the error (best-effort).
+	}
+	return nil
 }
 
 // defaultDispatch is the live dispatch seam: it reuses the existing runtime

@@ -106,6 +106,7 @@ func TestTC085_04_OrchestratorEgressDefaultDeny(t *testing.T) {
 func TestTC085_02_SpawnWorkerDenySkipsWorkerAndReports(t *testing.T) {
 	spy := newDispatchSpy()
 	rep := &fakeReporter{}
+	sink := audit.NewFakeSink() // SEC-003: deny events require an audit sink
 	pol := &recordingPolicy{
 		byAction: map[string]policy.Decision{orchestrator.SpawnAction: policy.DecisionAllow},
 		byRecipe: map[string]policy.Decision{"docs-fix": policy.DecisionDeny}, // deny the 2nd worker
@@ -114,6 +115,7 @@ func TestTC085_02_SpawnWorkerDenySkipsWorkerAndReports(t *testing.T) {
 		orchestrator.NewStructuredPlanner(knownRecipes...),
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(spy.fn),
+		orchestrator.WithAuditSink(sink),
 	)
 	goal := supervisor.Task{ID: "g1", Spec: "coding-agent: implement X\ndocs-fix: update Y"}
 
@@ -177,6 +179,7 @@ func TestTC085_02_SpawnWorkerDenySkipsWorkerAndReports(t *testing.T) {
 func TestTC085_02_SpawnWorkerFailClosedOnPolicyError(t *testing.T) {
 	spy := newDispatchSpy()
 	rep := &fakeReporter{}
+	sink := audit.NewFakeSink() // SEC-003: deny events require an audit sink
 	// Allow spawn-plan, but the spawn-worker decision errors → fail-closed deny.
 	pol := &recordingPolicy{
 		byAction: map[string]policy.Decision{orchestrator.SpawnAction: policy.DecisionAllow},
@@ -186,6 +189,7 @@ func TestTC085_02_SpawnWorkerFailClosedOnPolicyError(t *testing.T) {
 		orchestrator.NewStructuredPlanner(knownRecipes...),
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(spy.fn),
+		orchestrator.WithAuditSink(sink),
 	)
 	goal := supervisor.Task{ID: "g1", Spec: "coding-agent: implement X"}
 
@@ -319,6 +323,94 @@ func indexOfAction(events []audit.AuditEvent, a audit.AuditAction) int {
 
 // --- TC-085-05 — self-repo bright line (runtime deny + static detector) --------
 
+// TestTC085_05_RuntimeSelfRepoWithRealPlanner tests the PRODUCTION PATH: the real
+// StructuredPlanner populates Task.Repo from the goal, and the self-repo guard must
+// deny a dispatch when that repo is the own-repo. This test catches SEC-001: if the
+// guard only checked SubGoal.TargetRepo/Sink (never populated by StructuredPlanner),
+// the production path would be unguarded.
+func TestTC085_05_RuntimeSelfRepoWithRealPlanner(t *testing.T) {
+	pol := &recordingPolicy{}
+	spy := newDispatchSpy()
+	rep := &fakeReporter{}
+	sink := audit.NewFakeSink() // SEC-003: deny events require an audit sink
+	o := orchestrator.New(
+		orchestrator.NewStructuredPlanner(knownRecipes...),
+		pol, rep, runtime.Config{},
+		orchestrator.WithDispatchFunc(spy.fn),
+		orchestrator.WithAuditSink(sink),
+	)
+
+	// Goal with Repo == own-repo (as the inbound channel would provide it).
+	goal := supervisor.Task{
+		ID:   "g1",
+		Repo: orchestrator.OwnRepo, // github.com/tkdtaylor/agent-builder
+		Spec: "coding-agent: edit ourselves",
+	}
+
+	result, err := o.Handle(context.Background(), goal)
+	if err != nil {
+		t.Fatalf("Handle with own-repo goal: unexpected error: %v", err)
+	}
+
+	// The worker MUST NOT be dispatched (SEC-001 fix).
+	if spy.count() != 0 {
+		t.Fatalf("own-repo goal via real planner: want 0 dispatches, got %d", spy.count())
+	}
+
+	// The outcome must be a denied failure.
+	if len(result.Outcomes) < 1 || result.Outcomes[0].Success {
+		t.Fatalf("want denied outcome, got: %+v", result.Outcomes)
+	}
+
+	// The denial must mention self-repo, not policy.
+	if !strings.Contains(result.Outcomes[0].Detail, "self-repo") {
+		t.Errorf("own-repo denial detail = %q, want it to mention self-repo", result.Outcomes[0].Detail)
+	}
+
+	t.Log("TC-085-05 SEC-001 real-planner: own-repo goal → 0 dispatches, denied outcome")
+}
+
+// TestTC085_05_CanonicalizeRepoVariants tests the canonicalizer (SEC-002) against
+// all repo path formats, proving the guard catches every variant of the own-repo.
+func TestTC085_05_CanonicalizeRepoVariants(t *testing.T) {
+	canonical := orchestrator.CanonicalizeRepo(orchestrator.OwnRepo)
+	if canonical != "github.com/tkdtaylor/agent-builder" {
+		t.Errorf("CanonicalizeRepo(OwnRepo) = %q, want %q", canonical, orchestrator.OwnRepo)
+	}
+
+	cases := []struct {
+		name     string
+		repo     string
+		wantDeny bool // true if this should be considered the own-repo
+	}{
+		{"exact", "github.com/tkdtaylor/agent-builder", true},
+		{"https scheme", "https://github.com/tkdtaylor/agent-builder", true},
+		{"http scheme", "http://github.com/tkdtaylor/agent-builder", true},
+		{"ssh scheme", "ssh://github.com/tkdtaylor/agent-builder", true},
+		{"git scheme", "git://github.com/tkdtaylor/agent-builder", true},
+		{"git@scp", "git@github.com:tkdtaylor/agent-builder", true},
+		{"git@ with slash", "git@github.com/tkdtaylor/agent-builder", true},
+		{".git suffix", "github.com/tkdtaylor/agent-builder.git", true},
+		{"trailing slash", "github.com/tkdtaylor/agent-builder/", true},
+		{"uppercase", "GITHUB.COM/TKDTAYLOR/AGENT-BUILDER", true},
+		{"mixed case", "GitHub.com/TkdTaylor/Agent-Builder", true},
+		{"combination", "https://git@github.com/TkdTaylor/Agent-Builder.git/", true},
+		{"near-miss (evil)", "github.com/tkdtaylor/agent-builder-evil", false},
+		{"other repo", "github.com/other/repo", false},
+		{"empty", "", false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := orchestrator.CanonicalizeRepo(tc.repo)
+			isDeny := got == canonical && tc.repo != ""
+			if isDeny != tc.wantDeny {
+				t.Errorf("canonicalize(%q) = %q; isDeny = %v, want %v", tc.repo, got, isDeny, tc.wantDeny)
+			}
+		})
+	}
+}
+
 func TestTC085_05_RuntimeSelfRepoDeny(t *testing.T) {
 	// Policy allows EVERYTHING — proving the self-repo guard is independent of the
 	// policy file (fail-closed by construction).
@@ -327,10 +419,12 @@ func TestTC085_05_RuntimeSelfRepoDeny(t *testing.T) {
 	t.Run("target_repo own-repo denied", func(t *testing.T) {
 		spy := newDispatchSpy()
 		rep := &fakeReporter{}
+		sink := audit.NewFakeSink() // SEC-003: deny events require an audit sink
 		o := orchestrator.New(
 			orchestrator.NewStructuredPlanner(knownRecipes...),
 			pol, rep, runtime.Config{},
 			orchestrator.WithDispatchFunc(spy.fn),
+			orchestrator.WithAuditSink(sink),
 			staticPlan(orchestrator.Plan{
 				Goal: "g", GoalID: "g",
 				SubGoals: []orchestrator.SubGoal{
@@ -356,10 +450,12 @@ func TestTC085_05_RuntimeSelfRepoDeny(t *testing.T) {
 	t.Run("sink own-repo denied", func(t *testing.T) {
 		spy := newDispatchSpy()
 		rep := &fakeReporter{}
+		sink := audit.NewFakeSink() // SEC-003: deny events require an audit sink
 		o := orchestrator.New(
 			orchestrator.NewStructuredPlanner(knownRecipes...),
 			pol, rep, runtime.Config{},
 			orchestrator.WithDispatchFunc(spy.fn),
+			orchestrator.WithAuditSink(sink),
 			staticPlan(orchestrator.Plan{
 				Goal: "g", GoalID: "g",
 				SubGoals: []orchestrator.SubGoal{
@@ -379,10 +475,12 @@ func TestTC085_05_RuntimeSelfRepoDeny(t *testing.T) {
 	t.Run("non-own-repo target IS dispatched", func(t *testing.T) {
 		spy := newDispatchSpy()
 		rep := &fakeReporter{}
+		sink := audit.NewFakeSink() // SEC-003: deny events require an audit sink
 		o := orchestrator.New(
 			orchestrator.NewStructuredPlanner(knownRecipes...),
 			pol, rep, runtime.Config{},
 			orchestrator.WithDispatchFunc(spy.fn),
+			orchestrator.WithAuditSink(sink),
 			staticPlan(orchestrator.Plan{
 				Goal: "g", GoalID: "g",
 				SubGoals: []orchestrator.SubGoal{
