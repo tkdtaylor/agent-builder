@@ -1,6 +1,6 @@
 # Task 102 — Ollama native API client
 
-**Status:** backlog
+**Status:** completed (🟡 — merged; L6 deferred)
 **ID:** 102
 **Slug:** ollama-native-client
 **Priority:** must-have
