@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** agent-builder
-**Last updated:** 2026-06-27 (task 091 — local-entry-translation-proxy)
+**Last updated:** 2026-06-27 (task 093 — usage-quota-tracking)
 
 The system's contact surface — everything that calls into the system, everything the system calls out to, and the public boundaries within the system. Each interface is a stable contract: changes here are breaking changes.
 
@@ -286,10 +286,27 @@ The capability/cost-first model router (ADR 043). It lives on the executor side 
 the supervisor injection boundary — a sibling of `internal/executor` that imports
 `internal/registry` and `internal/executor`. `internal/supervisor` imports neither
 the router nor the registry (F-003; enforced by `make fitness-supervisor-isolation`).
-State is held in memory only; quota persistence and the injected clock seam are a
-follow-on (task 093).
+
+Router state (Usage + Availability) is held in memory and optionally persisted to a
+plain-text (JSON) file via `SaveState`/`LoadState`. The router accepts an injected
+`Clock` seam for deterministic time-based tests.
 
 ```go
+// Clock is the time-source seam. The production clock calls time.Now(); tests
+// inject FakeClock so reset-window logic is testable without time.Sleep.
+type Clock interface {
+    Now() time.Time
+}
+
+// FakeClock is the test implementation: starts at an explicit time and advances
+// only when Advance is called.
+type FakeClock struct { /* unexported */ }
+func NewFakeClock(t time.Time) *FakeClock
+func (c *FakeClock) Now() time.Time
+func (c *FakeClock) Advance(d time.Duration)
+
+const DefaultCooldown = 5 * time.Minute
+
 type Sensitivity int
 
 const (
@@ -304,12 +321,38 @@ type RoutingSpec struct {
 
 type Router struct { /* unexported */ }
 
+// New constructs a Router with the real wall clock and DefaultCooldown.
 func New(catalog *registry.Catalog) *Router
+
+// NewWithClock constructs a Router with an explicit clock and cooldown.
+// Use this in tests with FakeClock.
+func NewWithClock(catalog *registry.Catalog, clock Clock, cooldown time.Duration) *Router
 
 func (r *Router) Select(spec RoutingSpec) (registry.RegistryEntry, error)
 func (r *Router) OnGateFailure(entryID string)
 func (r *Router) ResetEscalation()
 func (r *Router) OnQuotaExhausted(entryID string, resetAt time.Time)
+
+// RecordDispatch increments Usage for the entry. When Usage >= Budget.Limit,
+// marks the entry AvailStatusExhausted with ResetAt = now + Budget.Window.
+// No-op for local entries (Budget.Limit == 0) and unknown IDs.
+func (r *Router) RecordDispatch(entryID string)
+
+// OnRateLimit marks the entry exhausted (reactive 429 path). ResetAt is derived
+// from retryAfterHeader (plain integer seconds, e.g. "60") when present and
+// parseable, else from the configured cooldown (DefaultCooldown by default).
+// No-op for local entries (Budget.Limit == 0) and unknown IDs.
+func (r *Router) OnRateLimit(entryID string, retryAfterHeader string)
+
+// SaveState persists Usage + Availability for all entries to a plain-text (JSON)
+// file at path. Creates or overwrites the file.
+func (r *Router) SaveState(path string) error
+
+// LoadState restores Usage + Availability from a plain-text (JSON) file at path.
+// A corrupted or malformed file returns a descriptive error (not a silent zero value).
+// IDs in the file but absent from the catalog are silently skipped.
+func (r *Router) LoadState(path string) error
+
 func (r *Router) ResolveExecutor(spec RoutingSpec, secretSource secrets.SecretSource, worktree string) (supervisor.Executor, registry.RegistryEntry, error)
 
 var ErrNoEligibleExecutor error
@@ -321,10 +364,15 @@ var ErrUnknownHarness error
 - **Stability:** governed by ADR 043; updated with any task that changes selection, escalation, or the two-axis fallback model.
 - **Required behavior:**
   - **Eligibility (hard filters):** an entry is eligible for a dispatch when `CapabilityTier >= spec.MinCapability` AND `Availability.Status == AvailStatusAvailable` AND it has not been escalated past via `OnGateFailure` in the current dispatch. `Sensitivity` is never a hard filter.
+  - **Auto-recovery:** at the start of each `Select`, entries with `Availability.Status == AvailStatusExhausted` and `now > Availability.ResetAt` are automatically flipped to `AvailStatusAvailable` with `Usage` reset to `0`. No manual intervention is required.
   - **Selection:** `Select` returns the cheapest eligible entry (lowest `CostWeight`). Ties break by the soft sensitivity weight (a `SensitivitySensitive` hint sorts a local entry — `SecretRef == ""` and `IsUnlimited()` — before a non-local one), then by stable entry ID. The hint never excludes an otherwise-eligible entry. Returns `ErrNoEligibleExecutor` when no entry qualifies.
   - **Gate-failure escalation (quality axis):** `OnGateFailure(entryID)` records the entry as tried-and-failed for the current dispatch, so the next `Select` returns the next-stronger eligible entry. Once every eligible entry has gate-failed, `Select` returns `ErrNoEligibleExecutor`. Does not touch the entry's availability. `ResetEscalation()` clears this set for a fresh dispatch (availability state is unaffected).
   - **Quota-exhaustion fallback (availability axis):** `OnQuotaExhausted(entryID, resetAt)` marks the entry `AvailStatusExhausted` with the supplied `ResetAt`, removing it from the eligible set so the next `Select` routes sideways to the next cheapest still-available eligible entry at sufficient capability. It does NOT climb the quality ladder. The two axes are independent.
-  - **Quota-free backstop:** `OnQuotaExhausted` is a silent no-op for an entry with `Budget.Limit == 0` (every local entry — `IsUnlimited()` true) and for an unknown entry ID. A local entry is never marked exhausted.
+  - **Proactive budget check:** `RecordDispatch(entryID)` increments the entry's `Usage`. When `Usage >= Budget.Limit`, the entry is proactively marked `AvailStatusExhausted` with `ResetAt = now + Budget.Window`, preventing a wasted dispatch that would only earn a 429. The entry auto-recovers when the clock passes `ResetAt`.
+  - **Reactive rate-limit handling:** `OnRateLimit(entryID, retryAfterHeader)` marks the entry `AvailStatusExhausted`. `ResetAt` is derived from the header value (plain integer seconds, e.g. `"60"`) when present and parseable; otherwise the configured cooldown is used.
+  - **Quota-free backstop:** `RecordDispatch`, `OnRateLimit`, and `OnQuotaExhausted` are all silent no-ops for an entry with `Budget.Limit == 0` (every local entry — `IsUnlimited()` true) and for an unknown entry ID. A local entry is never marked exhausted.
+  - **State persistence:** `SaveState(path)` writes current `Usage` and `Availability` for all entries as a plain-text (JSON) file. `LoadState(path)` restores that state; a corrupted or malformed file returns a descriptive error, never a silent zero value.
+  - **Clock seam:** `New` uses the real wall clock (`time.Now()`). `NewWithClock` takes an explicit `Clock` so tests can inject `FakeClock` and advance time programmatically without `time.Sleep`.
   - **`ResolveExecutor`:** selects an entry via `Select`, then constructs the concrete `supervisor.Executor` for the entry's harness (`HarnessClaudeCLI` → `executor.NewClaudeCLIFromEntry`, `HarnessCodexCLI` → `executor.NewCodexCLI`, `HarnessGeminiCLI` → `executor.NewGeminiCLI`), returning it alongside the selected entry so the caller can feed the entry ID back into the fallback hooks. Returns `ErrNoEligibleExecutor` when selection fails, or `ErrUnknownHarness` for an unrecognized harness driver. This is the executor-side boundary: the caller receives a `supervisor.Executor` seam, not a router.
 
 ### Interface: supervisor dispatch lifecycle seams

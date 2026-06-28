@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-27
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 
@@ -40,17 +40,17 @@ write-gate + delete-verify), not built here.
 ## Readiness gate
 
 - [x] Test spec `093-usage-quota-tracking-test-spec.md` exists (written first)
-- [ ] Task 092 merged (router with in-memory selection + escalation logic)
-- [ ] `make check` green before starting
+- [x] Task 092 merged (router with in-memory selection + escalation logic)
+- [x] `make check` green before starting
 
 ## Acceptance criteria
 
-- [ ] [REQ-093-01] TC-093-01: Usage tally increments; proactive budget check excludes over-budget entry
-- [ ] [REQ-093-01] TC-093-02: clock advanced past ResetAt → entry auto-recovers; Usage resets; no sleep
-- [ ] [REQ-093-02] TC-093-03: OnRateLimit with Retry-After header → ResetAt from header; missing header → configuredCooldown
-- [ ] [REQ-093-03] TC-093-04: injected FakeClock controls now(); entry excluded then re-eligible on clock advance; no time.Sleep
-- [ ] [REQ-093-04] TC-093-05: SaveState + LoadState round-trip preserves exhausted state; corrupted file → descriptive error
-- [ ] [REQ-093-05] TC-093-06: exhausted cloud entry → local entry selected as always-available fallback
+- [x] [REQ-093-01] TC-093-01: Usage tally increments; proactive budget check excludes over-budget entry
+- [x] [REQ-093-01] TC-093-02: clock advanced past ResetAt → entry auto-recovers; Usage resets; no sleep
+- [x] [REQ-093-02] TC-093-03: OnRateLimit with Retry-After header → ResetAt from header; missing header → configuredCooldown
+- [x] [REQ-093-03] TC-093-04: injected FakeClock controls now(); entry excluded then re-eligible on clock advance; no time.Sleep
+- [x] [REQ-093-04] TC-093-05: SaveState + LoadState round-trip preserves exhausted state; corrupted file → descriptive error
+- [x] [REQ-093-05] TC-093-06: exhausted cloud entry → local entry selected as always-available fallback
 
 ## Verification plan
 
