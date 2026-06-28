@@ -20,14 +20,22 @@ import (
 
 // --- test doubles ------------------------------------------------------------
 
-// fakePolicy returns a fixed decision for every Decide call.
+// fakePolicy returns a fixed decision for the plan-level spawn-plan action. The
+// per-sub-goal spawn-worker action (task 085) defaults to allow so the 081
+// pause/resume/dispatch tests exercise dispatch as before; tests that want to gate
+// spawn-worker use recordingPolicy instead.
 type fakePolicy struct {
 	decision policy.Decision
 	calls    int
 }
 
-func (f *fakePolicy) Decide(_ policy.DecideRequest) (policy.DecideResponse, error) {
+func (f *fakePolicy) Decide(req policy.DecideRequest) (policy.DecideResponse, error) {
 	f.calls++
+	// spawn-worker (task 085) defaults to allow under this fake — its decision is
+	// only meaningful for spawn-plan, which is what this fake was written to gate.
+	if req.Action.Name == orchestrator.SpawnWorkerAction {
+		return policy.DecideResponse{Decision: policy.DecisionAllow}, nil
+	}
 	return policy.DecideResponse{Decision: f.decision}, nil
 }
 

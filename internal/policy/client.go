@@ -71,6 +71,11 @@ type Action struct {
 // ResourceProperties carries per-resource metadata included in the AuthZEN request.
 type ResourceProperties struct {
 	EgressHosts []string `json:"egress_hosts,omitempty"`
+	// TargetRepo and Sink carry the per-sub-goal worker dispatch target for the
+	// orchestrator's spawn-worker decision (task 085 / ADR 050 §1). They let a
+	// per-recipe policy gate on the repository / result sink a worker would act on.
+	TargetRepo string `json:"target_repo,omitempty"`
+	Sink       string `json:"sink,omitempty"`
 }
 
 // Resource identifies the target of the requested action.
@@ -105,8 +110,8 @@ type DecideResponseContext struct {
 // Obligations is nil or empty on denial.
 // Context carries the policy engine's reason string (non-empty when the engine provides one).
 type DecideResponse struct {
-	Decision    Decision             `json:"decision"`
-	Obligations []Obligation         `json:"obligations,omitempty"`
+	Decision    Decision              `json:"decision"`
+	Obligations []Obligation          `json:"obligations,omitempty"`
 	Context     DecideResponseContext `json:"context,omitempty"`
 }
 
@@ -191,8 +196,8 @@ func (c *PolicyClient) Decide(req DecideRequest) (DecideResponse, error) {
 // -- wire types (unexported) --------------------------------------------------
 
 type wireDecideContext struct {
-	Reason      string             `json:"reason"`
-	Obligations []wireObligation   `json:"obligations"`
+	Reason      string           `json:"reason"`
+	Obligations []wireObligation `json:"obligations"`
 }
 
 type wireObligation struct {
@@ -209,7 +214,7 @@ type wireErrorShape struct {
 // genericWire is the union of all response shapes the policy daemon sends.
 type genericWire struct {
 	// decide response fields
-	Decision string           `json:"decision"`
+	Decision string            `json:"decision"`
 	Context  wireDecideContext `json:"context"`
 	// ping response fields
 	OK bool `json:"ok"`

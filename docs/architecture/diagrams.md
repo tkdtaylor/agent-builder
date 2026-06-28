@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-28
+**Last updated:** 2026-06-28 (task 085 — orchestrator self-containment, per-worker spawn-worker gate, self-repo bright line, fleet audit chain)
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -98,7 +98,7 @@ C4Component
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
         Component(cli, "Command Surface", "internal/cli", "Flag parsing and run/version/verify/verify-checkpoint dispatch with exit codes")
-        Component(orchestrator, "Tier-1 Orchestrator", "internal/orchestrator", "Goal → Planner plan → policy spawn-plan gate (pause/resume approval) → sequential per-sub-goal dispatch via runtime.Run → typed PlanResult over Reporter. Authors no code; no direct executor import (ADR 042/046)")
+        Component(orchestrator, "Tier-1 Orchestrator", "internal/orchestrator", "Goal → Planner plan → policy spawn-plan gate (pause/resume approval) → per-sub-goal spawn-worker gate + self-repo deny → sequential dispatch via runtime.Run → typed PlanResult over Reporter. Itself contained (exec-sandbox, default-deny egress) and emits a fleet-audit chain across both tiers (task 085). Authors no code; no direct executor import (ADR 042/046/050)")
         Component(runtime, "Default Run Wiring", "internal/runtime", "CLI bootstrap that composes configured Phase 0 adapters")
         Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher, lifecycle logger, run-record writer, and stable seams")
         Component(agentloop, "Agent Loop", "internal/loop", "Inside-the-box pick-attempt-verify cycle plus bounded retry policy")
@@ -124,7 +124,7 @@ C4Component
     Rel(cli, runtime, "Dispatches run to the default pipeline")
     Rel(orchestrator, runtime, "Dispatches one worker per sub-goal via runtime.Run (reuse, not reimplement)")
     Rel(orchestrator, gate, "Selects recipe per sub-goal (recipe.SelectRecipe)")
-    Rel(orchestrator, policyGate, "Decides spawn-plan (pause-and-resume on require_approval)")
+    Rel(orchestrator, policyGate, "Decides spawn-plan (plan-level) + per-sub-goal spawn-worker (task 085); self-repo deny is fail-closed before the policy call")
     Rel(runtime, tasksource, "Selects one ready task")
     Rel(runtime, modelRouter, "Resolves RoutingSpec → entry via Select (ADR 043)")
     Rel(modelRouter, executorRegistry, "Selects cheapest eligible entry from catalog")
@@ -169,7 +169,7 @@ C4Component
 
 **Legend — load-bearing edges and boundaries** (the things you can't read off the boxes). The full contract catalog with ADR citations is the spec's job: see [docs/spec/architecture.md](../spec/architecture.md) §5 *Cross-cutting decisions*.
 
-- **The orchestrator is Tier-1 above the worker stack** — it decomposes a goal, gates the plan on `policy.Decide` (`spawn-plan`, pause-and-resume on `require_approval`), and dispatches one worker per sub-goal by **reusing** `runtime.Run`. It authors no code and has **no direct import of `internal/executor`** (the executor is reached only transitively through `runtime`, for the dispatched worker — `make fitness-orchestrator-no-executor`).
+- **The orchestrator is Tier-1 above the worker stack** — it decomposes a goal, gates the plan on `policy.Decide` (`spawn-plan`, pause-and-resume on `require_approval`), gates each dispatch on a per-sub-goal `spawn-worker` decision with a fail-closed self-repo deny (task 085 / ADR 050; static half is fitness F-013), and dispatches one worker per sub-goal by **reusing** `runtime.Run`. It is itself **contained** (exec-sandbox profile, default-deny egress — L2 run-record posture; L6 live enforcement operator-deferred) and emits a **fleet-audit chain** spanning both tiers. It authors no code and has **no direct import of `internal/executor`** (the executor is reached only transitively through `runtime`, for the dispatched worker — `make fitness-orchestrator-no-executor`).
 - **Supervisor is trusted and dumb** — it creates one box, runs one in-box loop, and tears down exactly once; no executor/LLM/web logic enters its graph.
 - **Two run backends behind one `sandbox.Runner` seam** — `execsandbox.Runner` (default when `AGENT_BUILDER_EXEC_SANDBOX_BIN` is set) else `podman.Runner`; the retired `srt` backend is out-of-graph, not in the pipeline.
 - **Policy decides before the box exists** — `decide` runs **after** vault resolution and **before** `sandboxBox.Create`; `deny`/`require_approval` means the box never starts.
@@ -289,29 +289,43 @@ and reaches the executor only transitively through that dispatch.
 sequenceDiagram
     autonumber
     participant Channel as Inbound Channel (GoalSource)
-    participant Orch as Tier-1 Orchestrator
+    participant Orch as Tier-1 Orchestrator (contained: exec-sandbox, default-deny egress)
     participant Planner as StructuredPlanner
-    participant Policy as policy-engine (spawn-plan)
+    participant Policy as policy-engine (spawn-plan / spawn-worker)
     participant Store as PlanStore (in-memory)
+    participant Audit as audit.Sink (fleet chain)
     participant Reporter as Reporter (outbound channel)
     participant Recipe as recipe.SelectRecipe
     participant Runtime as runtime.Run (per sub-goal worker)
 
     Channel-->>Orch: goal (supervisor.Task, envelope-verified + armor-guarded)
+    Orch->>Audit: goal-intake
     Orch->>Planner: Plan(goal)
     Planner-->>Orch: Plan{ ordered SubGoals } (>=1)
     Orch->>Policy: Decide(spawn-plan, plan)
     Policy-->>Orch: decision
+    Orch->>Audit: plan-decided
     alt allow
         loop each sub-goal (sequential)
             Orch->>Recipe: SelectRecipe(name)
             alt recipe found
-                Orch->>Runtime: Run(base cfg with RecipeName) — dispatch worker
-                Runtime-->>Orch: nil / error
+                Orch->>Orch: self-repo guard (deny if target_repo/sink == own-repo)
+                Orch->>Policy: Decide(spawn-worker, recipe + target_repo/sink)
+                Policy-->>Orch: decision
+                Orch->>Audit: spawn-decided
+                alt allow (and not own-repo)
+                    Orch->>Runtime: Run(base cfg with RecipeName) — dispatch worker
+                    Runtime-->>Audit: worker events (containment ... finish, same chain)
+                    Runtime-->>Orch: nil / error
+                else deny / own-repo
+                    Orch->>Reporter: Report("Worker spawn denied")
+                    Orch-->>Orch: record denied outcome (no dispatch)
+                end
             else unknown recipe
                 Orch-->>Orch: record failed outcome (no dispatch)
             end
         end
+        Orch->>Audit: completion
         Orch->>Reporter: Report(RenderPlanResult)
     else require_approval (pause)
         Orch->>Store: Put(plan)
@@ -322,7 +336,7 @@ sequenceDiagram
             Orch-->>Orch: reject (no dispatch, plan stays pending)
         else approved
             Orch->>Store: Get + Delete(goalID)
-            Orch->>Runtime: dispatch each sub-goal (as in allow branch)
+            Orch->>Runtime: dispatch each sub-goal (spawn-worker gated, as in allow branch)
             Orch->>Reporter: Report(RenderPlanResult)
         end
     else deny
@@ -330,11 +344,19 @@ sequenceDiagram
     end
 ```
 
-**Load-bearing edges:** the `spawn-plan` decision is distinct from the worker
-`run-task` gate; `require_approval` is **pause-and-resume**, not a terminal halt;
-`Resume` asserts the verified envelope roles (operator → orchestrator) before acting
-(task 098 SEC-001); dispatch is one `runtime.Run` per sub-goal, sequential
-(concurrency is task 086).
+**Load-bearing edges:** the `spawn-plan` decision (plan-level) is distinct from the
+per-sub-goal `spawn-worker` decision (task 085) and from the worker `run-task` gate — a
+dispatched worker is gated twice (spawn-worker + run-task), defense-in-depth. The
+**self-repo bright line** denies any worker whose `target_repo`/`sink` is the own-repo
+**before** the policy call, fail-closed (ADR 042/050; the static half is fitness check
+F-013). The orchestrator itself is **contained** (exec-sandbox, default-deny egress —
+L2 run-record posture; L6 live enforcement operator-deferred) and emits its own
+**fleet-audit** events (`goal-intake`/`plan-decided`/`spawn-decided`/`completion`) onto
+the SAME `audit.Sink` chain its workers write to, so one chain is tamper-evident across
+both tiers. `require_approval` is **pause-and-resume**, not a terminal halt; `Resume`
+asserts the verified envelope roles (operator → orchestrator) before acting (task 098
+SEC-001); dispatch is one `runtime.Run` per sub-goal, sequential (concurrency is task
+086).
 
 ---
 

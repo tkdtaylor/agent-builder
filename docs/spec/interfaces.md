@@ -458,6 +458,8 @@ type Plan struct {
 type SubGoal struct {
     RecipeName string          // recipe selected for this sub-goal
     Task       supervisor.Task // payload the dispatched worker runs
+    TargetRepo string          // repo the worker acts on — flows into the spawn-worker decision + self-repo guard (task 085)
+    Sink       string          // result-sink target — flows into the spawn-worker decision + self-repo guard (task 085)
 }
 
 // Typed aggregate (ADR 046 §2) — rendered to text only at the Reporter edge.
@@ -499,6 +501,22 @@ func New(planner Planner, pol PolicyClient, reporter supervisor.Reporter,
 func (o *Orchestrator) Handle(ctx context.Context, goal supervisor.Task) (PlanResult, error)
 func (o *Orchestrator) Resume(ctx context.Context, approval Approval) (PlanResult, error)
 func (o *Orchestrator) HasPendingPlan(goalID string) bool
+func (o *Orchestrator) Containment() Containment // task 085 — L2 containment posture
+
+// Self-containment posture (task 085 / ADR 050 §3): the L2-assertable evidence the
+// orchestrator runs under the SAME exec-sandbox profile as its workers.
+const (
+    ContainmentProfileExecSandbox = "exec-sandbox"
+    EgressDefaultDeny             = "default-deny"
+    OwnRepo                       = "github.com/tkdtaylor/agent-builder"
+)
+type Containment struct {
+    Profile         string // "exec-sandbox"
+    Rootless        bool   // true
+    ReadOnlyRootfs  bool   // true
+    ResourceLimited bool   // true
+    EgressPolicy    string // "default-deny"
+}
 ```
 
 - **v1 Planner concrete — `StructuredPlanner`** (ADR 046 §1 Option A, rule-based, no
@@ -520,6 +538,32 @@ func (o *Orchestrator) HasPendingPlan(goalID string) bool
   `DispatchFunc` sets `RecipeName` on a copy of the base `runtime.Config` and calls
   `runtime.Run` — the orchestrator never reimplements supervisor assembly
   (REQ-081-06).
+- **Per-worker spawn-worker gate (task 085 / ADR 050 §1):** before dispatching each
+  sub-goal, `dispatchPlan` issues a second policy decision with action
+  `"spawn-worker"`, `Resource{Type:"recipe", ID:recipeName,
+  Properties:{target_repo, sink}}`. This is **additive** to `spawn-plan`: spawn-plan
+  gates the whole plan once; spawn-worker gates each dispatch so a per-recipe policy can
+  deny one worker without denying the plan (a dispatched worker is thus gated twice —
+  here plus its own `run-task` inside `runtime.Run`, defense-in-depth). `allow` →
+  dispatch; `deny`/`require_approval`/any error → that worker is **not** spawned, a
+  failed (denied) outcome is recorded, and the denial is reported via `Reporter`.
+  Fail-closed (routes on `resp.Decision`, never the error).
+- **Self-repo bright line (task 085 / ADR 050 §2, ADR 042):** belt-and-suspenders.
+  *Runtime:* `decideSpawnWorker` denies any sub-goal whose `TargetRepo` or `Sink` equals
+  `OwnRepo` (`github.com/tkdtaylor/agent-builder`) **before** consulting the policy
+  engine — fail-closed, independent of the policy file. *Static:* fitness check **F-013**
+  (`make fitness-no-self-repo-sink`) asserts no registered recipe declares the own-repo
+  as a result sink. Either alone is a single point of failure; both make the line
+  unreachable by construction and at runtime.
+- **Self-containment posture (task 085 / ADR 050 §3):** `Containment()` returns the
+  L2-assertable posture — `exec-sandbox` profile, rootless, read-only rootfs,
+  resource-limited, `default-deny` egress — the same profile a worker box runs under.
+  Live Podman+runsc / nftables enforcement is **L6 operator-run** (not claimed in CI).
+- **Fleet audit (task 085 / ADR 050 §4):** when constructed `WithAuditSink`, the
+  orchestrator appends its own events — `goal-intake`, `plan-decided`, per-worker
+  `spawn-decided`, `completion` — to the SAME `audit.Sink` chain its workers write to,
+  so the chain is tamper-evident across both tiers. `audit-trail verify` → `valid=true`
+  (L5 with the real binary; L2 FakeSink ordering/coverage otherwise).
 - **Rendering:** `RenderPlanResult(PlanResult) string` produces the plain-text summary
   at the Reporter boundary; the typed `PlanResult` stays in the core (ADR 046 §2).
 - **Stability:** governed by ADR 046 (extends ADR 042). v1 plan state is in-memory

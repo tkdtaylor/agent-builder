@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation check l6-preflight l6-probe
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation fitness-no-self-repo-sink check l6-preflight l6-probe
 
 lint:
 	golangci-lint run
@@ -10,7 +10,7 @@ test:
 	go test ./...
 
 # Fitness functions — see docs/spec/fitness-functions.md
-fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation
+fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation fitness-no-self-repo-sink
 	@echo "All fitness checks passed."
 
 fitness-no-docker:
@@ -287,6 +287,34 @@ fitness-memoryguard-isolation:
 fitness-diagrams-render:
 	@python3 scripts/check-mermaid.py > /dev/null && \
 	echo "PASS fitness-diagrams-render: all Mermaid blocks render on GitHub (no parse hazards)."
+
+# fitness-no-self-repo-sink covers test-spec TC-085-05 (F-013, ADR 050 §2 /
+# ADR 042 bright line): no registered recipe may declare the agent-builder
+# own-repo (github.com/tkdtaylor/agent-builder) as a result sink / publish target.
+# This is the STATIC half of the belt-and-suspenders self-repo guard; the RUNTIME
+# half is the orchestrator's spawn-worker deny (decideSpawnWorker / targetsOwnRepo).
+#
+# It scans recipe source (internal/recipe, excluding _test.go and import lines) for
+# the own-repo path appearing alongside a sink/remote/publish token on the same
+# line. This catches hardcoded sinks; it does NOT cover config-file or env-var sinks
+# (those are out of scope for a static check and rely on the runtime deny in the
+# orchestrator). SELF_REPO_SINK_DIR overrides the scan root so the Go fixture test
+# (TestTC085_05_FitnessCheckFiresOnViolation) can point it at a violation fixture
+# and assert a non-zero exit.
+SELF_REPO_SINK_DIR ?= internal/recipe
+fitness-no-self-repo-sink:
+	@hits=$$(grep -rnE 'github\.com/tkdtaylor/agent-builder' $(SELF_REPO_SINK_DIR) \
+		--include='*.go' 2>/dev/null \
+		| grep -v '_test\.go:' \
+		| grep -vE ':[[:space:]]*//' \
+		| grep -vE '^[^:]*:[0-9]+:[[:space:]]*"github\.com/tkdtaylor/agent-builder' \
+		| grep -iE 'sink|remote|publish' || true); \
+	if [ -n "$$hits" ]; then \
+		echo "FAIL fitness-no-self-repo-sink: recipe source declares the agent-builder own-repo as a result sink / publish target (ADR 042 bright line):"; \
+		printf '%s\n' "$$hits"; \
+		exit 1; \
+	fi; \
+	echo "PASS fitness-no-self-repo-sink: no registered recipe targets the agent-builder own-repo as a result sink."
 
 check: lint test fitness
 	@echo "All checks passed."

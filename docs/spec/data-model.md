@@ -572,7 +572,17 @@ ActionEscalate        "escalate"          retry exhausted; status written as nee
 ActionFinish          "finish"            run lifecycle complete; outcome recorded
 ActionPolicyDecision  "policy-decision"   policy engine decision recorded; emitted by audit_emit obligation (task 073)
 ActionChannelReject   "channel-reject"    secure channel (Telegram/worker transport) rejected a message; emitted with reason in EventDetail.Reason (task 080)
+ActionTamper          "tamper"            memory-guard delete-verify reported tamper; EventDetail.TamperDetected=true (task 084)
+ActionGoalIntake      "goal-intake"       orchestrator accepted a goal for planning (fleet-audit, task 085)
+ActionPlanDecided     "plan-decided"      orchestrator issued the spawn-plan decision (fleet-audit, task 085)
+ActionSpawnDecided    "spawn-decided"     orchestrator issued a per-sub-goal spawn-worker decision; EventDetail.PolicyDecision=allow/deny, Reason=recipe (fleet-audit, task 085)
+ActionCompletion      "completion"        orchestrator finished aggregating the plan result (fleet-audit, task 085)
 ```
+
+The last four (`goal-intake`/`plan-decided`/`spawn-decided`/`completion`) are the
+**Tier-1 orchestrator's fleet-audit events** (task 085 / ADR 050 §4). They append to
+the SAME `audit.Sink` chain the workers write to, so a single chain is tamper-evident
+across both tiers; `audit-trail verify` validates the combined chain.
 
 - **Closed:** `AuditAction.Valid()` returns false for any value not in the constant set above. Raw stdout/stderr actions do not exist in this taxonomy (raw output stays in the 019 RunRecord).
 - **Identity:** the string value is the stable `action` field used in the block's `emit` wire format.
