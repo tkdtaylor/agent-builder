@@ -7,13 +7,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/tkdtaylor/agent-builder/internal/audit"
@@ -37,6 +37,9 @@ type Adapter struct {
 	replayCache       *envelope.ReplayCache
 	auditSink         audit.Sink
 	logger            *slog.Logger
+	maxBodyBytes      int64
+	maxMessageBytes   int64
+	guardTimeout      time.Duration
 }
 
 // ContentGuard is a narrow interface for armor guard decision-making.
@@ -57,6 +60,15 @@ type Config struct {
 	ReplayCache       *envelope.ReplayCache
 	AuditSink         audit.Sink
 	Logger            *slog.Logger
+	// MaxBodyBytes is the maximum size in bytes for the getUpdates response body.
+	// Default: 4 MB if not set.
+	MaxBodyBytes int64
+	// MaxMessageBytes is the maximum size in bytes for a single message's Text field.
+	// Default: 64 KB if not set.
+	MaxMessageBytes int64
+	// GuardTimeout is the timeout for armor guard DecideContent calls.
+	// Default: 5 seconds if not set.
+	GuardTimeout time.Duration
 }
 
 // NewAdapter constructs a Telegram channel adapter.
@@ -70,6 +82,15 @@ func NewAdapter(config Config) *Adapter {
 	if config.Logger == nil {
 		config.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	if config.MaxBodyBytes <= 0 {
+		config.MaxBodyBytes = 4 * 1024 * 1024 // 4 MB default
+	}
+	if config.MaxMessageBytes <= 0 {
+		config.MaxMessageBytes = 64 * 1024 // 64 KB default
+	}
+	if config.GuardTimeout <= 0 {
+		config.GuardTimeout = 5 * time.Second // 5 seconds default
+	}
 	return &Adapter{
 		botToken:          config.BotToken,
 		baseURL:           config.BaseURL,
@@ -81,6 +102,9 @@ func NewAdapter(config Config) *Adapter {
 		replayCache:       config.ReplayCache,
 		auditSink:         config.AuditSink,
 		logger:            config.Logger,
+		maxBodyBytes:      config.MaxBodyBytes,
+		maxMessageBytes:   config.MaxMessageBytes,
+		guardTimeout:      config.GuardTimeout,
 	}
 }
 
@@ -108,6 +132,13 @@ func (a *Adapter) Next() (supervisor.Task, bool, error) {
 
 		a.logger.Debug("processing update", "update_id", update.UpdateID, "text_len", len(update.Message.Text))
 
+		// Check message text length to prevent processing oversized messages (SEC-001)
+		if int64(len(update.Message.Text)) > a.maxMessageBytes {
+			a.logger.Debug("message text exceeds max length", "update_id", update.UpdateID, "text_len", len(update.Message.Text), "max", a.maxMessageBytes)
+			a.emitAuditEvent("text_too_long")
+			continue
+		}
+
 		// Parse the envelope JSON
 		var env envelope.Envelope
 		if err := json.Unmarshal([]byte(update.Message.Text), &env); err != nil {
@@ -128,13 +159,14 @@ func (a *Adapter) Next() (supervisor.Task, bool, error) {
 		if err != nil {
 			// Reject before armor invocation (unknown key, replay, or decryption failure)
 			a.logger.Debug("envelope verification/decryption failed", "error", err)
-			// Parse error to determine the specific rejection type
+			// Classify rejection reason using errors.Is for sentinel matching
 			reason := "envelope_rejected"
-			errStr := err.Error()
-			if strings.Contains(errStr, "replay") || strings.Contains(errStr, "nonce") {
+			if errors.Is(err, envelope.ErrUnknownKey) || errors.Is(err, envelope.ErrBadSignature) {
+				reason = "unknown_key" // Group unknown key and bad signature
+			} else if errors.Is(err, envelope.ErrReplay) {
 				reason = "replay_detected"
-			} else if strings.Contains(errStr, "unknown_key") || strings.Contains(errStr, "bad_signature") {
-				reason = "unknown_key"
+			} else if errors.Is(err, envelope.ErrStaleTimestamp) {
+				reason = "replay_detected" // Stale timestamps are grouped with replay for audit purposes
 			}
 			a.emitAuditEvent(reason)
 			continue
@@ -161,8 +193,11 @@ func (a *Adapter) Next() (supervisor.Task, bool, error) {
 			continue
 		}
 
-		// Route through armor.Guard.
-		decision, err := a.contentGuard.DecideContent(context.Background(), candidate)
+		// Route through armor.Guard with a bounded timeout context (SEC-002)
+		ctx, cancel := context.WithTimeout(context.Background(), a.guardTimeout)
+		decision, err := a.contentGuard.DecideContent(ctx, candidate)
+		cancel()
+
 		if err != nil {
 			a.logger.Debug("armor guard error", "error", err)
 			a.emitAuditEvent("armor_error")
@@ -212,6 +247,7 @@ type Message struct {
 }
 
 // getUpdates polls the Telegram Bot API.
+// Wraps the response body in a LimitReader to prevent OOM from oversized responses.
 func (a *Adapter) getUpdates() ([]Update, error) {
 	params := url.Values{}
 	params.Set("offset", strconv.FormatInt(a.offset, 10))
@@ -226,8 +262,11 @@ func (a *Adapter) getUpdates() ([]Update, error) {
 		_ = resp.Body.Close()
 	}()
 
+	// Wrap response body with a size limit to prevent OOM from oversized bodies
+	limitedBody := io.LimitReader(resp.Body, a.maxBodyBytes)
+
 	var result GetUpdatesResponse
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(limitedBody).Decode(&result); err != nil {
 		return nil, fmt.Errorf("telegram: failed to decode getUpdates response: %w", err)
 	}
 

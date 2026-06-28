@@ -1,7 +1,7 @@
 package envelope
 
 import (
-	"errors"
+	"fmt"
 	"sync"
 	"time"
 )
@@ -39,10 +39,10 @@ func NewReplayCache(window time.Duration) *ReplayCache {
 
 // Check validates a nonce and timestamp against the replay cache.
 // Returns nil if the nonce is fresh and within the time window;
-// returns a named error if:
-//   - The timestamp is older than Window
-//   - The timestamp is newer than Window
-//   - The nonce has been seen before (replay attempt)
+// returns a wrapped sentinel error if:
+//   - The timestamp is older than Window (ErrStaleTimestamp)
+//   - The timestamp is newer than Window (ErrStaleTimestamp)
+//   - The nonce has been seen before (ErrReplay)
 //
 // On success, the nonce is recorded in the cache and will be retained for 2×Window.
 func (rc *ReplayCache) Check(nonce string, ts time.Time) error {
@@ -53,12 +53,12 @@ func (rc *ReplayCache) Check(nonce string, ts time.Time) error {
 
 	// Check freshness: timestamp must be within [now-Window, now+Window].
 	if ts.Before(now.Add(-rc.Window)) || ts.After(now.Add(rc.Window)) {
-		return errors.New("stale: timestamp outside freshness window")
+		return fmt.Errorf("timestamp outside freshness window: %w", ErrStaleTimestamp)
 	}
 
 	// Check for replay: nonce must not have been seen before.
 	if _, seen := rc.nonces[nonce]; seen {
-		return errors.New("replay: nonce has been seen before")
+		return fmt.Errorf("nonce has been seen before: %w", ErrReplay)
 	}
 
 	// Evict old nonces (older than 2×Window).
