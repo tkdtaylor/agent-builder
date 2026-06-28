@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"net/url"
 	"strings"
 )
 
@@ -99,6 +100,19 @@ func containsOwnRepo(s string) bool {
 	return strings.Contains(s, OwnRepo)
 }
 
+// isAllDigits reports whether s is non-empty and consists only of digit characters.
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
+}
+
 // CanonicalizeRepo normalizes a repository reference into a canonical form for
 // comparison. It handles multiple formats and variants:
 //   - https://github.com/tkdtaylor/agent-builder → github.com/tkdtaylor/agent-builder
@@ -107,85 +121,73 @@ func containsOwnRepo(s string) bool {
 //   - ssh://git@github.com:22/tkdtaylor/agent-builder (with port) → github.com/tkdtaylor/agent-builder
 //   - github.com/tkdtaylor/agent-builder.GIT (case insensitive) → github.com/tkdtaylor/agent-builder
 //   - "  github.com/tkdtaylor/agent-builder  " (whitespace) → github.com/tkdtaylor/agent-builder
-//
-// Normalization order (load-bearing, must match this sequence):
-//   1. TrimSpace (whitespace removal)
-//   2. ToLower (case folding — makes subsequent string checks case-insensitive)
-//   3. Strip scheme (https://, http://, ssh://, git://)
-//   4. Strip scp-form prefix (git@) and convert scp-colon to slash
-//   5. Strip port (:[0-9]+ after host, before first path slash)
-//   6. Strip trailing slash
-//   7. Strip trailing .git suffix
+//   - https://user:pass@github.com/... (userinfo stripped) → github.com/tkdtaylor/agent-builder
+//   - github.com\tkdtaylor\agent-builder (backslashes) → github.com/tkdtaylor/agent-builder
+//   - //github.com/tkdtaylor/agent-builder (protocol-relative) → github.com/tkdtaylor/agent-builder
 //
 // Empty input returns empty (not an error). Non-empty input that canonicalizes to
 // empty is treated as a match by fail-closed logic in targetsOwnRepo (deny).
-func CanonicalizeRepo(s string) string {
+func CanonicalizeRepo(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
 	if s == "" {
 		return ""
 	}
 
-	// 1. Trim whitespace
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return ""
+	// Convert backslashes to forward slashes (normalize path separators).
+	s = strings.ReplaceAll(s, `\`, "/")
+
+	// Strip scheme:// prefix (https://, http://, ssh://, git://, etc.).
+	if i := strings.Index(s, "://"); i != -1 {
+		s = s[i+3:]
 	}
 
-	// 2. Lowercase FIRST so all subsequent checks are case-insensitive
-	s = strings.ToLower(s)
+	// Strip protocol-relative // prefix.
+	s = strings.TrimPrefix(s, "//")
 
-	// 3. Strip scheme: https://, http://, ssh://, git://
-	for _, scheme := range []string{"https://", "http://", "ssh://", "git://"} {
-		if strings.HasPrefix(s, scheme) {
-			s = strings.TrimPrefix(s, scheme)
-			break
-		}
-	}
-
-	// 4. Strip scp-form: git@host:path → host/path (convert : to /)
-	// BUT FIRST strip any port that appears as :digits in the scp form
-	if strings.Contains(s, "git@") {
-		idx := strings.Index(s, "git@")
-		if idx >= 0 {
-			s = s[idx+4:] // skip "git@"
-			// Handle scp-form: git@host:path or git@host:port/path
-			// First, check if there's a colon
-			if colonIdx := strings.Index(s, ":"); colonIdx >= 0 {
-				// Check what comes after the colon
-				afterColon := s[colonIdx+1:]
-				// If it's all digits followed by /, it's a port; strip it
-				// Otherwise it's a path in scp-form, convert : to /
-				isPort := false
-				slashAfterColon := strings.Index(afterColon, "/")
-				if slashAfterColon >= 0 {
-					portCandidate := afterColon[:slashAfterColon]
-					isPortDigits := true
-					for _, c := range portCandidate {
-						if c < '0' || c > '9' {
-							isPortDigits = false
-							break
-						}
-					}
-					if isPortDigits {
-						// It's a port; strip it: git@host:22/path → host/path
-						isPort = true
-						s = s[:colonIdx] + afterColon[slashAfterColon:]
-					}
-				}
-				if !isPort {
-					// It's a path in scp-form; convert : to /
-					s = s[:colonIdx] + "/" + afterColon
-				}
+	// Handle scp-form "host:path" → "host/path" (colon before first slash, and the
+	// segment after the colon is NOT all-digits, i.e., not a port). BUT: only convert
+	// if the colon comes AFTER an @ or there's no @ at all (which indicates scp form
+	// like git@host:path, not userinfo like user:pass@host).
+	c := strings.IndexByte(s, ':')
+	at := strings.IndexByte(s, '@')
+	if c != -1 && (at == -1 || c > at) {
+		// @ is not present OR @ comes before the colon, so this might be scp-form or a port.
+		sl := strings.IndexByte(s, '/')
+		if sl == -1 || c < sl {
+			rest := s[c+1:]
+			seg := rest
+			if e := strings.IndexByte(rest, '/'); e != -1 {
+				seg = rest[:e]
 			}
+			if !isAllDigits(seg) {
+				// scp path separator, not a port: convert colon to slash.
+				s = s[:c] + "/" + rest
+			}
+			// if it IS a port (all digits), leave the colon — url.Parse below strips it.
 		}
 	}
 
-	// 6. Strip trailing slash
-	s = strings.TrimSuffix(s, "/")
+	// Parse as a URL with leading // so the first segment is treated as authority
+	// (host[:port][userinfo]). This lets url.Hostname() strip both port and userinfo.
+	u, err := url.Parse("//" + s)
+	if err != nil {
+		return "" // fail-closed: invalid URL
+	}
 
-	// 7. Strip trailing .git suffix
-	s = strings.TrimSuffix(s, ".git")
+	// Extract the hostname (stripping port and userinfo).
+	host := strings.TrimSuffix(u.Hostname(), ".")
+	if host == "" {
+		return "" // fail-closed: no hostname extracted
+	}
 
-	return s
+	// Extract and normalize the path: strip leading/trailing slashes, then strip .git suffix.
+	path := strings.TrimSuffix(strings.Trim(u.Path, "/"), ".git")
+	path = strings.Trim(path, "/")
+
+	if path == "" {
+		return host
+	}
+	return host + "/" + path
 }
 
 // targetsOwnRepo reports whether a sub-goal's target repo or result sink is the

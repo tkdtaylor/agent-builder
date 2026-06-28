@@ -383,6 +383,7 @@ func TestTC085_05_CanonicalizeRepoVariants(t *testing.T) {
 		repo     string
 		wantDeny bool // true if this should be considered the own-repo
 	}{
+		// Baseline cases
 		{"exact", "github.com/tkdtaylor/agent-builder", true},
 		{"https scheme", "https://github.com/tkdtaylor/agent-builder", true},
 		{"http scheme", "http://github.com/tkdtaylor/agent-builder", true},
@@ -395,20 +396,27 @@ func TestTC085_05_CanonicalizeRepoVariants(t *testing.T) {
 		{"uppercase", "GITHUB.COM/TKDTAYLOR/AGENT-BUILDER", true},
 		{"mixed case", "GitHub.com/TkdTaylor/Agent-Builder", true},
 		{"combination", "https://git@github.com/TkdTaylor/Agent-Builder.git/", true},
-		// SEC-002 evasion cases — all should now be DENIED (fixed by stdlib + order)
+		// SEC-002 evasion cases — all should now be DENIED (fixed by net/url + order)
 		{"HTTPS uppercase scheme", "HTTPS://github.com/tkdtaylor/agent-builder", true},
 		{"Https mixed case scheme", "Https://github.com/tkdtaylor/agent-builder", true},
 		{".GIT uppercase suffix", "github.com/tkdtaylor/agent-builder.GIT", true},
 		{"leading space", "  github.com/tkdtaylor/agent-builder", true},
 		{"trailing space", "github.com/tkdtaylor/agent-builder  ", true},
 		{"both spaces", "  github.com/tkdtaylor/agent-builder  ", true},
-		{"with port (scp)", "ssh://git@github.com:22/tkdtaylor/agent-builder", true},
+		{"ssh with port", "ssh://github.com:22/tkdtaylor/agent-builder", true},
+		{"https with port", "https://github.com:443/tkdtaylor/agent-builder", true},
+		{"userinfo in URL", "https://user:pass@github.com/tkdtaylor/agent-builder", true},
+		{"scp with port", "ssh://git@github.com:22/tkdtaylor/agent-builder", true},
 		{"git@scp no .git", "git@github.com:tkdtaylor/agent-builder", true},
+		{"trailing dot host", "github.com./tkdtaylor/agent-builder", true},
+		{"backslashes", "github.com\\tkdtaylor\\agent-builder", true},
+		{"protocol-relative", "//github.com/tkdtaylor/agent-builder", true},
 		// Near-misses and other repos — must NOT be denied
 		{"near-miss (evil)", "github.com/tkdtaylor/agent-builder-evil", false},
 		{"evil HTTPS", "HTTPS://github.com/tkdtaylor/agent-builder-evil", false},
 		{"evil with space", "  github.com/tkdtaylor/agent-builder-evil  ", false},
-		{"other repo", "github.com/other/repo", false},
+		{"other owner", "github.com/other/agent-builder", false},
+		{"other repo", "github.com/tkdtaylor/other-repo", false},
 		{"empty", "", false},
 	}
 
