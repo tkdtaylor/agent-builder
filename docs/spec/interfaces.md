@@ -256,6 +256,7 @@ type Catalog struct { /* unexported */ }
 func NewCatalog() *Catalog
 func (c *Catalog) RegisterEntry(e RegistryEntry)
 func (c *Catalog) LookupEntry(id string) (RegistryEntry, bool)
+func (c *Catalog) UpdateEntry(e RegistryEntry)
 func (c *Catalog) ListEntries() []RegistryEntry
 
 func LoadFromEnv() ([]RegistryEntry, error)
@@ -275,8 +276,56 @@ func LoadFromEnv() ([]RegistryEntry, error)
   - `NewCatalog()` creates an empty, thread-safe catalog.
   - `RegisterEntry` adds an entry; panics if an entry with the same ID already exists.
   - `LookupEntry(id)` retrieves an entry by ID; returns `(RegistryEntry{}, false)` if not found. Empty ID returns `(_, false)`.
+  - `UpdateEntry(e)` replaces an existing entry in place, preserving its position in the stable order; a no-op when `e.ID` is not present. This is the seam the router uses to mutate an entry's router-owned `Availability`/`Usage` state (ADR 043).
   - `ListEntries()` returns all entries in stable, deterministic (insertion) order.
   - `LoadFromEnv()` parses well-known env-var prefixes (`AGENT_BUILDER_REGISTRY_<ID>_*`) and returns enabled entries. For local entries (`local-qwen`, `local`), `SECRET_REF` is optional (empty is valid). For cloud entries, missing required fields or non-integer tier/cost/budget values return a descriptive error.
+
+### Interface: model router (`internal/router`)
+
+The capability/cost-first model router (ADR 043). It lives on the executor side of
+the supervisor injection boundary — a sibling of `internal/executor` that imports
+`internal/registry` and `internal/executor`. `internal/supervisor` imports neither
+the router nor the registry (F-003; enforced by `make fitness-supervisor-isolation`).
+State is held in memory only; quota persistence and the injected clock seam are a
+follow-on (task 093).
+
+```go
+type Sensitivity int
+
+const (
+    SensitivityNone Sensitivity = iota
+    SensitivitySensitive
+)
+
+type RoutingSpec struct {
+    MinCapability   int
+    SensitivityHint Sensitivity
+}
+
+type Router struct { /* unexported */ }
+
+func New(catalog *registry.Catalog) *Router
+
+func (r *Router) Select(spec RoutingSpec) (registry.RegistryEntry, error)
+func (r *Router) OnGateFailure(entryID string)
+func (r *Router) ResetEscalation()
+func (r *Router) OnQuotaExhausted(entryID string, resetAt time.Time)
+func (r *Router) ResolveExecutor(spec RoutingSpec, secretSource secrets.SecretSource, worktree string) (supervisor.Executor, registry.RegistryEntry, error)
+
+var ErrNoEligibleExecutor error
+var ErrUnknownHarness error
+```
+
+- **Implementors:** `*router.Router`.
+- **Consumers:** runtime/dispatcher wiring (task 095) resolves a recipe's routing spec to a concrete executor through this router.
+- **Stability:** governed by ADR 043; updated with any task that changes selection, escalation, or the two-axis fallback model.
+- **Required behavior:**
+  - **Eligibility (hard filters):** an entry is eligible for a dispatch when `CapabilityTier >= spec.MinCapability` AND `Availability.Status == AvailStatusAvailable` AND it has not been escalated past via `OnGateFailure` in the current dispatch. `Sensitivity` is never a hard filter.
+  - **Selection:** `Select` returns the cheapest eligible entry (lowest `CostWeight`). Ties break by the soft sensitivity weight (a `SensitivitySensitive` hint sorts a local entry — `SecretRef == ""` and `IsUnlimited()` — before a non-local one), then by stable entry ID. The hint never excludes an otherwise-eligible entry. Returns `ErrNoEligibleExecutor` when no entry qualifies.
+  - **Gate-failure escalation (quality axis):** `OnGateFailure(entryID)` records the entry as tried-and-failed for the current dispatch, so the next `Select` returns the next-stronger eligible entry. Once every eligible entry has gate-failed, `Select` returns `ErrNoEligibleExecutor`. Does not touch the entry's availability. `ResetEscalation()` clears this set for a fresh dispatch (availability state is unaffected).
+  - **Quota-exhaustion fallback (availability axis):** `OnQuotaExhausted(entryID, resetAt)` marks the entry `AvailStatusExhausted` with the supplied `ResetAt`, removing it from the eligible set so the next `Select` routes sideways to the next cheapest still-available eligible entry at sufficient capability. It does NOT climb the quality ladder. The two axes are independent.
+  - **Quota-free backstop:** `OnQuotaExhausted` is a silent no-op for an entry with `Budget.Limit == 0` (every local entry — `IsUnlimited()` true) and for an unknown entry ID. A local entry is never marked exhausted.
+  - **`ResolveExecutor`:** selects an entry via `Select`, then constructs the concrete `supervisor.Executor` for the entry's harness (`HarnessClaudeCLI` → `executor.NewClaudeCLIFromEntry`, `HarnessCodexCLI` → `executor.NewCodexCLI`, `HarnessGeminiCLI` → `executor.NewGeminiCLI`), returning it alongside the selected entry so the caller can feed the entry ID back into the fallback hooks. Returns `ErrNoEligibleExecutor` when selection fails, or `ErrUnknownHarness` for an unrecognized harness driver. This is the executor-side boundary: the caller receives a `supervisor.Executor` seam, not a router.
 
 ### Interface: supervisor dispatch lifecycle seams
 
