@@ -32,6 +32,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/tkdtaylor/agent-builder/internal/audit"
 	"github.com/tkdtaylor/agent-builder/internal/policy"
 	"github.com/tkdtaylor/agent-builder/internal/recipe"
 	"github.com/tkdtaylor/agent-builder/internal/runtime"
@@ -95,6 +96,21 @@ type PlanStore interface {
 	Delete(goalID string)
 }
 
+// TamperAwarePlanStore is an optional extension of PlanStore implemented by
+// MemoryGuardPlanStore. It adds error-returning variants of Put and Delete so the
+// orchestrator can surface write-gate rejections and delete-verify tamper signals
+// without changing the base PlanStore interface.
+//
+//   - TryPut runs validate_write; returns ErrWriteGateDenied on rejection.
+//   - TryDelete runs verify_delete; returns ErrTamperDetected on tamper.
+//
+// MemoryPlanStore does NOT implement this interface; its Put/Delete are always clean.
+type TamperAwarePlanStore interface {
+	PlanStore
+	TryPut(plan Plan) error
+	TryDelete(goalID string) error
+}
+
 // DispatchFunc is the dispatch seam (ADR 046 §5). It dispatches one worker for
 // one sub-goal and returns nil on success or an error describing the failure.
 // The default (defaultDispatch) wires to runtime.Run; tests override it with a
@@ -137,6 +153,9 @@ type Orchestrator struct {
 	baseConfig runtime.Config
 	dispatch   DispatchFunc
 	risk       string
+	// auditSink is the optional audit.Sink for security events (e.g. tamper-detected).
+	// When nil, no audit events are emitted (the plan is still halted on tamper).
+	auditSink  audit.Sink
 }
 
 // Option configures an Orchestrator.
@@ -206,7 +225,15 @@ func (o *Orchestrator) Handle(ctx context.Context, goal supervisor.Task) (PlanRe
 		return o.dispatchPlan(ctx, plan)
 	case policy.DecisionRequireApproval:
 		// Pause-and-resume (ADR 046 §4): hold the plan, report it, dispatch nothing.
-		o.store.Put(plan)
+		// When the store implements TamperAwarePlanStore (MemoryGuardPlanStore), use
+		// TryPut so write-gate rejections surface as errors (REQ-084-01 / ADR 049 §2).
+		if ta, ok := o.store.(TamperAwarePlanStore); ok {
+			if err := ta.TryPut(plan); err != nil {
+				return PlanResult{}, fmt.Errorf("orchestrator: memory-guard write-gate rejected plan for goal %q: %w", plan.GoalID, err)
+			}
+		} else {
+			o.store.Put(plan)
+		}
 		if err := o.reporter.Report(ctx, renderApprovalRequest(plan)); err != nil {
 			return PlanResult{}, fmt.Errorf("orchestrator: report approval request: %w", err)
 		}
@@ -239,7 +266,17 @@ func (o *Orchestrator) Resume(ctx context.Context, approval Approval) (PlanResul
 
 	// Consume the plan from the store regardless of the decision so a stale
 	// approval/rejection cannot be replayed against the same goal ID.
-	o.store.Delete(approval.GoalID)
+	// When the store is TamperAwarePlanStore (MemoryGuardPlanStore), TryDelete
+	// runs verify_delete and returns ErrTamperDetected on a tamper signal —
+	// we halt the plan and emit a tamper audit event (REQ-084-05 / ADR 049 §4).
+	if ta, ok := o.store.(TamperAwarePlanStore); ok {
+		if err := ta.TryDelete(approval.GoalID); err != nil {
+			o.emitTamperEvent(approval.GoalID)
+			return PlanResult{}, fmt.Errorf("orchestrator: tamper detected on delete-verify for goal %q: %w", approval.GoalID, err)
+		}
+	} else {
+		o.store.Delete(approval.GoalID)
+	}
 
 	if !approval.Approved {
 		if err := o.reporter.Report(ctx, fmt.Sprintf("Plan rejected for goal: %s", plan.Goal)); err != nil {

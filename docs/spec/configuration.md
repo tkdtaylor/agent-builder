@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** agent-builder
-**Last updated:** 2026-06-27 (task 093 — usage-quota-tracking)
+**Last updated:** 2026-06-28 (task 084 — memory-guard adoption: added AGENT_BUILDER_MEMORY_GUARD_BIN)
 
 Every knob the system exposes — env vars, config files, runtime parameters, deployment settings. Each entry is a public contract: changes to defaults or accepted values are observable.
 
@@ -110,6 +110,7 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `AGENT_BUILDER_POLICY_SOCKET` | path | `${TMPDIR}/agent-builder-policy-<pid>.sock` | no | Unix socket path the policy daemon listens on (`--socket`) and that agent-builder connects to for the decide call. Only consulted when `AGENT_BUILDER_POLICY_BIN` is set. |
 | `AGENT_BUILDER_POLICY_RISK` | string | `low` | no | Static value sent as `context.risk` in the AuthZEN decide request. Dynamic risk scoring is deferred (ADR 038); this is a fixed per-deployment value. Only consulted when `AGENT_BUILDER_POLICY_BIN` is set. |
 | `AGENT_BUILDER_WORKER_SIGNING_KEY` | path | none | required when the orchestrator↔worker transport is constructed via `worker.NewWorkItemSenderFromEnv` / `worker.LoadSigningKey` | Path to the file holding the orchestrator's Ed25519 signing key (hex-encoded 64-byte `ed25519.PrivateKeySize` private key) for the orchestrator↔worker transport (ADR 048, task 083). The transport signs every dispatched work-item with this key so the worker can verify provenance, and replay-checks every inbound envelope. **Fail-closed at startup (REQ-083-05):** when the variable is unset, or names an absent/unreadable/malformed key file, the transport constructor returns an error satisfying `errors.Is(err, worker.ErrMissingSigningKey)` that names this variable, **before any work-item is dispatched or received** — never at first message receipt. The key bytes are never logged. |
+| `AGENT_BUILDER_MEMORY_GUARD_BIN` | path/name | unset | no | Path to the `memory-guard` block binary. **When set, the memory-guard write-gate + delete-verify are enabled** (ADR 049, task 084): orchestrator plan/fleet state writes go through `validate_write` (fail-closed on allow=false) and deletes go through `verify_delete` (tamper=halt on confirmed=false or residue_detected=true). When unset, the orchestrator degrades gracefully to the in-memory `MemoryPlanStore` (v1) and emits a structured warning log naming this variable. The absence of this variable is never a startup error — existing e2e tests pass unchanged when it is unset. A set-but-unresolvable binary surfaces as an error on the first IPC call (not at startup). |
 | `VAULT_MASTER_KEY` | secret string (hex) | none | required when vault is enabled and `VAULT_MASTER_KEY_FILE` is unset | 32-byte hex-encoded master key for the vault daemon's encryption. Validated to decode to exactly 32 bytes; an invalid or short key is a fail-fast error. **Never auto-generated** — absence when vault is enabled fails loud (a silent ephemeral key would lose secrets across restarts). Never logged. |
 | `VAULT_MASTER_KEY_FILE` | path | none | alternative to `VAULT_MASTER_KEY` | Path to a file containing the hex master key. **Takes precedence over `VAULT_MASTER_KEY`** when both are set. The file contents are read and validated identically to `VAULT_MASTER_KEY`; the key value is never logged. |
 

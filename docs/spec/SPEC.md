@@ -1,7 +1,7 @@
 # agent-builder — Authoritative Spec
 
 **Project:** agent-builder
-**Last updated:** 2026-06-16
+**Last updated:** 2026-06-28 (task 084 — memory-guard adoption)
 **Status:** Phase 1 implementation snapshot. The core Gate, loop, supervisor lifecycle, CLI, containment launcher contracts, the rootless **Podman** execution-box `sandbox.Runner` adapter, ingestion/armor harness seams, and branch/PR artifact publication are implemented as described here. The Phase 1 Podman containment swap (ADR 021) **removed** the rented `@anthropic-ai/sandbox-runtime` (`srt`) backend from the `agent-builder run` pipeline; `srt` is historical for the run path, not a pending runtime, and `AGENT_BUILDER_SANDBOX_RUNTIME` now errors loudly when set. Phase 0 and Phase 1 end-to-end acceptance are recorded at fake-provider L5 by the Task 032 and Task 037 harnesses; live Podman, the `runsc` runtime, real Claude, and real PR publication remain pending L6/operator evidence where local tooling is unavailable.
 
 > Authoritative design source: `autonomous-builder.md`. This SPEC is the in-repo snapshot; where they disagree, reconcile in the same change.
@@ -38,5 +38,6 @@ agent-builder is a Go orchestrator that composes the secure-agent ecosystem bloc
 - **F-002 — gate is blocking:** implemented by `make fitness-gate-blocking`; production gate and CLI source expose no `--no-verify`/skip route around `dep-scan`/`code-scanner`.
 - **F-010 — orchestrator authors no code (no direct executor import):** implemented by `make fitness-orchestrator-no-executor`; `internal/orchestrator`'s own direct imports contain no `internal/executor` (the executor is reached only transitively, through `internal/runtime`, for the dispatched worker — ADR 042/046).
 - **F-011 — worker-transport adapter is a leaf:** implemented by `make fitness-worker-transport-isolation`; `internal/channel/worker`'s own direct imports contain no `agent-builder/internal/` package other than `internal/envelope`, `internal/supervisor`, and `internal/audit` (a direct-import check, as `internal/supervisor` legitimately drags in `internal/gate`/`internal/sandbox` transitively — ADR 048 §3).
+- **F-012 — memoryguard IPC adapter is a leaf:** implemented by `make fitness-memoryguard-isolation`; `internal/memoryguard`'s transitive dependency graph contains no `agent-builder/internal/` path other than itself (only stdlib — ADR 049 §1).
 
 See [fitness-functions.md](fitness-functions.md) for executable rule definitions and commands.

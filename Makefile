@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render check l6-preflight l6-probe
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation check l6-preflight l6-probe
 
 lint:
 	golangci-lint run
@@ -10,7 +10,7 @@ test:
 	go test ./...
 
 # Fitness functions — see docs/spec/fitness-functions.md
-fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render
+fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation
 	@echo "All fitness checks passed."
 
 fitness-no-docker:
@@ -267,6 +267,22 @@ fitness-worker-transport-isolation:
 		exit 1; \
 	fi; \
 	echo "PASS fitness-worker-transport-isolation: internal/channel/worker directly imports only envelope, supervisor, and audit internal packages."
+
+# fitness-memoryguard-isolation covers test-spec TC-084-03 (F-012, ADR 049):
+# internal/memoryguard must be a leaf — its transitive dependency graph must
+# contain no github.com/tkdtaylor/agent-builder/internal/ path other than
+# internal/memoryguard itself (only stdlib packages are permitted).
+# This guarantees the IPC adapter stays portable and never pulls in the
+# orchestrator/executor/LLM/web side of the codebase.
+fitness-memoryguard-isolation:
+	@mg_deps=$$(go list -deps ./internal/memoryguard/...) || exit $$?; \
+	mg_forbidden=$$(printf '%s\n' "$$mg_deps" | grep 'github.com/tkdtaylor/agent-builder/internal/' | grep -v 'agent-builder/internal/memoryguard' || true); \
+	if [ -n "$$mg_forbidden" ]; then \
+		echo "FAIL fitness-memoryguard-isolation: internal/memoryguard imports forbidden agent-builder/internal package(s):"; \
+		printf '%s\n' "$$mg_forbidden"; \
+		exit 1; \
+	fi; \
+	echo "PASS fitness-memoryguard-isolation: internal/memoryguard import graph contains no other agent-builder/internal packages."
 
 fitness-diagrams-render:
 	@python3 scripts/check-mermaid.py > /dev/null && \
