@@ -906,6 +906,10 @@ func (s *envFuncSecretSource) PublisherTokens() (gitToken, githubToken string) {
 	return s.getenv(EnvGitToken), s.getenv(EnvGitHubToken)
 }
 
+func (s *envFuncSecretSource) NamedProviderToken(ref string) (string, error) {
+	return "", secrets.ErrSecretNotFound
+}
+
 type sandboxBox struct {
 	runner   sandbox.Runner
 	worktree string

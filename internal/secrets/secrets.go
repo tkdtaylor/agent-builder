@@ -7,7 +7,11 @@
 // code in executor or runtime.
 package secrets
 
-import "os"
+import (
+	"errors"
+	"os"
+	"strings"
+)
 
 const (
 	// EnvAnthropicAPIKey is the env var for the Claude Code CLI API key credential.
@@ -18,7 +22,13 @@ const (
 	EnvAgentBuilderGitToken = "AGENT_BUILDER_GIT_TOKEN"
 	// EnvAgentBuilderGitHubToken is the env var for the GitHub publication token.
 	EnvAgentBuilderGitHubToken = "AGENT_BUILDER_GITHUB_TOKEN"
+	// EnvSecretPrefix is the prefix for named-provider secret env vars.
+	// SecretRef "codex-token" → AGENT_BUILDER_SECRET_CODEX_TOKEN.
+	EnvSecretPrefix = "AGENT_BUILDER_SECRET_"
 )
+
+// ErrSecretNotFound indicates that a named secret was not found in the source.
+var ErrSecretNotFound = errors.New("secret not found")
 
 // SecretSource abstracts token retrieval so vault can be substituted for
 // os.Getenv without changing call-site code.
@@ -30,6 +40,11 @@ type SecretSource interface {
 	// PublisherTokens returns the git and GitHub publication tokens.
 	// Either may be empty.
 	PublisherTokens() (gitToken, githubToken string)
+
+	// NamedProviderToken resolves a named provider secret by its reference.
+	// Returns an opaque handle (safe to log) and an error if not found.
+	// See EnvSecretSource and VaultSecretSource for implementation details.
+	NamedProviderToken(ref string) (string, error)
 }
 
 // EnvSecretSource reads tokens from the process environment.
@@ -54,4 +69,17 @@ func (e *EnvSecretSource) ProviderToken() (authToken, oauthToken string) {
 // process environment. Either may be empty.
 func (e *EnvSecretSource) PublisherTokens() (gitToken, githubToken string) {
 	return os.Getenv(EnvAgentBuilderGitToken), os.Getenv(EnvAgentBuilderGitHubToken)
+}
+
+// NamedProviderToken resolves a named provider secret from the process environment.
+// The env var is derived by uppercasing the ref and replacing hyphens with
+// underscores, prefixed with AGENT_BUILDER_SECRET_. For example, "codex-token" →
+// AGENT_BUILDER_SECRET_CODEX_TOKEN. Returns ErrSecretNotFound if the env var is unset.
+func (e *EnvSecretSource) NamedProviderToken(ref string) (string, error) {
+	envVarName := EnvSecretPrefix + strings.ToUpper(strings.ReplaceAll(ref, "-", "_"))
+	token := os.Getenv(envVarName)
+	if token == "" {
+		return "", ErrSecretNotFound
+	}
+	return token, nil
 }

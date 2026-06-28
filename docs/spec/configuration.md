@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** agent-builder
-**Last updated:** 2026-06-27 (task 079 — docs-fix recipe selection)
+**Last updated:** 2026-06-27 (task 088 — vault-per-provider-auth)
 
 Every knob the system exposes — env vars, config files, runtime parameters, deployment settings. Each entry is a public contract: changes to defaults or accepted values are observable.
 
@@ -207,7 +207,11 @@ only the names and where they come from are documented here.
 | `AGENT_BUILDER_GITHUB_TOKEN` | Host environment or sandbox secret store | GitHub publication token. Host-side publisher receives it as `GH_TOKEN`/`GITHUB_TOKEN` (redacted from publisher errors/run records). When vault is enabled, the in-box path is brokered through vault's proxy identically to `AGENT_BUILDER_GIT_TOKEN`. |
 | `VAULT_MASTER_KEY` / `VAULT_MASTER_KEY_FILE` | Host environment or file | Master encryption key for the vault daemon when vault token brokering is enabled. 32-byte hex; never logged; never auto-generated. See the env-var table above. |
 
-**Token retrieval seam:** the four provider/publication secret values are read through the `secrets.SecretSource` interface (`internal/secrets/`). The default implementation, `EnvSecretSource`, reads directly from `os.Getenv`. The `VaultSecretSource` implementation (ADR 036, task 066) registers the git/GitHub tokens with the vault daemon and holds opaque handles; its `ProviderToken()` returns the raw env provider values unchanged (provider brokering deferred) and its `PublisherTokens()` returns `("","")` because the tokens live in vault. The dependency direction is one-way: `runtime → secrets → vault`; `internal/secrets` imports only `internal/vault` (a sibling leaf), and `internal/vault` imports only the standard library — both verified by `go list -deps` (no import cycle).
+**Token retrieval seam:** the four provider/publication secret values are read through the `secrets.SecretSource` interface (`internal/secrets/`). The default implementation, `EnvSecretSource`, reads directly from `os.Getenv`. The `VaultSecretSource` implementation (ADR 036, task 066) registers the git/GitHub tokens with the vault daemon and holds opaque handles; its `ProviderToken()` returns the raw env provider values unchanged (provider brokering deferred) and its `PublisherTokens()` returns `("","")` because the tokens live in vault.
+
+**Named-provider secret resolution (task 088):** the `SecretSource` interface extends the abstraction with `NamedProviderToken(ref string) (string, error)` to resolve per-entry provider secrets at dispatch time (ADR 043). `EnvSecretSource.NamedProviderToken` derives an env-var name from the `ref` by uppercasing and replacing hyphens with underscores, prefixed with `AGENT_BUILDER_SECRET_` (e.g., `"codex-token"` → `AGENT_BUILDER_SECRET_CODEX_TOKEN`). `VaultSecretSource.NamedProviderToken` resolves the ref through vault's existing put/resolve mechanism, returning an opaque handle (never plaintext). Both implementations return `ErrSecretNotFound` when the secret is absent. This allows each registry entry to hold an independently revocable secret keyed by its `SecretRef` — revoking the Gemini key does not touch the Claude token because each is a distinct vault secret or env var.
+
+**Dependency direction:** `runtime → secrets → vault`; `internal/secrets` imports only `internal/vault` (a sibling leaf), and `internal/vault` imports only the standard library — both verified by `go list -deps` (no import cycle).
 
 **In-box token-brokering posture (ADR 036):** when `AGENT_BUILDER_VAULT_BIN` is set, the git/GitHub tokens are no longer present in the execution box's environment; they are injected by the egress proxy at the `api.github.com` boundary. The provider token (`ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`) continues to be forwarded into the executor subprocess env — provider-token brokering is deferred pending the proxy-feasibility probe (task 066 TC-066-07). When vault is disabled, all four tokens follow the prior env-forwarding path unchanged.
 
