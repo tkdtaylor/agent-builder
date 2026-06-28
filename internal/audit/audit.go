@@ -36,6 +36,10 @@ const (
 	ActionFinish         AuditAction = "finish"
 	ActionPolicyDecision AuditAction = "policy-decision"
 	ActionChannelReject  AuditAction = "channel-reject"
+	// ActionTamper is emitted when a memory-guard delete-verify signals tamper
+	// (residue_detected=true or confirmed=false). The Detail.TamperDetected field
+	// is set to true on this event (task 084 / ADR 049).
+	ActionTamper AuditAction = "tamper"
 )
 
 // validActions is the closed set of known actions. Used by Valid() and Validate.
@@ -49,6 +53,7 @@ var validActions = map[AuditAction]struct{}{
 	ActionFinish:         {},
 	ActionPolicyDecision: {},
 	ActionChannelReject:  {},
+	ActionTamper:         {},
 }
 
 // Valid reports whether a is a known, non-empty action in the closed enum.
@@ -109,6 +114,11 @@ type EventDetail struct {
 	// Channel-reject events are emitted to the audit.Sink seam and serialization
 	// to the audit-trail block is deferred to orchestrator integration (task 081).
 	Reason string
+	// TamperDetected is set to true when a memory-guard delete-verify reports tamper
+	// (residue_detected=true or confirmed=false). The orchestrator halts the plan and
+	// emits an event with this field set so the audit chain records the security signal
+	// (task 084 / ADR 049).
+	TamperDetected bool
 }
 
 // AuditEvent is the structured, typed event that the supervisor writes through
@@ -170,7 +180,7 @@ func Validate(ev AuditEvent) error {
 	if !ev.Action.Valid() {
 		return &ValidationError{
 			Field:   "action",
-			Message: fmt.Sprintf("must be one of {containment, pick, attempt, verify, publish, escalate, finish, policy-decision}, got %q", ev.Action),
+			Message: fmt.Sprintf("must be one of {containment, pick, attempt, verify, publish, escalate, finish, policy-decision, channel-reject, tamper}, got %q", ev.Action),
 		}
 	}
 	if ev.Action == ActionVerify && !ev.Verdict.Valid() {

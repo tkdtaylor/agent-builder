@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** agent-builder
-**Last updated:** 2026-06-28 (task 098 — outbound Reporter seam)
+**Last updated:** 2026-06-28 (task 084 — memory-guard adoption: memoryguard adapter + TamperAwarePlanStore + WithAuditSink)
 
 The system's contact surface — everything that calls into the system, everything the system calls out to, and the public boundaries within the system. Each interface is a stable contract: changes here are breaking changes.
 
@@ -523,7 +523,88 @@ func (o *Orchestrator) HasPendingPlan(goalID string) bool
 - **Rendering:** `RenderPlanResult(PlanResult) string` produces the plain-text summary
   at the Reporter boundary; the typed `PlanResult` stays in the core (ADR 046 §2).
 - **Stability:** governed by ADR 046 (extends ADR 042). v1 plan state is in-memory
-  (`MemoryPlanStore`); durable + memory-guarded backend is task 084.
+  (`MemoryPlanStore`); memory-guarded backend (`MemoryGuardPlanStore`) is wired by
+  task 084 when `AGENT_BUILDER_MEMORY_GUARD_BIN` is set.
+- **memory-guard backend (task 084):** `MemoryGuardPlanStore` implements `PlanStore`
+  (and `TamperAwarePlanStore`) and gates writes through `validate_write` + deletes
+  through `verify_delete`. When the store implements `TamperAwarePlanStore`, `Handle`
+  calls `TryPut` (write-gate rejection surfaces as an error) and `Resume` calls
+  `TryDelete` (tamper → plan halted + `audit.ActionTamper` event emitted). The
+  `TamperAwarePlanStore` extension keeps the base `PlanStore` interface unchanged
+  (void `Put`/`Delete`) so `MemoryPlanStore` (the degraded-mode default) needs no change.
+
+```go
+// TamperAwarePlanStore is an optional extension of PlanStore implemented by
+// MemoryGuardPlanStore. TryPut surfaces write-gate rejections; TryDelete surfaces
+// delete-verify tamper signals. Asserted via type assertion in orchestrator.Handle
+// and orchestrator.Resume; MemoryPlanStore does NOT implement this interface.
+type TamperAwarePlanStore interface {
+    PlanStore
+    TryPut(plan Plan) error
+    TryDelete(goalID string) error
+}
+```
+
+---
+
+### `internal/memoryguard` adapter
+
+Binary IPC adapter leaf for the memory-guard block (ADR 049). The block is `package
+main` (not importable as a Go library); this package speaks its JSON IPC contract via
+per-op subprocess calls (one subprocess per `validate_write` / `verify_delete`).
+
+```go
+const EnvVarMemoryGuardBin = "AGENT_BUILDER_MEMORY_GUARD_BIN"
+
+var ErrWriteGateDenied error // allow=false from validate_write
+var ErrTamperDetected  error // confirmed=false OR residue_detected=true from verify_delete
+
+type ExecRunner interface {
+    Run(binPath string, reqJSON []byte) ([]byte, error)
+}
+
+type Client struct { /* unexported */ }
+func NewClient(binPath string) *Client
+func NewClientWithRunner(binPath string, runner ExecRunner) *Client
+func (c *Client) ValidateWrite(entry, identity string) (storedID string, err error)
+func (c *Client) VerifyDelete(storedID string) error
+
+type MemoryGuardStore[P any] struct { /* unexported */ }
+func NewMemoryGuardStore[P any](client *Client, identity string) *MemoryGuardStore[P]
+func (s *MemoryGuardStore[P]) Put(key string, plan P) error
+func (s *MemoryGuardStore[P]) Get(key string) (P, bool)
+func (s *MemoryGuardStore[P]) Delete(key string) error // returns ErrTamperDetected on tamper
+func (s *MemoryGuardStore[P]) StoredID(key string) (string, bool)
+```
+
+**In `internal/orchestrator`** (not in `internal/memoryguard` — leaf isolation):
+
+```go
+// MemoryGuardPlanStore wraps MemoryGuardStore[Plan] and implements PlanStore +
+// TamperAwarePlanStore. Lives in internal/orchestrator so the leaf never imports it.
+type MemoryGuardPlanStore struct { /* unexported */ }
+func NewMemoryGuardPlanStore(binPath, identity string) *MemoryGuardPlanStore
+func NewMemoryGuardPlanStoreWithRunner(binPath, identity string, runner memoryguard.ExecRunner) *MemoryGuardPlanStore
+func (s *MemoryGuardPlanStore) TryPut(plan Plan) error
+func (s *MemoryGuardPlanStore) TryDelete(goalID string) error
+func (s *MemoryGuardPlanStore) StoredID(goalID string) (string, bool)
+
+// NewPlanStoreFromEnv reads AGENT_BUILDER_MEMORY_GUARD_BIN. Set → MemoryGuardPlanStore;
+// unset → MemoryPlanStore + structured warning via logFn.
+type MemoryGuardLogFunc func(msg string, keysAndValues ...any)
+func NewPlanStoreFromEnv(logFn MemoryGuardLogFunc) PlanStore
+
+// WithAuditSink wires an audit.Sink for tamper events (ActionTamper,
+// Detail.TamperDetected=true). Optional; plan still halts on tamper when nil.
+func WithAuditSink(sink audit.Sink) Option
+```
+
+- **IPC contract (memory-guard JSON, ADR 049):**
+  - `validate_write`: `{"op":"validate_write","entry":"<json>","identity":"<actor>"}` → `{"allow":bool,"stored_id":"…","flags":[…]}`
+  - `verify_delete`: `{"op":"verify_delete","id":"<stored_id>"}` → `{"confirmed":bool,"residue_detected":bool,"residue_summary":"…","deletion_hash":"…"}`
+- **Leaf isolation (F-012):** `internal/memoryguard` imports only stdlib. Enforced by `make fitness-memoryguard-isolation`.
+- **Degraded mode (REQ-084-04):** when `AGENT_BUILDER_MEMORY_GUARD_BIN` is unset, `NewPlanStoreFromEnv` returns `MemoryPlanStore` and calls `logFn` with a structured warning naming `AGENT_BUILDER_MEMORY_GUARD_BIN` and `"memory-guard"`. No IPC, no subprocess. Existing e2e tests pass unchanged.
+- **Tamper halt (REQ-084-05):** when `VerifyDelete` returns `ErrTamperDetected`, `Resume` returns an error (plan halted, no dispatch) and emits `audit.AuditEvent{Action: ActionTamper, Detail: EventDetail{TamperDetected: true}}` through the wired `audit.Sink`.
 
 ---
 
