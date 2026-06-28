@@ -1,6 +1,6 @@
 # Task 104 — Worktree-confined Ollama tool set
 
-**Status:** backlog
+**Status:** completed
 **ID:** 104
 **Slug:** ollama-tool-set
 **Priority:** must-have
@@ -140,8 +140,12 @@ The following invariants MUST hold and MUST be verified by the security-auditor:
 3. **`run_command` sets `cmd.Dir` to `s.worktreeAbs`** — not a relative path, not
    the caller process CWD.
 
-4. **`run_command` does NOT set `cmd.Env`** — it inherits the process environment
-   unchanged. The exec-sandbox box's environment isolation is the outer control.
+4. **`run_command` sets `cmd.Env` to an explicit minimal environment** — prevents
+   subprocess from accessing orchestrator secrets or registry credentials. Environment
+   includes only: `PATH`, `HOME` (if set), `GOCACHE`, `GOPATH` (Go-specific, if set),
+   and hardened git variables `GIT_CONFIG_NOSYSTEM=1` + `GIT_CONFIG_GLOBAL=/dev/null`
+   (prevents hook execution and secret leakage). The outer exec-sandbox box remains
+   the enforcement perimeter.
 
 ---
 
