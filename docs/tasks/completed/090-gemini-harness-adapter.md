@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-27
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 
@@ -32,17 +32,17 @@ API key, then injects it into the subprocess env.
 ## Readiness gate
 
 - [x] Test spec `090-gemini-harness-adapter-test-spec.md` exists (written first)
-- [ ] Task 087 merged (registry type)
-- [ ] Task 088 merged (`NamedProviderToken`)
-- [ ] `make check` green before starting
+- [x] Task 087 merged (registry type)
+- [x] Task 088 merged (`NamedProviderToken`)
+- [x] `make check` green before starting
 
 ## Acceptance criteria
 
-- [ ] [REQ-090-01] TC-090-01: `var _ supervisor.Executor = (*executor.GeminiCLI)(nil)` compiles
-- [ ] [REQ-090-01] TC-090-02: stub subprocess invoked with auth token, model, worktree; returns OK result
-- [ ] [REQ-090-02] TC-090-03: `ErrSecretNotFound` → `Run` errors before subprocess invocation
-- [ ] [REQ-090-03] TC-090-04: subprocess exit 1 → `Run` returns error; `Result.OK == false`
-- [ ] [REQ-090-04] TC-090-05: `make fitness-supervisor-isolation` → `PASS`; `make check` → `All checks passed.`
+- [x] [REQ-090-01] TC-090-01: `var _ supervisor.Executor = (*executor.GeminiCLI)(nil)` compiles
+- [x] [REQ-090-01] TC-090-02: stub subprocess invoked with auth token, model, worktree; returns OK result
+- [x] [REQ-090-02] TC-090-03: `ErrSecretNotFound` → `Run` errors before subprocess invocation
+- [x] [REQ-090-03] TC-090-04: subprocess exit 1 → `Run` returns error; `Result.OK == false`
+- [x] [REQ-090-04] TC-090-05: `make fitness-supervisor-isolation` → `PASS`; `make check` → `All checks passed.`
 
 ## Verification plan
 
