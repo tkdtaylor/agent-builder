@@ -1,6 +1,6 @@
 # Task 104 — Worktree-confined Ollama tool set
 
-**Status:** backlog
+**Status:** completed
 **ID:** 104
 **Slug:** ollama-tool-set
 **Priority:** must-have
