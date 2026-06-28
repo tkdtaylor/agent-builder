@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** agent-builder
-**Last updated:** 2026-06-27 (task 093 — usage-quota-tracking)
+**Last updated:** 2026-06-28 (task 098 — outbound Reporter seam)
 
 The system's contact surface — everything that calls into the system, everything the system calls out to, and the public boundaries within the system. Each interface is a stable contract: changes here are breaking changes.
 
@@ -374,6 +374,66 @@ var ErrUnknownHarness error
   - **State persistence:** `SaveState(path)` writes current `Usage` and `Availability` for all entries as a plain-text (JSON) file. `LoadState(path)` restores that state; a corrupted or malformed file returns a descriptive error, never a silent zero value.
   - **Clock seam:** `New` uses the real wall clock (`time.Now()`). `NewWithClock` takes an explicit `Clock` so tests can inject `FakeClock` and advance time programmatically without `time.Sleep`.
   - **`ResolveExecutor`:** selects an entry via `Select`, then constructs the concrete `supervisor.Executor` for the entry's harness (`HarnessClaudeCLI` → `executor.NewClaudeCLIFromEntry`, `HarnessCodexCLI` → `executor.NewCodexCLI`, `HarnessGeminiCLI` → `executor.NewGeminiCLI`), returning it alongside the selected entry so the caller can feed the entry ID back into the fallback hooks. Returns `ErrNoEligibleExecutor` when selection fails, or `ErrUnknownHarness` for an unrecognized harness driver. This is the executor-side boundary: the caller receives a `supervisor.Executor` seam, not a router.
+
+### Interface: `supervisor.Reporter`
+
+```go
+// In internal/supervisor — symmetric outbound counterpart to GoalSource.
+// Reporter is the seam for sending a message back to the human over the channel
+// (approval solicitation, result summary). text is rendered at the channel edge.
+type Reporter interface {
+    Report(ctx context.Context, text string) error
+}
+```
+
+- **Implementors:** `*telegram.ReplyAdapter` (Telegram outbound concrete); `*telegram.FakeReporter` (in-memory test double for task 081 L2 tests).
+- **Consumers:** future orchestrator (task 081) for REQ-081-02 (solicit approval) and REQ-081-04 (report result summary).
+- **Package:** `internal/supervisor` — symmetric outbound counterpart to `supervisor.GoalSource` (the inbound seam). The pure-stdlib signature (`context.Context`, `string`, `error`) ensures that adding this interface adds no import to `internal/supervisor`, preserving F-003 / F-007 (enforced by `make fitness-supervisor-isolation` and `make fitness-envelope-isolation`).
+- **Stability:** governed by ADR 046 §2 and task 098.
+- **Required behavior:** `Report` sends `text` over the channel via an encrypted+signed envelope (ADR 045). The concrete implementation must never log or expose the bot token, private key material, or the plaintext on the wire. The fake captures reported strings in order via `Reported()` for test assertions.
+
+### Concrete outbound adapter: `telegram.ReplyAdapter`
+
+```go
+type ReplyConfig struct {
+    BotToken   string
+    BaseURL    string
+    ChatID     string
+    HTTPClient *http.Client
+    OrchEdPriv ed25519.PrivateKey // orchestrator's Ed25519 priv — signs the envelope
+    OrchXPriv  [32]byte           // orchestrator's X25519 priv — sender key for Seal
+    OpXPub     [32]byte           // operator's X25519 pub — recipient key for Seal
+    Logger     *slog.Logger
+}
+
+func NewReplyAdapter(cfg ReplyConfig) *ReplyAdapter
+func (r *ReplyAdapter) Report(ctx context.Context, text string) error
+```
+
+- **Outbound call:** `POST <BaseURL>/bot<BotToken>/sendMessage` with JSON body `{"chat_id":"<ChatID>","text":"<sealed-envelope-JSON>"}`.
+- **Envelope shape:** the sealed+signed `envelope.Envelope` appears as the `text` field of the `sendMessage` body. The plaintext never appears on the wire.
+- **Key roles (outbound, orchestrator → operator — the mirror of inbound):**
+  | Role | Inbound (operator → orchestrator) | Outbound reply (orchestrator → operator) |
+  |------|-----------------------------------|------------------------------------------|
+  | Ed25519 signer | operator signs | **orchestrator signs** (`OrchEdPriv`) |
+  | Ed25519 verifier | adapter trusts operator pub | operator trusts **orchestrator pub** |
+  | X25519 sender | operator priv | **orchestrator priv** (`OrchXPriv`) |
+  | X25519 recipient | orchestrator pub | **operator pub** (`OpXPub`) |
+- **Round-trip invariant (TC-098-03):** the emitted envelope is accepted by `envelope.VerifyAndOpen(env, orchEdPub, cache, opXPriv, orchXPub)` and recovers the exact reported text byte-for-byte.
+- **Security invariants:** bot token and private key bytes (hex/base64) never appear in logs; no plaintext on the wire; `Report` uses `context.Context` to honour caller cancellation.
+
+### In-memory fake: `telegram.FakeReporter`
+
+```go
+func NewFakeReporter() *FakeReporter
+func (f *FakeReporter) Report(ctx context.Context, text string) error
+func (f *FakeReporter) Reported() []string
+```
+
+- **Purpose:** test double for task 081's L2 tests — assert "approval solicited" / "summary reported" without a live bot, network, or crypto setup.
+- **Behavior:** `Report` appends `text` to an internal slice; `Reported()` returns a copy in insertion order. Concurrent-safe.
+
+---
 
 ### Interface: supervisor dispatch lifecycle seams
 
