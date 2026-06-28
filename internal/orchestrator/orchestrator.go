@@ -44,6 +44,15 @@ import (
 // action so an operator policy can gate plan spawns independently.
 const SpawnAction = "spawn-plan"
 
+// SpawnWorkerAction is the per-sub-goal policy action the orchestrator issues in
+// dispatchPlan immediately before dispatching each worker (task 085 / ADR 050 §1).
+// It is additive to SpawnAction (spawn-plan): spawn-plan gates the whole plan
+// once; spawn-worker gates each dispatch so a per-recipe policy can deny one
+// worker without denying the plan. A dispatched worker is thus gated twice — the
+// orchestrator's spawn-worker plus the worker's own run-task gate inside
+// runtime.Run — which is the intended defense-in-depth.
+const SpawnWorkerAction = "spawn-worker"
+
 // DefaultRecipeName is the recipe a sub-goal uses when the goal text names no
 // recipe (ADR 046 §1: free-form goal → one worker on the default recipe).
 const DefaultRecipeName = "coding-agent"
@@ -53,6 +62,15 @@ const DefaultRecipeName = "coding-agent"
 type SubGoal struct {
 	RecipeName string
 	Task       supervisor.Task
+	// TargetRepo is the repository the dispatched worker will act on. It flows into
+	// the spawn-worker policy decision (Resource.Properties.target_repo) and into
+	// the self-repo bright-line guard (task 085 / ADR 050). Empty means the worker
+	// targets no specific repo (the recipe's own default sink applies).
+	TargetRepo string
+	// Sink is the result-sink target for the dispatched worker (e.g. the publish
+	// destination). It flows into the spawn-worker decision
+	// (Resource.Properties.sink) and into the self-repo bright-line guard.
+	Sink string
 }
 
 // Plan is an ordered list of sub-goals produced by a Planner from one goal.
@@ -153,9 +171,15 @@ type Orchestrator struct {
 	baseConfig runtime.Config
 	dispatch   DispatchFunc
 	risk       string
-	// auditSink is the optional audit.Sink for security events (e.g. tamper-detected).
-	// When nil, no audit events are emitted (the plan is still halted on tamper).
-	auditSink  audit.Sink
+	// auditSink is the optional audit.Sink for security events (e.g. tamper-detected)
+	// and the orchestrator's fleet-audit events (goal-intake, plan-decided,
+	// spawn-decided, completion). When nil, no audit events are emitted (the plan is
+	// still halted on tamper; gating/dispatch are unaffected).
+	auditSink audit.Sink
+	// containment is the L2-assertable containment posture the orchestrator runs
+	// under (task 085 / ADR 050 §3): exec-sandbox profile, rootless, read-only
+	// rootfs, resource-limited, default-deny egress — the same profile as a worker.
+	containment Containment
 }
 
 // Option configures an Orchestrator.
@@ -178,16 +202,30 @@ func WithRisk(risk string) Option {
 	return func(o *Orchestrator) { o.risk = risk }
 }
 
+// WithPlanner overrides the Planner seam. The Planner is also a required New()
+// argument; this option lets callers (and tests) substitute a planner that emits
+// sub-goals carrying TargetRepo/Sink, which the rule-based StructuredPlanner does
+// not parse from goal text (task 085 / ADR 050). When unset, the New() planner is
+// used unchanged.
+func WithPlanner(p Planner) Option {
+	return func(o *Orchestrator) {
+		if p != nil {
+			o.planner = p
+		}
+	}
+}
+
 // New constructs an Orchestrator. planner, pol, and reporter are required.
 func New(planner Planner, pol PolicyClient, reporter supervisor.Reporter, base runtime.Config, opts ...Option) *Orchestrator {
 	o := &Orchestrator{
-		planner:    planner,
-		policy:     pol,
-		reporter:   reporter,
-		store:      NewMemoryPlanStore(),
-		baseConfig: base,
-		dispatch:   defaultDispatch,
-		risk:       "low",
+		planner:     planner,
+		policy:      pol,
+		reporter:    reporter,
+		store:       NewMemoryPlanStore(),
+		baseConfig:  base,
+		dispatch:    defaultDispatch,
+		risk:        "low",
+		containment: defaultContainment(),
 	}
 	for _, opt := range opts {
 		opt(o)
@@ -207,6 +245,9 @@ func New(planner Planner, pol PolicyClient, reporter supervisor.Reporter, base r
 // the store, and dispatches nothing — Resume continues once approval returns. On
 // deny it reports and stops without dispatching.
 func (o *Orchestrator) Handle(ctx context.Context, goal supervisor.Task) (PlanResult, error) {
+	// Fleet-audit (task 085 / ADR 050 §4): record goal intake on the shared chain.
+	o.emitFleetEvent(audit.AuditEvent{Action: audit.ActionGoalIntake, TaskID: goal.ID, RunID: goal.ID})
+
 	plan, err := o.planner.Plan(goal)
 	if err != nil {
 		return PlanResult{}, fmt.Errorf("orchestrator: plan goal %q: %w", goal.ID, err)
@@ -219,6 +260,12 @@ func (o *Orchestrator) Handle(ctx context.Context, goal supervisor.Task) (PlanRe
 	if err != nil {
 		return PlanResult{}, err
 	}
+
+	// Fleet-audit: record the plan-level spawn-plan decision on the shared chain.
+	o.emitFleetEvent(audit.AuditEvent{
+		Action: audit.ActionPlanDecided, TaskID: plan.GoalID, RunID: plan.GoalID,
+		Detail: audit.EventDetail{PolicyDecision: string(decision)},
+	})
 
 	switch decision {
 	case policy.DecisionAllow:
@@ -327,12 +374,32 @@ func (o *Orchestrator) dispatchPlan(ctx context.Context, plan Plan) (PlanResult,
 			Recipe:  sub.RecipeName,
 		}
 
-		// Confirm the recipe exists before dispatch (ADR 046 §5). An unknown
-		// recipe is a failed outcome, not a dispatch.
+		// Confirm the recipe exists before the spawn-worker gate (ADR 046 §5). An
+		// unknown recipe is a failed outcome, not a dispatch.
 		if _, err := recipe.SelectRecipe(sub.RecipeName); err != nil {
 			outcome.Success = false
 			outcome.Detail = fmt.Sprintf("recipe not found: %s", sub.RecipeName)
 			result.Outcomes = append(result.Outcomes, outcome)
+			continue
+		}
+
+		// Per-sub-goal spawn-worker gate (task 085 / ADR 050 §1). This issues a
+		// policy decision for THIS dispatch, additive to the plan-level spawn-plan.
+		// The self-repo bright line (REQ-085-05a) is checked inside decideSpawnWorker
+		// and overrides the policy decision fail-closed. A non-allow decision skips
+		// the dispatch, records a denied outcome, and reports the denial.
+		decision, denyReason := o.decideSpawnWorker(sub)
+		o.emitFleetEvent(audit.AuditEvent{
+			Action: audit.ActionSpawnDecided, TaskID: sub.Task.ID, RunID: plan.GoalID,
+			Detail: audit.EventDetail{PolicyDecision: string(decision), Reason: sub.RecipeName},
+		})
+		if decision != policy.DecisionAllow {
+			outcome.Success = false
+			outcome.Detail = denyReason
+			result.Outcomes = append(result.Outcomes, outcome)
+			if err := o.reporter.Report(ctx, fmt.Sprintf("Worker spawn denied: recipe %s — %s", sub.RecipeName, denyReason)); err != nil {
+				return result, fmt.Errorf("orchestrator: report worker-spawn denial: %w", err)
+			}
 			continue
 		}
 
@@ -346,10 +413,69 @@ func (o *Orchestrator) dispatchPlan(ctx context.Context, plan Plan) (PlanResult,
 		result.Outcomes = append(result.Outcomes, outcome)
 	}
 
+	// Fleet-audit: record plan completion on the shared chain after aggregation.
+	o.emitFleetEvent(audit.AuditEvent{Action: audit.ActionCompletion, TaskID: plan.GoalID, RunID: plan.GoalID})
+
 	if err := o.reporter.Report(ctx, RenderPlanResult(result)); err != nil {
 		return result, fmt.Errorf("orchestrator: report plan result: %w", err)
 	}
 	return result, nil
+}
+
+// decideSpawnWorker issues the per-sub-goal spawn-worker policy decision (task 085
+// / ADR 050 §1) and applies the self-repo bright line (REQ-085-05a) on top of it.
+//
+// The self-repo guard runs FIRST and is fail-closed: any sub-goal whose target
+// repo or result sink is the agent-builder own-repo is DENIED regardless of what
+// the policy engine would say — the orchestrator refuses to dispatch a worker
+// against its own repo by construction (ADR 042's non-negotiable bright line).
+//
+// Otherwise it routes on the policy response Decision (fail-closed: any
+// transport/parse error yields DecisionDeny, never allow). It returns the decision
+// and, when the decision is not allow, a short human-facing reason recorded as the
+// sub-goal's denied-outcome Detail and reported via the Reporter.
+func (o *Orchestrator) decideSpawnWorker(sub SubGoal) (policy.Decision, string) {
+	// Self-repo bright line — independent of the policy file, fail-closed.
+	if targetsOwnRepo(sub) {
+		return policy.DecisionDeny, fmt.Sprintf("self-repo bright line: refusing to dispatch a worker targeting %s", OwnRepo)
+	}
+
+	req := policy.DecideRequest{
+		Subject: policy.Subject{Type: "agent", ID: "orchestrator"},
+		Action:  policy.Action{Name: SpawnWorkerAction},
+		Resource: policy.Resource{
+			Type: "recipe",
+			ID:   sub.RecipeName,
+			Properties: policy.ResourceProperties{
+				TargetRepo: sub.TargetRepo,
+				Sink:       sub.Sink,
+			},
+		},
+		Context: policy.DecideContext{Risk: o.risk},
+	}
+	// Fail-closed: ignore the error and route on resp.Decision (policy.Decide
+	// returns DecisionDeny on any error).
+	resp, _ := o.policy.Decide(req)
+	switch resp.Decision {
+	case policy.DecisionAllow:
+		return policy.DecisionAllow, ""
+	case policy.DecisionRequireApproval:
+		return policy.DecisionRequireApproval, "policy: worker spawn requires human approval"
+	default:
+		return policy.DecisionDeny, "policy: worker spawn denied"
+	}
+}
+
+// emitFleetEvent appends one orchestrator fleet-audit event to the shared
+// audit.Sink chain (task 085 / ADR 050 §4). It is best-effort: a nil sink is a
+// no-op and an Append error is dropped — the audit chain is parallel durable
+// evidence, not the orchestrator's control flow (same convention as the in-loop
+// emitAudit projection and emitTamperEvent).
+func (o *Orchestrator) emitFleetEvent(ev audit.AuditEvent) {
+	if o.auditSink == nil {
+		return
+	}
+	_ = o.auditSink.Append(ev)
 }
 
 // defaultDispatch is the live dispatch seam: it reuses the existing runtime

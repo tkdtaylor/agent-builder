@@ -221,9 +221,15 @@ func TestTC084_04_DegradedModeWarning(t *testing.T) {
 	// Ensure the env var is unset.
 	t.Setenv(orchestrator.EnvVarMemoryGuardBin, "")
 
-	var logCalls []struct{ msg string; kvs []any }
+	var logCalls []struct {
+		msg string
+		kvs []any
+	}
 	logFn := func(msg string, kvs ...any) {
-		logCalls = append(logCalls, struct{ msg string; kvs []any }{msg, kvs})
+		logCalls = append(logCalls, struct {
+			msg string
+			kvs []any
+		}{msg, kvs})
 	}
 
 	store := orchestrator.NewPlanStoreFromEnv(logFn)

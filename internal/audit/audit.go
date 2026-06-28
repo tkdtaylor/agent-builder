@@ -40,6 +40,20 @@ const (
 	// (residue_detected=true or confirmed=false). The Detail.TamperDetected field
 	// is set to true on this event (task 084 / ADR 049).
 	ActionTamper AuditAction = "tamper"
+
+	// The following four actions are the Tier-1 orchestrator's own fleet-audit
+	// events (task 085 / ADR 050 §4). They append to the SAME audit.Sink chain the
+	// workers write to, so the chain is tamper-evident across both tiers:
+	//
+	//   - ActionGoalIntake  — a goal arrived and was accepted for planning.
+	//   - ActionPlanDecided — the plan-level spawn-plan decision was issued.
+	//   - ActionSpawnDecided — a per-sub-goal spawn-worker decision was issued
+	//     (Detail.PolicyDecision carries allow/deny; Detail.Reason names the recipe).
+	//   - ActionCompletion  — the orchestrator finished aggregating the plan result.
+	ActionGoalIntake   AuditAction = "goal-intake"
+	ActionPlanDecided  AuditAction = "plan-decided"
+	ActionSpawnDecided AuditAction = "spawn-decided"
+	ActionCompletion   AuditAction = "completion"
 )
 
 // validActions is the closed set of known actions. Used by Valid() and Validate.
@@ -54,6 +68,10 @@ var validActions = map[AuditAction]struct{}{
 	ActionPolicyDecision: {},
 	ActionChannelReject:  {},
 	ActionTamper:         {},
+	ActionGoalIntake:     {},
+	ActionPlanDecided:    {},
+	ActionSpawnDecided:   {},
+	ActionCompletion:     {},
 }
 
 // Valid reports whether a is a known, non-empty action in the closed enum.
@@ -180,7 +198,7 @@ func Validate(ev AuditEvent) error {
 	if !ev.Action.Valid() {
 		return &ValidationError{
 			Field:   "action",
-			Message: fmt.Sprintf("must be one of {containment, pick, attempt, verify, publish, escalate, finish, policy-decision, channel-reject, tamper}, got %q", ev.Action),
+			Message: fmt.Sprintf("must be one of {containment, pick, attempt, verify, publish, escalate, finish, policy-decision, channel-reject, tamper, goal-intake, plan-decided, spawn-decided, completion}, got %q", ev.Action),
 		}
 	}
 	if ev.Action == ActionVerify && !ev.Verdict.Valid() {
