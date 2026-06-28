@@ -8,6 +8,7 @@ import (
 
 	"github.com/tkdtaylor/agent-builder/internal/executor"
 	"github.com/tkdtaylor/agent-builder/internal/recipe"
+	"github.com/tkdtaylor/agent-builder/internal/registry"
 )
 
 func TestConfigFromEnvAcceptsOAuthTokenOnly(t *testing.T) {
@@ -485,5 +486,65 @@ func TestConfigFromEnvErrorsOnCloudEntryWithoutCredential(t *testing.T) {
 				t.Errorf("error message missing %s: %s", executor.ClaudeCLIOAuthEnv, errMsg)
 			}
 		})
+	}
+}
+
+// TC-105-03: buildExecutorForEntry routes HarnessOllamaNative to OllamaNative
+func TestBuildExecutorForEntryOllamaNative(t *testing.T) {
+	cfg := Config{
+		Worktree: t.TempDir(),
+	}
+
+	entry := registry.RegistryEntry{
+		ID:        "local-ollama",
+		Harness:   registry.HarnessOllamaNative,
+		Endpoint:  "http://localhost:11434",
+		ModelID:   "qwen3:8b",
+		SecretRef: "",
+	}
+
+	exec, err := buildExecutorForEntry(entry, cfg)
+	if err != nil {
+		t.Fatalf("buildExecutorForEntry failed: %v", err)
+	}
+
+	if exec == nil {
+		t.Fatal("returned executor is nil")
+	}
+
+	// Type-assert to *executor.OllamaNative
+	ollama, ok := exec.(*executor.OllamaNative)
+	if !ok {
+		t.Fatalf("executor is not *executor.OllamaNative, got %T", exec)
+	}
+
+	if ollama == nil {
+		t.Fatal("type-asserted OllamaNative is nil")
+	}
+}
+
+// TC-105-04: buildExecutorForEntry still errors on an unknown harness driver
+func TestBuildExecutorForEntryUnknownHarness(t *testing.T) {
+	cfg := Config{
+		Worktree: t.TempDir(),
+	}
+
+	entry := registry.RegistryEntry{
+		ID:      "test-entry",
+		Harness: registry.HarnessDriver("bogus-harness"),
+	}
+
+	exec, err := buildExecutorForEntry(entry, cfg)
+	if err == nil {
+		t.Fatal("expected error for unknown harness, got nil")
+	}
+
+	if exec != nil {
+		t.Fatalf("expected nil executor, got %v", exec)
+	}
+
+	// Verify the error mentions the unknown harness
+	if !strings.Contains(err.Error(), "unknown harness") && !strings.Contains(err.Error(), "bogus-harness") {
+		t.Errorf("error message should mention unknown harness or bogus-harness: %v", err)
 	}
 }

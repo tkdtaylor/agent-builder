@@ -133,6 +133,7 @@ The executor registry is configured via well-known env-var prefixes per entry ID
 **Known entry IDs and their harnesses:**
 - `claude-oauth` → `claude-cli` (Anthropic Claude via OAuth/subscription)
 - `local-qwen` → `claude-cli` (Local Qwen model via translation proxy)
+- `local-ollama` → `ollama-native` (Native Ollama executor, no translation proxy)
 - `codex` → `codex-cli` (OpenAI Codex)
 - `gemini` → `gemini-cli` (Google Gemini)
 
@@ -157,6 +158,20 @@ AGENT_BUILDER_REGISTRY_LOCAL_QWEN_COST_WEIGHT=1
 # SECRET_REF is not set — local entries have no cloud auth
 # Budget is not set — local entries are unlimited (Budget.Limit == 0)
 ```
+
+**Example configuration for `local-ollama` (native executor, no translation proxy):**
+```
+AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_ENABLED=true
+AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_HARNESS=ollama-native
+AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_ENDPOINT=http://localhost:11434
+AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_MODEL=qwen3:8b
+AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_CAPABILITY_TIER=1
+AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_COST_WEIGHT=1
+# SECRET_REF is not set — local entries have no cloud auth
+# Budget is not set — local entries are unlimited (Budget.Limit == 0)
+```
+
+**Note:** The native Ollama executor (`ollama-native` harness) requires the model to return structured `tool_calls` via Ollama's `/api/chat` endpoint. As of Ollama 0.17.7, `qwen3:8b` returns parseable `tool_calls`. Other models (e.g., `qwen2.5-coder:7b`) may emit bare JSON without the `<tool_call>` wrapper, preventing tool execution. Consult the Ollama model library documentation for confirmed `tool_calls` support.
 
 When ALL enabled registry entries are local (all have empty `SECRET_REF`), the operator does NOT need to export `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` in the host environment — `agent-builder run` will start without requiring cloud credentials. The executor injects the fixed placeholder `executor.LocalProxyAuthPlaceholder` (value: `"local-proxy-no-auth"`) as `ANTHROPIC_AUTH_TOKEN` in the subprocess to satisfy the Claude Code CLI's auth check; the translation proxy ignores the token value. (`ANTHROPIC_AUTH_TOKEN` is required rather than `ANTHROPIC_API_KEY` because the current Claude Code CLI validates `ANTHROPIC_API_KEY` as a real Anthropic credential and rejects a placeholder with `Not logged in`, while `ANTHROPIC_AUTH_TOKEN` is the gateway bearer-token var passed through to `ANTHROPIC_BASE_URL`.) The translation proxy (LiteLLM, claude-code-router) converts Anthropic API requests to the local inference server's OpenAI API. See `registry.TranslationProxySeam` for the named seam constant.
 

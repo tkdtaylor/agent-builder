@@ -27,9 +27,11 @@ const TranslationProxySeam = "litellm/claude-code-router"
 // Harness = HarnessClaudeCLI, SecretRef = "" (no cloud auth), Budget.Limit = 0 (unlimited).
 // These entries set ANTHROPIC_BASE_URL to their Endpoint at dispatch time instead of
 // injecting a cloud auth token.
+// Also includes "local-ollama", which uses HarnessOllamaNative and is natively local.
 var localHarnessEntries = map[string]struct{}{
-	"local-qwen": {},
-	"local":      {},
+	"local-qwen":   {},
+	"local":        {},
+	"local-ollama": {},
 }
 
 // LoadFromEnv reads well-known env-var prefixes and constructs enabled entries.
@@ -37,11 +39,12 @@ var localHarnessEntries = map[string]struct{}{
 func LoadFromEnv() ([]RegistryEntry, error) {
 	// Known entry IDs and their corresponding harness drivers
 	knownEntries := map[string]HarnessDriver{
-		"claude-oauth": HarnessClaudeCLI,
-		"local-qwen":   HarnessClaudeCLI,
-		"local":        HarnessClaudeCLI,
-		"codex":        HarnessCodexCLI,
-		"gemini":       HarnessGeminiCLI,
+		"claude-oauth":  HarnessClaudeCLI,
+		"local-qwen":    HarnessClaudeCLI,
+		"local":         HarnessClaudeCLI,
+		"local-ollama":  HarnessOllamaNative,
+		"codex":         HarnessCodexCLI,
+		"gemini":        HarnessGeminiCLI,
 	}
 
 	var entries []RegistryEntry

@@ -462,3 +462,139 @@ func TestListEntriesStableOrder(t *testing.T) {
 		}
 	}
 }
+
+// TC-105-01: HarnessOllamaNative constant has the correct string value and String() returns it
+func TestHarnessOllamaNativeConstant(t *testing.T) {
+	// Assert HarnessOllamaNative == "ollama-native"
+	if HarnessOllamaNative != HarnessDriver("ollama-native") {
+		t.Errorf("HarnessOllamaNative: expected %q, got %q", "ollama-native", HarnessOllamaNative)
+	}
+
+	// Assert String() returns "ollama-native"
+	if HarnessOllamaNative.String() != "ollama-native" {
+		t.Errorf("HarnessOllamaNative.String(): expected %q, got %q", "ollama-native", HarnessOllamaNative.String())
+	}
+
+	// Assert that the generic HarnessDriver("ollama-native").String() also returns "ollama-native"
+	genericDriver := HarnessDriver("ollama-native")
+	if genericDriver.String() != "ollama-native" {
+		t.Errorf("HarnessDriver(\"ollama-native\").String(): expected %q, got %q", "ollama-native", genericDriver.String())
+	}
+
+	// Assert that the three existing constants are still present and unchanged
+	if HarnessClaudeCLI != HarnessDriver("claude-cli") {
+		t.Errorf("HarnessClaudeCLI regression: expected %q, got %q", "claude-cli", HarnessClaudeCLI)
+	}
+	if HarnessCodexCLI != HarnessDriver("codex-cli") {
+		t.Errorf("HarnessCodexCLI regression: expected %q, got %q", "codex-cli", HarnessCodexCLI)
+	}
+	if HarnessGeminiCLI != HarnessDriver("gemini-cli") {
+		t.Errorf("HarnessGeminiCLI regression: expected %q, got %q", "gemini-cli", HarnessGeminiCLI)
+	}
+
+	if HarnessClaudeCLI.String() != "claude-cli" {
+		t.Errorf("HarnessClaudeCLI.String() regression: expected %q, got %q", "claude-cli", HarnessClaudeCLI.String())
+	}
+	if HarnessCodexCLI.String() != "codex-cli" {
+		t.Errorf("HarnessCodexCLI.String() regression: expected %q, got %q", "codex-cli", HarnessCodexCLI.String())
+	}
+	if HarnessGeminiCLI.String() != "gemini-cli" {
+		t.Errorf("HarnessGeminiCLI.String() regression: expected %q, got %q", "gemini-cli", HarnessGeminiCLI.String())
+	}
+}
+
+// TC-105-02: LoadFromEnv parses an ollama-native registry entry correctly
+func TestLoadFromEnvOllamaNative(t *testing.T) {
+	// Save original env vars
+	origEnabled := os.Getenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_ENABLED")
+	origHarness := os.Getenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_HARNESS")
+	origEndpoint := os.Getenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_ENDPOINT")
+	origModel := os.Getenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_MODEL")
+	origTier := os.Getenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_CAPABILITY_TIER")
+	origCost := os.Getenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_COST_WEIGHT")
+
+	defer func() {
+		if origEnabled != "" {
+			_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_ENABLED", origEnabled)
+		} else {
+			_ = os.Unsetenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_ENABLED")
+		}
+		if origHarness != "" {
+			_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_HARNESS", origHarness)
+		} else {
+			_ = os.Unsetenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_HARNESS")
+		}
+		if origEndpoint != "" {
+			_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_ENDPOINT", origEndpoint)
+		} else {
+			_ = os.Unsetenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_ENDPOINT")
+		}
+		if origModel != "" {
+			_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_MODEL", origModel)
+		} else {
+			_ = os.Unsetenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_MODEL")
+		}
+		if origTier != "" {
+			_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_CAPABILITY_TIER", origTier)
+		} else {
+			_ = os.Unsetenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_CAPABILITY_TIER")
+		}
+		if origCost != "" {
+			_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_COST_WEIGHT", origCost)
+		} else {
+			_ = os.Unsetenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_COST_WEIGHT")
+		}
+	}()
+
+	t.Run("LoadFromEnv with ollama-native entry", func(t *testing.T) {
+		_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_ENABLED", "true")
+		_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_HARNESS", "ollama-native")
+		_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_ENDPOINT", "http://localhost:11434")
+		_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_MODEL", "qwen3:8b")
+		_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_CAPABILITY_TIER", "1")
+		_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_COST_WEIGHT", "1")
+
+		entries, err := LoadFromEnv()
+		if err != nil {
+			t.Fatalf("LoadFromEnv failed: %v", err)
+		}
+
+		// Find the local-ollama entry
+		var found *RegistryEntry
+		for i := range entries {
+			if entries[i].ID == "local-ollama" {
+				found = &entries[i]
+				break
+			}
+		}
+
+		if found == nil {
+			t.Fatal("local-ollama entry not found in LoadFromEnv result")
+		}
+
+		if found.ID != "local-ollama" {
+			t.Errorf("ID: expected %q, got %q", "local-ollama", found.ID)
+		}
+		if found.Harness != HarnessOllamaNative {
+			t.Errorf("Harness: expected %v, got %v", HarnessOllamaNative, found.Harness)
+		}
+		if found.Endpoint != "http://localhost:11434" {
+			t.Errorf("Endpoint: expected %q, got %q", "http://localhost:11434", found.Endpoint)
+		}
+		if found.ModelID != "qwen3:8b" {
+			t.Errorf("ModelID: expected %q, got %q", "qwen3:8b", found.ModelID)
+		}
+		if found.SecretRef != "" {
+			t.Errorf("SecretRef: expected empty string, got %q", found.SecretRef)
+		}
+		if found.CapabilityTier != 1 {
+			t.Errorf("CapabilityTier: expected 1, got %d", found.CapabilityTier)
+		}
+		if found.CostWeight != 1 {
+			t.Errorf("CostWeight: expected 1, got %d", found.CostWeight)
+		}
+		if !found.IsUnlimited() {
+			t.Errorf("IsUnlimited: expected true (Budget.Limit==0), got false")
+		}
+	})
+}

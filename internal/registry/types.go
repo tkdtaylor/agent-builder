@@ -12,6 +12,8 @@ const (
 	HarnessCodexCLI HarnessDriver = "codex-cli"
 	// HarnessGeminiCLI is the Google Gemini CLI harness.
 	HarnessGeminiCLI HarnessDriver = "gemini-cli"
+	// HarnessOllamaNative is the native Ollama executor harness.
+	HarnessOllamaNative HarnessDriver = "ollama-native"
 )
 
 // String returns the human-readable name of the harness driver.
@@ -23,6 +25,8 @@ func (h HarnessDriver) String() string {
 		return "codex-cli"
 	case HarnessGeminiCLI:
 		return "gemini-cli"
+	case HarnessOllamaNative:
+		return "ollama-native"
 	default:
 		return string(h)
 	}
