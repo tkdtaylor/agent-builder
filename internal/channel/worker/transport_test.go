@@ -198,6 +198,11 @@ func TestTC083_02_ResultVerifiedBeforeIncorporation(t *testing.T) {
 		t.Fatalf("happy path emitted reject events: %v", reasons)
 	}
 
+	// Envelope roles set correctly (TC-083-02 explicit role assertion).
+	if env.From != "worker" || env.To != "orchestrator" {
+		t.Fatalf("result envelope roles: from=%q to=%q, want worker→orchestrator", env.From, env.To)
+	}
+
 	// Tamper path: flip one byte of the Sig field.
 	tampered := env
 	sigBytes, err := hex.DecodeString(tampered.Sig)
