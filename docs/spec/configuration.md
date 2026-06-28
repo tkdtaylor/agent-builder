@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** agent-builder
-**Last updated:** 2026-06-27 (task 091 — local-entry-translation-proxy)
+**Last updated:** 2026-06-27 (task 093 — usage-quota-tracking)
 
 Every knob the system exposes — env vars, config files, runtime parameters, deployment settings. Each entry is a public contract: changes to defaults or accepted values are observable.
 
@@ -155,6 +155,10 @@ AGENT_BUILDER_REGISTRY_LOCAL_QWEN_COST_WEIGHT=1
 # Budget is not set — local entries are unlimited (Budget.Limit == 0)
 ```
 The executor sets `ANTHROPIC_BASE_URL=http://localhost:8080` in the Claude CLI subprocess and omits `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`. The translation proxy (LiteLLM, claude-code-router) converts Anthropic API requests to the local inference server's OpenAI API. See `registry.TranslationProxySeam` for the named seam constant.
+
+**Router quota defaults (not configurable via env vars):**
+- `router.DefaultCooldown = 5m` — the fallback window applied by `OnRateLimit` when no `Retry-After` header is present. Overridable per-router via `NewWithClock(catalog, clock, cooldown)` in code (tests use small cooldowns; production uses the constant). No env-var override is exposed; the cooldown is a per-deployment code constant.
+- Router state-file path (for `SaveState`/`LoadState`): no env-var default is defined. The path is passed explicitly by the caller (runtime wiring — task 095). There is no automatic startup or shutdown state save/load in this task.
 
 **Removed variables** (rejected loudly when set — see ADR 021):
 - `AGENT_BUILDER_SANDBOX_RUNTIME` — the Phase 0 `srt` selector for the rented `@anthropic-ai/sandbox-runtime` backend. Containment now runs through the Podman execution-box launcher (`AGENT_BUILDER_EXEC_BOX_LAUNCHER`). If a non-empty value is present, `agent-builder run` fails with a migration error naming the variable rather than silently ignoring it.
