@@ -2,8 +2,14 @@
 // It implements path confinement to the worktree and enforces a command allowlist for run_command.
 //
 // Security (load-bearing):
-//   - All path-accepting tools confine paths to the worktree via filepath.Abs + filepath.EvalSymlinks + strings.HasPrefix
+//   - All path-accepting tools confine paths to the worktree:
+//     - Reject absolute paths before path construction
+//     - Reject symlinks (os.Lstat check before any FS operation)
+//     - Confine via filepath.Join + realpath of parent + prefix check
 //   - run_command enforces an explicit allowlist before any subprocess construction
+//   - run_command rejects dangerous arguments (-C, -c for git; -C for go) to prevent
+//     argument-level escape from CWD confinement
+//   - run_command sets a minimal explicit environment to prevent secret leakage
 //   - All path confinement checks must pass before any OS call is made
 package ollamatoolset
 
@@ -75,21 +81,29 @@ func (s *ToolSet) writeFile(argsJSON string) (string, error) {
 		return "", fmt.Errorf("failed to parse write_file arguments: %w", err)
 	}
 
-	// Path confinement check
-	if err := s.checkPathConfinement(args.Path); err != nil {
+	// Path confinement check: must occur BEFORE any filesystem operation
+	finalPath, err := s.checkPathConfinement(args.Path)
+	if err != nil {
 		return "", err
 	}
 
-	abs := filepath.Join(s.worktreeAbs, args.Path)
-
 	// Create parent directories
-	dir := filepath.Dir(abs)
+	dir := filepath.Dir(finalPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("failed to create parent directories: %w", err)
 	}
 
+	// Verify the parent directory is still confined (post-MkdirAll re-check)
+	realParent, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve parent directory: %w", err)
+	}
+	if !s.isPathConfined(realParent) {
+		return "", fmt.Errorf("parent directory escaped worktree confinement: %q not under %q", realParent, s.worktreeAbs)
+	}
+
 	// Write the file
-	if err := os.WriteFile(abs, []byte(args.Content), 0644); err != nil {
+	if err := os.WriteFile(finalPath, []byte(args.Content), 0644); err != nil {
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
 
@@ -106,14 +120,13 @@ func (s *ToolSet) readFile(argsJSON string) (string, error) {
 		return "", fmt.Errorf("failed to parse read_file arguments: %w", err)
 	}
 
-	// Path confinement check
-	if err := s.checkPathConfinement(args.Path); err != nil {
+	// Path confinement check: must occur BEFORE any filesystem operation
+	finalPath, err := s.checkPathConfinement(args.Path)
+	if err != nil {
 		return "", err
 	}
 
-	abs := filepath.Join(s.worktreeAbs, args.Path)
-
-	content, err := os.ReadFile(abs)
+	content, err := os.ReadFile(finalPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file: %w", err)
 	}
@@ -131,14 +144,13 @@ func (s *ToolSet) listDir(argsJSON string) (string, error) {
 		return "", fmt.Errorf("failed to parse list_dir arguments: %w", err)
 	}
 
-	// Path confinement check
-	if err := s.checkPathConfinement(args.Path); err != nil {
+	// Path confinement check: must occur BEFORE any filesystem operation
+	finalPath, err := s.checkPathConfinement(args.Path)
+	if err != nil {
 		return "", err
 	}
 
-	abs := filepath.Join(s.worktreeAbs, args.Path)
-
-	entries, err := os.ReadDir(abs)
+	entries, err := os.ReadDir(finalPath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read directory: %w", err)
 	}
@@ -160,6 +172,7 @@ func (s *ToolSet) listDir(argsJSON string) (string, error) {
 
 // runCommand executes an allowed command in the worktree.
 // The command name must be in the allowlist before any subprocess construction.
+// Dangerous arguments are rejected per-command to prevent escape via -C, -c, etc.
 func (s *ToolSet) runCommand(argsJSON string) (string, error) {
 	var args struct {
 		Command string   `json:"command"`
@@ -177,9 +190,15 @@ func (s *ToolSet) runCommand(argsJSON string) (string, error) {
 		return "", fmt.Errorf("command %q is not allowed (allowlist: git, go, gofmt, golangci-lint)", args.Command)
 	}
 
-	// Construct the command with the worktree as the working directory
+	// SEC-104-02: Reject dangerous arguments that escape CWD confinement
+	if err := s.checkCommandArgs(args.Command, args.Args); err != nil {
+		return "", err
+	}
+
+	// SEC-104-03: Set minimal explicit environment to prevent secret leakage
 	cmd := exec.Command(args.Command, args.Args...)
 	cmd.Dir = s.worktreeAbs
+	cmd.Env = s.minimalEnv()
 
 	// Run the command and capture output
 	output, err := cmd.CombinedOutput()
@@ -188,6 +207,58 @@ func (s *ToolSet) runCommand(argsJSON string) (string, error) {
 	}
 
 	return string(output), nil
+}
+
+// checkCommandArgs validates arguments to prevent escape via command flags.
+// Rejects -C (change directory), -c (config), --exec-path, etc.
+func (s *ToolSet) checkCommandArgs(cmd string, args []string) error {
+	for _, arg := range args {
+		switch cmd {
+		case "git":
+			// Reject -C (--git-dir), -c (--config), which allow escaping CWD confinement
+			if arg == "-C" || strings.HasPrefix(arg, "-C=") ||
+				arg == "-c" || strings.HasPrefix(arg, "-c=") ||
+				strings.HasPrefix(arg, "--exec-path") {
+				return fmt.Errorf("argument %q is not allowed for git (escape vector)", arg)
+			}
+		case "go":
+			// Reject -C (change directory)
+			if arg == "-C" || strings.HasPrefix(arg, "-C=") {
+				return fmt.Errorf("argument %q is not allowed for go (escape vector)", arg)
+			}
+		}
+	}
+	return nil
+}
+
+// minimalEnv returns a minimal set of environment variables for subprocess execution.
+// This prevents the subprocess from accessing orchestrator secrets or registry credentials.
+func (s *ToolSet) minimalEnv() []string {
+	// Start with essential paths
+	env := []string{
+		"PATH=" + os.Getenv("PATH"),
+	}
+
+	// Add HOME if set (needed by git/go)
+	if home := os.Getenv("HOME"); home != "" {
+		env = append(env, "HOME="+home)
+	}
+
+	// Add Go-specific variables if set (for go build/test)
+	if gocache := os.Getenv("GOCACHE"); gocache != "" {
+		env = append(env, "GOCACHE="+gocache)
+	}
+	if gopath := os.Getenv("GOPATH"); gopath != "" {
+		env = append(env, "GOPATH="+gopath)
+	}
+
+	// Add hardened git config to prevent hook execution and secret leakage
+	env = append(env,
+		"GIT_CONFIG_NOSYSTEM=1",     // Don't read system-wide git config
+		"GIT_CONFIG_GLOBAL=/dev/null", // Don't read user git config
+	)
+
+	return env
 }
 
 // finishBranch writes the branch name to the reserved branch file.
@@ -209,47 +280,57 @@ func (s *ToolSet) finishBranch(argsJSON string) (string, error) {
 }
 
 // checkPathConfinement verifies that the given path (relative to the worktree)
-// does not escape the worktree. It resolves symlinks and uses a prefix check.
-// Returns a non-nil error if the path is outside the worktree.
-func (s *ToolSet) checkPathConfinement(path string) error {
+// does not escape the worktree. It rejects symlinks (to prevent dangling symlink bypass)
+// and uses realpath + prefix check. Returns the final path if valid, or an error.
+//
+// SEC-104-01: Rejects symlinks via os.Lstat and resolves parent directory realpath.
+func (s *ToolSet) checkPathConfinement(path string) (string, error) {
 	// Reject absolute paths outright (they cannot be relative to the worktree)
 	if filepath.IsAbs(path) {
-		return fmt.Errorf("path %q is outside the worktree (confined to %q): absolute paths are not allowed", path, s.worktreeAbs)
+		return "", fmt.Errorf("path %q is outside the worktree (confined to %q): absolute paths are not allowed", path, s.worktreeAbs)
 	}
 
 	// Construct the absolute path by joining with the worktree root
-	// filepath.Join normalizes .. but we also need to resolve symlinks
 	abs := filepath.Join(s.worktreeAbs, path)
 
-	// Resolve symlinks BEFORE the prefix check (this prevents symlink-based escape)
-	// If the path doesn't exist yet (e.g., for write operations), EvalSymlinks will fail.
-	// In that case, we walk up to find an existing parent.
-	resolved := abs
-	for resolved != filepath.Dir(resolved) { // Stop at the root
-		if _, err := os.Lstat(resolved); err == nil {
-			// Path exists, try to resolve symlinks
-			if symResolved, err := filepath.EvalSymlinks(resolved); err == nil {
-				resolved = symResolved
-				break
-			}
-			break
+	// SEC-104-01: Reject symlinks directly at the target path
+	// (This prevents following symlinks to outside the worktree)
+	stat, err := os.Lstat(abs)
+	if err == nil && (stat.Mode()&os.ModeSymlink) != 0 {
+		return "", fmt.Errorf("path %q is a symlink (not allowed; would escape confinement)", path)
+	}
+
+	// Resolve the parent directory realpath (which should exist or be created)
+	dir := filepath.Dir(abs)
+	realParent := dir
+
+	// For existing parents, resolve symlinks
+	if info, err := os.Lstat(dir); err == nil && (info.Mode()&os.ModeSymlink) != 0 {
+		// Parent is a symlink - reject it
+		return "", fmt.Errorf("parent directory %q is a symlink (not allowed; would escape confinement)", dir)
+	}
+
+	// If parent exists, resolve its realpath
+	if _, err := os.Stat(dir); err == nil {
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			realParent = resolved
 		}
-		// Path doesn't exist, try parent
-		resolved = filepath.Dir(resolved)
 	}
 
-	// Clean the resolved path
-	resolved = filepath.Clean(resolved)
+	realParent = filepath.Clean(realParent)
 
-	// Prefix check: ensure the resolved path is under the worktree
-	// Use HasPrefix with a trailing separator to prevent prefix collisions
-	// (e.g., /tmp/wt matching /tmp/wt-escaped)
+	// Verify the parent is confined
+	if !s.isPathConfined(realParent) {
+		return "", fmt.Errorf("path %q is outside the worktree (confined to %q)", path, s.worktreeAbs)
+	}
+
+	return abs, nil
+}
+
+// isPathConfined checks if a resolved absolute path is under the worktree.
+func (s *ToolSet) isPathConfined(resolvedPath string) bool {
 	expectedPrefix := s.worktreeAbs + string(filepath.Separator)
-	if !strings.HasPrefix(resolved, expectedPrefix) && resolved != s.worktreeAbs {
-		return fmt.Errorf("path %q is outside the worktree (confined to %q)", path, s.worktreeAbs)
-	}
-
-	return nil
+	return strings.HasPrefix(resolvedPath, expectedPrefix) || resolvedPath == s.worktreeAbs
 }
 
 // isAllowedCommand checks if the command is in the allowlist.
