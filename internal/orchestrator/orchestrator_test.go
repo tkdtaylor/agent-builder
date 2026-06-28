@@ -25,12 +25,15 @@ import (
 // pause/resume/dispatch tests exercise dispatch as before; tests that want to gate
 // spawn-worker use recordingPolicy instead.
 type fakePolicy struct {
+	mu       sync.Mutex // guards calls; Decide runs concurrently under task-086 fan-out
 	decision policy.Decision
 	calls    int
 }
 
 func (f *fakePolicy) Decide(req policy.DecideRequest) (policy.DecideResponse, error) {
+	f.mu.Lock()
 	f.calls++
+	f.mu.Unlock()
 	// spawn-worker (task 085) defaults to allow under this fake — its decision is
 	// only meaningful for spawn-plan, which is what this fake was written to gate.
 	if req.Action.Name == orchestrator.SpawnWorkerAction {
@@ -60,17 +63,23 @@ func (r *fakeReporter) Reported() []string {
 	return out
 }
 
-// dispatchSpy records every dispatch call and returns a configurable error per
-// call index. errByIndex[i] is returned for the i-th dispatched sub-goal.
+// dispatchSpy records every dispatch call and returns a configurable error.
+//
+// Task 086 note: dispatch is concurrent, so the ORDER in which fn is called is
+// nondeterministic. Failures must therefore be keyed on sub-goal IDENTITY
+// (errBySpec, keyed on Task.Spec), NOT on call index — errByIndex remains for the
+// legacy "fail the i-th call" cases that don't assert which sub-goal failed, but any
+// test asserting that a SPECIFIC sub-goal failed must use errBySpec.
 type dispatchSpy struct {
 	mu          sync.Mutex
 	recipeNames []string
 	specs       []string
 	errByIndex  map[int]error
+	errBySpec   map[string]error
 }
 
 func newDispatchSpy() *dispatchSpy {
-	return &dispatchSpy{errByIndex: map[int]error{}}
+	return &dispatchSpy{errByIndex: map[int]error{}, errBySpec: map[string]error{}}
 }
 
 func (s *dispatchSpy) fn(_ context.Context, sub orchestrator.SubGoal, _ runtime.Config) error {
@@ -79,6 +88,9 @@ func (s *dispatchSpy) fn(_ context.Context, sub orchestrator.SubGoal, _ runtime.
 	idx := len(s.recipeNames)
 	s.recipeNames = append(s.recipeNames, sub.RecipeName)
 	s.specs = append(s.specs, sub.Task.Spec)
+	if err, ok := s.errBySpec[sub.Task.Spec]; ok {
+		return err
+	}
 	return s.errByIndex[idx]
 }
 
@@ -86,6 +98,33 @@ func (s *dispatchSpy) count() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return len(s.recipeNames)
+}
+
+// dispatchedRecipes returns the SET of recipe names dispatched (order-independent).
+// Under task 086 concurrent dispatch, the spy records calls in goroutine-completion
+// order, which is nondeterministic — assertions on WHICH recipes dispatched must use
+// this set, not the slice order. Deterministic outcome ORDER is asserted via the
+// PlanResult.Outcomes slice (which dispatchPlan writes by sub-goal index), not here.
+func (s *dispatchSpy) dispatchedRecipes() map[string]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	set := make(map[string]bool, len(s.recipeNames))
+	for _, r := range s.recipeNames {
+		set[r] = true
+	}
+	return set
+}
+
+// dispatchedSpecs returns the SET of sub-goal specs dispatched (order-independent),
+// for the same reason as dispatchedRecipes.
+func (s *dispatchSpy) dispatchedSpecs() map[string]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	set := make(map[string]bool, len(s.specs))
+	for _, sp := range s.specs {
+		set[sp] = true
+	}
+	return set
 }
 
 // knownRecipes are the recipe names the StructuredPlanner recognizes as prefixes
@@ -198,8 +237,12 @@ func TestTC081_02_RequireApprovalPausesThenResumes(t *testing.T) {
 	if spy.count() != 2 {
 		t.Fatalf("after approval: want 2 dispatches, got %d", spy.count())
 	}
-	if spy.recipeNames[0] != "coding-agent" || spy.recipeNames[1] != "docs-fix" {
-		t.Errorf("dispatch order: got %v", spy.recipeNames)
+	// Task 086: dispatch is concurrent, so the SET of dispatched recipes is asserted
+	// (call order is nondeterministic). Deterministic outcome ORDER is asserted via
+	// the PlanResult below in the order-sensitive tests (TC-081-03/04).
+	dispatched := spy.dispatchedRecipes()
+	if !dispatched["coding-agent"] || !dispatched["docs-fix"] {
+		t.Errorf("dispatched recipes: want {coding-agent, docs-fix}, got %v", dispatched)
 	}
 	// A PlanResult summary is reported after dispatch.
 	if got := len(rep.Reported()); got != 2 {
@@ -302,14 +345,22 @@ func TestTC081_03_AllowDispatchesPerSubGoal(t *testing.T) {
 	if spy.count() != 2 {
 		t.Fatalf("allow: want 2 dispatches, got %d", spy.count())
 	}
-	if spy.recipeNames[0] != "coding-agent" || spy.recipeNames[1] != "docs-fix" {
-		t.Errorf("dispatch recipes: want [coding-agent docs-fix], got %v", spy.recipeNames)
+	// Task 086: concurrent dispatch → assert the dispatched SET, not call order.
+	recipes := spy.dispatchedRecipes()
+	if !recipes["coding-agent"] || !recipes["docs-fix"] {
+		t.Errorf("dispatched recipes: want {coding-agent, docs-fix}, got %v", recipes)
 	}
-	if spy.specs[0] != "implement X" || spy.specs[1] != "update Y" {
-		t.Errorf("dispatch specs: want [implement X, update Y], got %v", spy.specs)
+	specs := spy.dispatchedSpecs()
+	if !specs["implement X"] || !specs["update Y"] {
+		t.Errorf("dispatched specs: want {implement X, update Y}, got %v", specs)
 	}
 	if len(result.Outcomes) != 2 {
-		t.Errorf("want 2 outcomes, got %d", len(result.Outcomes))
+		t.Fatalf("want 2 outcomes, got %d", len(result.Outcomes))
+	}
+	// Outcome ORDER is deterministic (sub-goal order) even under concurrent dispatch.
+	if result.Outcomes[0].Recipe != "coding-agent" || result.Outcomes[1].Recipe != "docs-fix" {
+		t.Errorf("outcome order: want [coding-agent docs-fix], got [%s %s]",
+			result.Outcomes[0].Recipe, result.Outcomes[1].Recipe)
 	}
 }
 
@@ -351,7 +402,9 @@ func TestTC081_03_UnknownRecipeIsFailedOutcomeNotDispatch(t *testing.T) {
 
 func TestTC081_04_AggregatesSuccessAndFailure(t *testing.T) {
 	spy := newDispatchSpy()
-	spy.errByIndex[1] = errString("gate failed: go test")
+	// Task 086: key the failure on the sub-goal's spec (concurrent dispatch has no
+	// stable call order). "update Y" is the docs-fix sub-goal → outcome 1 must fail.
+	spy.errBySpec["update Y"] = errString("gate failed: go test")
 	rep := &fakeReporter{}
 	pol := &fakePolicy{decision: policy.DecisionAllow}
 	o := orchestrator.New(

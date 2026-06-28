@@ -532,12 +532,26 @@ type Containment struct {
   continues a held plan when an approval returns; it asserts the verified envelope
   roles (`From == "operator"`, `To == "orchestrator"`) before acting and consumes the
   held plan so a stale approval cannot be replayed.
-- **Dispatch (ADR 046 §5):** sequential, one worker per sub-goal (concurrency is task
-  086). For each sub-goal `Handle`/`Resume` calls `recipe.SelectRecipe` (an unknown
-  recipe is a failed outcome, not a dispatch) then `DispatchFunc`. The default
-  `DispatchFunc` sets `RecipeName` on a copy of the base `runtime.Config` and calls
-  `runtime.Run` — the orchestrator never reimplements supervisor assembly
-  (REQ-081-06).
+- **Dispatch (ADR 046 §5 / task 086 / ADR 042):** **concurrent**, one worker per
+  sub-goal. `dispatchPlan` fans out one goroutine per approved sub-goal — **all start
+  before any completes** — and joins them with a `sync.WaitGroup`. Per sub-goal the
+  goroutine runs the full pipeline: `recipe.SelectRecipe` (an unknown recipe is a
+  failed outcome, not a dispatch) → the `spawn-worker` gate + self-repo deny + audit →
+  `DispatchFunc`. The default `DispatchFunc` sets `RecipeName` on a copy of the base
+  `runtime.Config` and calls `runtime.Run` — the orchestrator never reimplements
+  supervisor assembly (REQ-081-06). Concurrency invariants: (1) outcomes are written
+  into a **pre-sized** `[]SubGoalOutcome` at the sub-goal index, so the aggregate is
+  race-free **and** `PlanResult.Outcomes` order is deterministic = sub-goal order even
+  though dispatch order is not; (2) a worker failure is recorded in **its own** outcome
+  slot and never halts or cancels siblings — **best-effort** completion (REQ-086-02);
+  (3) the shared `audit.Sink` (mutex-guarded hash chain) and `PlanStore` (mutex-guarded)
+  are the only cross-goroutine mutable state, both serialize their writes, and
+  `go test -race -count=1 ./internal/orchestrator/...` is clean (REQ-086-04). The
+  SEC-003 deny-audit hard-error is preserved: a failed deny-event append is collected
+  from the goroutines and halts the plan after the join. The shared
+  `envelope.ReplayCache` per direction (083 SEC-001 carry-forward) is itself
+  mutex-guarded; the live transport must pass **one** long-lived cache across all
+  concurrent workers, never a fresh per-worker cache.
 - **Per-worker spawn-worker gate (task 085 / ADR 050 §1):** before dispatching each
   sub-goal, `dispatchPlan` issues a second policy decision with action
   `"spawn-worker"`, `Resource{Type:"recipe", ID:recipeName,
@@ -702,10 +716,17 @@ var ErrRoleMismatch error // verified envelope From/To ≠ expected direction (t
   unset or names an absent/malformed key file; the error satisfies
   `errors.Is(err, ErrMissingSigningKey)` and names the variable.
 - **Integration depth (ADR 048 §1):** v1 wires the transport's startup key-material check
-  and the envelope wrap/unwrap seam; full live dispatch through
-  `Orchestrator.dispatchPlan` (and N-concurrent workers) is task 086. An out-of-process /
-  cross-host concrete (e.g. agent-mesh A2A, ADR 048 §5) can implement the same seam later
-  without changing the orchestrator.
+  and the envelope wrap/unwrap seam. Task 086 makes `Orchestrator.dispatchPlan`
+  **N-concurrent** (one goroutine per sub-goal) and confirms the shared
+  `envelope.ReplayCache` is goroutine-safe under `-race` (083 SEC-001 carry-forward: one
+  long-lived shared cache per direction across all workers). Wiring the transport's
+  signed envelopes onto the **live** dispatch path (the orchestrator constructing
+  `Sender`/`Receiver` around each `runtime.Run` call, with the shared cache) remains a
+  follow-on: the `DispatchFunc` seam keeps the live sandbox launch behind a stub so
+  concurrency + race-safety are L2-testable in-process, and the envelope sign/verify +
+  replay are exercised in `internal/channel/worker` (including a concurrent shared-cache
+  test). An out-of-process / cross-host concrete (e.g. agent-mesh A2A, ADR 048 §5) can
+  implement the same seam later without changing the orchestrator.
 - **Stability:** governed by ADR 048 (extends ADR 042/045). Leaf isolation enforced by
   `make fitness-worker-transport-isolation` (F-011).
 

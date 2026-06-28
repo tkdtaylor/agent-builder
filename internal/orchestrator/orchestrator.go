@@ -24,13 +24,18 @@
 //   - §2 typed PlanResult, rendered to text only at the Reporter boundary.
 //   - §3 in-memory plan state behind PlanStore (task 084 swaps the backend).
 //   - §4 approval = pause-and-resume over the envelope-verified channel.
-//   - §5 dispatch = reuse runtime.Run, one worker per sub-goal, sequential.
+//   - §5 dispatch = reuse runtime.Run, one worker per sub-goal. Task 086 makes the
+//     dispatch CONCURRENT (ADR 042: multiple workers from the start) — one goroutine
+//     per sub-goal, joined by a WaitGroup, outcomes written into a pre-sized slice at
+//     the sub-goal index, the shared audit chain and PlanStore serialized. A worker
+//     failure does not halt the others (best-effort). See dispatchPlan.
 package orchestrator
 
 import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/tkdtaylor/agent-builder/internal/audit"
 	"github.com/tkdtaylor/agent-builder/internal/policy"
@@ -358,79 +363,137 @@ func (o *Orchestrator) decideSpawn(plan Plan) (policy.Decision, error) {
 	return resp.Decision, nil
 }
 
-// dispatchPlan dispatches every sub-goal sequentially (concurrency is task 086),
-// aggregates the per-sub-goal outcomes into a typed PlanResult, and reports the
-// rendered summary over the Reporter (ADR 046 §2, §5). Each sub-goal is dispatched
-// even if a prior one fails — v1 records all outcomes (no early abort).
+// dispatchPlan dispatches every approved sub-goal CONCURRENTLY (task 086 / ADR 042:
+// multiple workers from the start), aggregates the per-sub-goal outcomes into a
+// typed PlanResult, and reports the rendered summary over the Reporter (ADR 046 §2,
+// §5). Concurrency model:
+//
+//   - One goroutine per sub-goal, joined by a sync.WaitGroup. All goroutines start
+//     before any completes (REQ-086-01) — there is no per-sub-goal sequencing.
+//   - Outcomes are written into a PRE-SIZED slice at the sub-goal index (never via
+//     append from a goroutine), so the aggregate is race-free AND deterministically
+//     ordered = sub-goal order (TC-085-02 / TC-086-03 assert ordered outcomes).
+//   - A worker's dispatch error is captured into ITS OWN outcome slot; goroutines
+//     never return early and never cancel siblings → best-effort completion
+//     (REQ-086-02). One worker failing does not halt the others.
+//   - The shared audit.Sink and PlanStore are the only cross-goroutine mutable state;
+//     both serialize their writes (audit sinks are mutex-guarded — task 086 — and the
+//     hash chain is appended serially; MemoryPlanStore is mutex-guarded). The
+//     envelope.ReplayCache shared across workers is likewise mutex-guarded (083
+//     SEC-001 carry-forward: ONE long-lived cache per direction, not per worker).
+//
+// The SEC-003 invariant (task 085) is preserved: a failed audit-append for a
+// security-relevant DENY event is a hard error that halts the plan. Such errors are
+// collected from the goroutines and, if any occurred, returned after the join so the
+// plan does not silently proceed on an un-audited deny.
 func (o *Orchestrator) dispatchPlan(ctx context.Context, plan Plan) (PlanResult, error) {
+	n := len(plan.SubGoals)
 	result := PlanResult{
 		Goal:     plan.Goal,
-		Outcomes: make([]SubGoalOutcome, 0, len(plan.SubGoals)),
+		Outcomes: make([]SubGoalOutcome, n),
 	}
+	// denyAuditErrs[i] holds a non-nil error only if sub-goal i's deny-event audit
+	// append failed (SEC-003). Each goroutine writes its own index → no shared-write
+	// race; we scan it after the join.
+	denyAuditErrs := make([]error, n)
 
-	for _, sub := range plan.SubGoals {
-		outcome := SubGoalOutcome{
-			SubGoal: sub.Task.Spec,
-			Recipe:  sub.RecipeName,
-		}
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range plan.SubGoals {
+		go func(i int, sub SubGoal) {
+			defer wg.Done()
+			outcome, auditErr := o.dispatchOne(ctx, plan, sub)
+			result.Outcomes[i] = outcome
+			denyAuditErrs[i] = auditErr
+		}(i, plan.SubGoals[i])
+	}
+	wg.Wait()
 
-		// Confirm the recipe exists before the spawn-worker gate (ADR 046 §5). An
-		// unknown recipe is a failed outcome, not a dispatch.
-		if _, err := recipe.SelectRecipe(sub.RecipeName); err != nil {
-			outcome.Success = false
-			outcome.Detail = fmt.Sprintf("recipe not found: %s", sub.RecipeName)
-			result.Outcomes = append(result.Outcomes, outcome)
-			continue
-		}
-
-		// Per-sub-goal spawn-worker gate (task 085 / ADR 050 §1). This issues a
-		// policy decision for THIS dispatch, additive to the plan-level spawn-plan.
-		// The self-repo bright line (REQ-085-05a) is checked inside decideSpawnWorker
-		// and overrides the policy decision fail-closed. A non-allow decision skips
-		// the dispatch, records a denied outcome, and reports the denial.
-		decision, denyReason := o.decideSpawnWorker(sub)
-		// For deny events, include the deny reason in the audit event (SEC-004: distinguish
-		// policy deny from self-repo deny). For allow, record just the recipe name.
-		auditReason := sub.RecipeName
-		if decision != policy.DecisionAllow {
-			auditReason = denyReason
-		}
-		// SEC-003: deny events must succeed in audit — if the append fails, that is
-		// a hard error that halts the plan (not silent). Use emitFleetEventForDeny
-		// for security-relevant denials; other events are best-effort.
-		if err := o.emitFleetEventForDeny(audit.AuditEvent{
-			Action: audit.ActionSpawnDecided, TaskID: sub.Task.ID, RunID: plan.GoalID,
-			Detail: audit.EventDetail{PolicyDecision: string(decision), Reason: auditReason},
-		}, decision != policy.DecisionAllow); err != nil {
+	// SEC-003: if any worker's deny-event audit append failed, halt the plan with the
+	// first such error (the deny was not durably recorded). Outcomes are still
+	// returned so the caller sees what ran before the halt.
+	for _, err := range denyAuditErrs {
+		if err != nil {
 			return result, fmt.Errorf("orchestrator: audit spawn-decided deny: %w", err)
 		}
-		if decision != policy.DecisionAllow {
-			outcome.Success = false
-			outcome.Detail = denyReason
-			result.Outcomes = append(result.Outcomes, outcome)
-			if err := o.reporter.Report(ctx, fmt.Sprintf("Worker spawn denied: recipe %s — %s", sub.RecipeName, denyReason)); err != nil {
-				return result, fmt.Errorf("orchestrator: report worker-spawn denial: %w", err)
-			}
-			continue
-		}
-
-		if err := o.dispatch(ctx, sub, o.baseConfig); err != nil {
-			outcome.Success = false
-			outcome.Detail = err.Error()
-		} else {
-			outcome.Success = true
-			outcome.Detail = "dispatched"
-		}
-		result.Outcomes = append(result.Outcomes, outcome)
 	}
 
-	// Fleet-audit: record plan completion on the shared chain after aggregation.
+	// Fleet-audit: record plan completion on the shared chain after aggregation. This
+	// runs after the join, so completion is the LAST orchestrator event on the chain
+	// (TC-085-03 / TC-086-05 assert completion is last).
 	o.emitFleetEvent(audit.AuditEvent{Action: audit.ActionCompletion, TaskID: plan.GoalID, RunID: plan.GoalID})
 
 	if err := o.reporter.Report(ctx, RenderPlanResult(result)); err != nil {
 		return result, fmt.Errorf("orchestrator: report plan result: %w", err)
 	}
 	return result, nil
+}
+
+// dispatchOne runs the full per-sub-goal pipeline for one worker: recipe existence
+// check → spawn-worker policy/self-repo gate + audit → dispatch. It returns the
+// typed outcome and, separately, a non-nil error ONLY when a security-relevant
+// deny-event audit append failed (SEC-003), which the caller treats as a plan-halt
+// signal. All other failures (unknown recipe, policy deny, dispatch error) are
+// recorded in the returned outcome — they do not halt sibling workers (REQ-086-02).
+//
+// dispatchOne is safe to run concurrently from N goroutines: it reads only immutable
+// inputs (plan, sub, o.baseConfig, o.policy) and writes only to the shared audit.Sink
+// and Reporter, both of which serialize their own writes.
+func (o *Orchestrator) dispatchOne(ctx context.Context, plan Plan, sub SubGoal) (SubGoalOutcome, error) {
+	outcome := SubGoalOutcome{
+		SubGoal: sub.Task.Spec,
+		Recipe:  sub.RecipeName,
+	}
+
+	// Confirm the recipe exists before the spawn-worker gate (ADR 046 §5). An
+	// unknown recipe is a failed outcome, not a dispatch.
+	if _, err := recipe.SelectRecipe(sub.RecipeName); err != nil {
+		outcome.Success = false
+		outcome.Detail = fmt.Sprintf("recipe not found: %s", sub.RecipeName)
+		return outcome, nil
+	}
+
+	// Per-sub-goal spawn-worker gate (task 085 / ADR 050 §1). This issues a policy
+	// decision for THIS dispatch, additive to the plan-level spawn-plan. The
+	// self-repo bright line (REQ-085-05a) is checked inside decideSpawnWorker and
+	// overrides the policy decision fail-closed. A non-allow decision skips the
+	// dispatch, records a denied outcome, and reports the denial.
+	decision, denyReason := o.decideSpawnWorker(sub)
+	// For deny events, include the deny reason in the audit event (SEC-004: distinguish
+	// policy deny from self-repo deny). For allow, record just the recipe name.
+	auditReason := sub.RecipeName
+	if decision != policy.DecisionAllow {
+		auditReason = denyReason
+	}
+	// SEC-003: deny events must succeed in audit — if the append fails, that is a hard
+	// error that halts the plan (not silent). The error is returned to dispatchPlan,
+	// which halts after the join.
+	if err := o.emitFleetEventForDeny(audit.AuditEvent{
+		Action: audit.ActionSpawnDecided, TaskID: sub.Task.ID, RunID: plan.GoalID,
+		Detail: audit.EventDetail{PolicyDecision: string(decision), Reason: auditReason},
+	}, decision != policy.DecisionAllow); err != nil {
+		return outcome, err
+	}
+	if decision != policy.DecisionAllow {
+		outcome.Success = false
+		outcome.Detail = denyReason
+		if err := o.reporter.Report(ctx, fmt.Sprintf("Worker spawn denied: recipe %s — %s", sub.RecipeName, denyReason)); err != nil {
+			// A reporter error on a denial is not a security-relevant halt; record it
+			// in the outcome detail and continue (best-effort reporting). Returning it
+			// here would halt the whole plan for a transport hiccup.
+			outcome.Detail = fmt.Sprintf("%s (report failed: %v)", denyReason, err)
+		}
+		return outcome, nil
+	}
+
+	if err := o.dispatch(ctx, sub, o.baseConfig); err != nil {
+		outcome.Success = false
+		outcome.Detail = err.Error()
+	} else {
+		outcome.Success = true
+		outcome.Detail = "dispatched"
+	}
+	return outcome, nil
 }
 
 // decideSpawnWorker issues the per-sub-goal spawn-worker policy decision (task 085

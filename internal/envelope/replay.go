@@ -10,8 +10,11 @@ import (
 // It maintains a time-freshness window and a bounded nonce set, with automatic
 // eviction of nonces older than 2×Window.
 //
-// The cache is not thread-safe by design; the caller is responsible for
-// synchronization if concurrent access is needed.
+// IMPORTANT: The cache IS internally protected by a mutex and is safe for concurrent
+// access — task 086 (N-concurrent workers) and 083 SEC-001 depend on ONE long-lived
+// shared ReplayCache per direction across all concurrent workers. Do not remove the
+// mutex or use per-worker caches (a virgin cache accepts a replayed envelope and
+// defeats replay protection). Concurrent calls to Check/Evict are serialized by mu.
 type ReplayCache struct {
 	// Window is the freshness window (default 60s). Timestamps outside
 	// [now-Window, now+Window] are rejected.

@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"sync"
 )
 
 // ExecRunner is the subprocess seam. The default implementation invokes the
@@ -54,6 +55,12 @@ type emitResponse struct {
 // BlockSink implements audit.Sink using the audit-trail block CLI subprocess.
 // Construct with NewBlockSink or NewBlockSinkWithRunner.
 type BlockSink struct {
+	// mu serializes Append/Seal. The block owns a hash chain whose prev-hash links
+	// are computed per emit; concurrent emits would interleave at the subprocess
+	// seam and corrupt the chain. Task 086 dispatches N workers concurrently, all
+	// writing the one fleet chain, so this serialization is load-bearing on the
+	// live path, not just style.
+	mu      sync.Mutex
 	logfile string
 	runner  ExecRunner
 	sealed  bool
@@ -90,6 +97,8 @@ func NewBlockSinkWithRunner(logfile string, runner ExecRunner) *BlockSink {
 //   - *ValidationError (from audit.Validate) when ev is invalid — no subprocess is invoked.
 //   - A non-nil named error when the block exits non-zero or returns an unparseable response.
 func (b *BlockSink) Append(ev AuditEvent) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.sealed {
 		return ErrAfterSeal
 	}
@@ -115,6 +124,8 @@ func (b *BlockSink) Append(ev AuditEvent) error {
 // Seal marks the sink as closed. Subsequent Append calls return ErrAfterSeal.
 // Seal is idempotent — a second call does not panic.
 func (b *BlockSink) Seal() error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	b.sealed = true
 	return nil
 }
