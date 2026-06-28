@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-27
-**Status:** backlog
+**Status:** completed (🟡 code merged — awaiting spec-verifier)
 
 ## Goal
 
@@ -47,21 +47,21 @@ The fitness check `make fitness-supervisor-isolation` enforces this.
 ## Readiness gate
 
 - [x] Test spec `092-router-capability-cost-escalation-test-spec.md` exists (written first)
-- [ ] Task 087 merged (registry types)
-- [ ] Task 089 merged (Codex adapter — router needs to construct it)
-- [ ] Task 090 merged (Gemini adapter)
-- [ ] Task 091 merged (local entry + `NewClaudeCLIFromEntry`)
-- [ ] `make check` green before starting
+- [x] Task 087 merged (registry types)
+- [x] Task 089 merged (Codex adapter — router needs to construct it)
+- [x] Task 090 merged (Gemini adapter)
+- [x] Task 091 merged (local entry + `NewClaudeCLIFromEntry`)
+- [x] `make check` green before starting
 
 ## Acceptance criteria
 
-- [ ] [REQ-092-01] TC-092-01: cheapest eligible entry selected with MinCapability=1
-- [ ] [REQ-092-01] TC-092-02: ineligible entries filtered by MinCapability; cheapest remaining selected
-- [ ] [REQ-092-02] TC-092-03: SensitivitySensitive biases toward local without excluding eligible non-local
-- [ ] [REQ-092-03] TC-092-04: OnGateFailure → escalates to next-stronger; all entries exhausted → ErrNoEligibleExecutor
-- [ ] [REQ-092-03] TC-092-05: OnQuotaExhausted → marks exhausted, routes sideways; does not escalate quality
-- [ ] [REQ-092-04] TC-092-06: Budget.Limit=0 entry ignores OnQuotaExhausted; remains available
-- [ ] [REQ-092-05] TC-092-07: `make fitness-supervisor-isolation` → PASS; `go list -deps ./internal/supervisor/...` → no `internal/router`; `make check` → `All checks passed.`
+- [x] [REQ-092-01] TC-092-01: cheapest eligible entry selected with MinCapability=1
+- [x] [REQ-092-01] TC-092-02: ineligible entries filtered by MinCapability; cheapest remaining selected
+- [x] [REQ-092-02] TC-092-03: SensitivitySensitive biases toward local without excluding eligible non-local
+- [x] [REQ-092-03] TC-092-04: OnGateFailure → escalates to next-stronger; all entries exhausted → ErrNoEligibleExecutor
+- [x] [REQ-092-03] TC-092-05: OnQuotaExhausted → marks exhausted, routes sideways; does not escalate quality
+- [x] [REQ-092-04] TC-092-06: Budget.Limit=0 entry ignores OnQuotaExhausted; remains available
+- [x] [REQ-092-05] TC-092-07: `make fitness-supervisor-isolation` → PASS; `go list -deps ./internal/supervisor/...` → no `internal/router`; `make check` → `All checks passed.`
 
 ## Verification plan
 

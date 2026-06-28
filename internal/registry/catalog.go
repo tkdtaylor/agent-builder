@@ -45,6 +45,21 @@ func (c *Catalog) LookupEntry(id string) (RegistryEntry, bool) {
 	return entry, exists
 }
 
+// UpdateEntry replaces an existing entry in place, preserving its position in
+// the stable order. It is the seam the router uses to mutate an entry's
+// router-owned availability/usage state (ADR 043: Usage and Availability are
+// mutable state the router owns). Updating an entry whose ID is not present is a
+// no-op — the router only updates entries it looked up from this catalog.
+func (c *Catalog) UpdateEntry(e RegistryEntry) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, exists := c.entries[e.ID]; !exists {
+		return
+	}
+	c.entries[e.ID] = e
+}
+
 // ListEntries returns all entries in stable, deterministic order.
 func (c *Catalog) ListEntries() []RegistryEntry {
 	c.mu.RLock()
