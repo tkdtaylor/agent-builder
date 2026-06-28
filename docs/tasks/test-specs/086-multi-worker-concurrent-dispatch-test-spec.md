@@ -188,6 +188,25 @@ regress them:
 - `TestTC081_02_*` / `TestTC081_03_*` / `TestTC081_04_*` — pause/resume, per-sub-goal
   dispatch, success+failure aggregation.
 
+## Security note: SEC-086-02 — deny-audit hard error does NOT cancel siblings
+
+When a per-worker `spawn-worker` DENY event's audit append fails (SEC-003 hard error),
+the orchestrator halts the plan AFTER the `WaitGroup.Wait()` join, so the plan `Handle`
+call returns an error to the caller. **However**, this plan-halt does NOT retroactively
+cancel already-dispatched sibling workers — they continue running in their goroutines
+best-effort. The per-worker `spawn-worker` gate (which precedes the dispatch call) is
+what stops a denied worker FROM being dispatched; an audit failure on the deny event
+itself is a distinct, higher-tier plan halt that happens *after* the join.
+
+This is not a bug. The security property (SEC-003: deny events must be audited or the
+plan halts) is preserved. The operational consequence (best-effort partial completion)
+is the same as any worker failure: a subset of the N workers may have run before the
+plan encountered a halt condition.
+
+Covered by `TestSEC086_01_DenyEventAuditFailureHaltsPlan` (confirms 0 dispatch for the
+denied worker) and `TestSEC086_01_DenyWithNoSinkIsHardError` (confirms hard error when
+no sink is configured for a deny event).
+
 ## Verification plan
 
 - **Highest level achievable:** L2 + race detector. L5 audit-chain verify is reachable in

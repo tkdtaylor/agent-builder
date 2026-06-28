@@ -170,6 +170,12 @@ func (d *indexedDispatch) fn(_ context.Context, sub orchestrator.SubGoal, _ runt
 	return nil
 }
 
+func (d *indexedDispatch) count() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.ran)
+}
+
 func (d *indexedDispatch) didRun(taskID string) bool {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -417,4 +423,116 @@ func TestTC086_05_FleetChainCoversAllNConcurrentWorkers(t *testing.T) {
 		t.Fatalf("VerifyChain: Valid=false, want true; message=%q", res.Message)
 	}
 	t.Logf("TC-086-05 L5: audit-trail verify → valid=%v on the concurrent fleet chain", res.Valid)
+}
+
+// --- SEC-086-01 — deny-event-append-failure HALT path (security-critical) ------
+
+// failingSink is an audit.Sink that fails Append for a specific action type.
+type failingSink struct {
+	mu         sync.Mutex
+	events     []audit.AuditEvent
+	failErr    error
+	failAction audit.AuditAction
+}
+
+func newFailingSink(failErr error, failAction audit.AuditAction) *failingSink {
+	return &failingSink{
+		events:     make([]audit.AuditEvent, 0),
+		failErr:    failErr,
+		failAction: failAction,
+	}
+}
+
+func (s *failingSink) Append(ev audit.AuditEvent) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ev.Action == s.failAction {
+		return s.failErr
+	}
+	s.events = append(s.events, ev)
+	return nil
+}
+
+func (s *failingSink) Seal() error { return nil }
+
+// TestSEC086_01_DenyEventAuditFailureHaltsPlan — when a deny-event audit append fails
+// (SEC-003 hard error), the plan is halted with an error wrapping the audit failure.
+// The worker whose deny-event append failed did NOT dispatch (the deny path
+// short-circuits before dispatch).
+func TestSEC086_01_DenyEventAuditFailureHaltsPlan(t *testing.T) {
+	const n = 3
+	disp := newIndexedDispatch()
+	rep := &fakeReporter{}
+	// Deny spawn-worker for all workers so the deny-audit path is triggered.
+	pol := &recordingPolicy{
+		byAction: map[string]policy.Decision{orchestrator.SpawnAction: policy.DecisionAllow},
+		byRecipe: map[string]policy.Decision{
+			"coding-agent": policy.DecisionDeny, // Deny all workers on this recipe.
+		},
+	}
+
+	// Use a sink that fails spawn-decided Append unconditionally (simulating a broken sink).
+	failErr := errString("audit sink I/O error (simulated for SEC-086-01 test)")
+	failingSink := newFailingSink(failErr, audit.ActionSpawnDecided)
+
+	o := orchestrator.New(
+		newNSubGoalPlanner("g1", n, "coding-agent"),
+		pol, rep, runtime.Config{},
+		orchestrator.WithDispatchFunc(disp.fn),
+		orchestrator.WithAuditSink(failingSink),
+	)
+
+	res, err := o.Handle(context.Background(), supervisor.Task{ID: "g1", Spec: "audit failure test"})
+
+	// The plan MUST return an error because a deny-event spawn-decided audit append failed.
+	if err == nil {
+		t.Fatalf("Handle: deny-event audit failure must halt the plan, want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "audit") && !strings.Contains(err.Error(), "spawn-decided deny") {
+		t.Errorf("error message = %q, want it to mention 'audit' and 'deny'", err.Error())
+	}
+	// Confirm no workers were dispatched (the deny short-circuits before dispatch).
+	if disp.count() != 0 {
+		t.Errorf("workers dispatched despite deny-audit failure: want 0, got %d", disp.count())
+	}
+	// The plan result is still returned (but shouldn't be trusted because err != nil).
+	_ = res
+	t.Logf("SEC-086-01: deny-event audit failure → hard error halts plan, 0 dispatch")
+}
+
+// TestSEC086_01_DenyWithNoSinkIsHardError — when a deny-event is emitted
+// but no audit sink is configured, emitFleetEventForDeny must return an error for
+// isDeny=true (fail-closed: if we can't audit the deny, don't proceed).
+func TestSEC086_01_DenyWithNoSinkIsHardError(t *testing.T) {
+	const n = 2
+	disp := newIndexedDispatch()
+	rep := &fakeReporter{}
+	// Deny spawn-worker for all workers (so all workers hit the deny-audit path).
+	pol := &recordingPolicy{
+		byAction: map[string]policy.Decision{
+			orchestrator.SpawnAction: policy.DecisionAllow,
+		},
+		byRecipe: map[string]policy.Decision{
+			"coding-agent": policy.DecisionDeny, // Deny all workers on this recipe.
+		},
+	}
+
+	o := orchestrator.New(
+		newNSubGoalPlanner("g1", n, "coding-agent"),
+		pol, rep, runtime.Config{},
+		orchestrator.WithDispatchFunc(disp.fn),
+		// NO audit sink configured (WithAuditSink not called).
+	)
+
+	res, err := o.Handle(context.Background(), supervisor.Task{ID: "g1", Spec: "no sink deny test"})
+
+	// emitFleetEventForDeny must return hard error when isDeny=true and sink is nil.
+	if err == nil {
+		t.Fatalf("Handle: deny-event with no sink configured must halt, want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "audit") && !strings.Contains(err.Error(), "policy gating enabled") {
+		t.Errorf("error message = %q, want it to mention audit/policy/sink", err.Error())
+	}
+	_ = res
+	t.Logf("SEC-086-01: deny with no sink configured → hard error (not silent)")
 }
