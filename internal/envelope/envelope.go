@@ -37,6 +37,16 @@ import (
 	"time"
 )
 
+// Sentinel errors for classification of envelope verification failures.
+// These are exported so that consumers can use errors.Is() to determine
+// the specific reason an envelope was rejected.
+var (
+	ErrUnknownKey       = errors.New("unknown_key")
+	ErrBadSignature     = errors.New("bad_signature")
+	ErrReplay           = errors.New("replay")
+	ErrStaleTimestamp   = errors.New("stale_timestamp")
+)
+
 // Envelope is the agent-mesh-compatible wire format for signed/encrypted messages.
 // It carries sender identity, recipient, a nonce for replay prevention, a timestamp,
 // the payload (plaintext or ciphertext), and an Ed25519 signature over the canonical
@@ -70,21 +80,21 @@ func Sign(env Envelope, priv ed25519.PrivateKey) (Envelope, error) {
 }
 
 // Verify checks the Ed25519 signature against the provided public key.
-// Returns nil if the signature is valid; returns a named error for unknown key,
+// Returns nil if the signature is valid; returns a wrapped sentinel error for unknown key,
 // bad signature, or other failures.
 func Verify(env Envelope, pub ed25519.PublicKey) error {
 	if len(pub) != ed25519.PublicKeySize {
-		return errors.New("unknown_key: invalid public key size")
+		return fmt.Errorf("invalid public key size: %w", ErrUnknownKey)
 	}
 
 	// Decode the signature from hex.
 	sig, err := hex.DecodeString(env.Sig)
 	if err != nil {
-		return fmt.Errorf("bad_signature: invalid hex encoding: %w", err)
+		return fmt.Errorf("invalid hex encoding: %w", ErrBadSignature)
 	}
 
 	if len(sig) != ed25519.SignatureSize {
-		return fmt.Errorf("bad_signature: invalid signature size: expected %d, got %d", ed25519.SignatureSize, len(sig))
+		return fmt.Errorf("invalid signature size: expected %d, got %d: %w", ed25519.SignatureSize, len(sig), ErrBadSignature)
 	}
 
 	// Compute the canonical signing body (reconstructed from the envelope without Sig).
@@ -92,7 +102,7 @@ func Verify(env Envelope, pub ed25519.PublicKey) error {
 
 	// Verify the signature.
 	if !ed25519.Verify(pub, canonical, sig) {
-		return errors.New("bad_signature: verification failed")
+		return fmt.Errorf("verification failed: %w", ErrBadSignature)
 	}
 
 	return nil
@@ -134,6 +144,7 @@ func NowRFC3339() string {
 // plaintext or an error if any step fails.
 //
 // This makes the safe path the easy path for task 080/083 consumers.
+// Errors are wrapped with sentinel errors so callers can use errors.Is() for classification.
 func VerifyAndOpen(env Envelope, signPub ed25519.PublicKey, cache *ReplayCache, recipX25519Priv [32]byte, senderX25519Pub [32]byte) ([]byte, error) {
 	// Step 1: Verify signature (cheap, rejects forgeries before decryption)
 	if err := Verify(env, signPub); err != nil {
