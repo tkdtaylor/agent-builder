@@ -416,10 +416,13 @@ func TestTC10305_LoopReturnsErrorWhenContextCancelled(t *testing.T) {
 		Spec: "test-spec.md",
 	})
 
-	// The executor currently uses context.Background() so this test verifies
-	// that errors from the chatter are properly propagated
-	if errors.Is(err, context.Canceled) {
-		t.Log("Context cancellation properly propagated from chatter")
+	// The executor uses context.Background() but the chatter returns context.Canceled,
+	// so the error must be properly propagated (not swallowed or transformed)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
 	}
 
 	_ = result
