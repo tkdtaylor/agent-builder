@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** agent-builder
-**Last updated:** 2026-06-27 (task 090 — Gemini harness adapter)
+**Last updated:** 2026-06-27 (task 091 — local-entry-translation-proxy)
 
 The system's contact surface — everything that calls into the system, everything the system calls out to, and the public boundaries within the system. Each interface is a stable contract: changes here are breaking changes.
 
@@ -141,11 +141,18 @@ const (
 	ClaudeIngestionReviewed ClaudeIngestionPolicy = "reviewed"
 )
 
+const (
+	ClaudeCLIAuthEnv    = "ANTHROPIC_API_KEY"
+	ClaudeCLIOAuthEnv   = "CLAUDE_CODE_OAUTH_TOKEN"
+	ClaudeCLIBaseURLEnv = "ANTHROPIC_BASE_URL" // set for local/translation-proxy entries
+)
+
 type ClaudeCLIConfig struct {
 	CLIPath          string
 	Worktree         string
 	AuthToken        string
 	OAuthToken       string
+	BaseURL          string // translation-proxy URL for local entries; empty for cloud entries
 	IngestionPolicy  ClaudeIngestionPolicy
 	IngestionHarness *executorharness.Harness
 }
@@ -153,6 +160,7 @@ type ClaudeCLIConfig struct {
 func ParseClaudeIngestionPolicy(raw string) (ClaudeIngestionPolicy, error)
 func NewClaudeCLI(config ClaudeCLIConfig) *ClaudeCLI
 func NewClaudeCLIFromEnv(worktree string) *ClaudeCLI
+func NewClaudeCLIFromEntry(entry registry.RegistryEntry, secretSource secrets.SecretSource, worktree string) *ClaudeCLI
 func (e *ClaudeCLI) IngestionPolicy() ClaudeIngestionPolicy
 func (e *ClaudeCLI) Run(task supervisor.Task) (supervisor.Result, error)
 func (e *ClaudeCLI) HandleWebContent(ctx context.Context, event executorharness.WebContentEvent, continuation executorharness.ContentContinuation) executorharness.ContentResult
@@ -162,7 +170,9 @@ func (e *ClaudeCLI) HandleToolCall(ctx context.Context, event executorharness.To
 - **Outbound call:** `claude -p <prompt>` with `cmd.Dir` set to `ClaudeCLIConfig.Worktree`.
 - **Branch contract:** the prompt names an executor-owned temp file where the CLI must write the produced branch. The executor trims that file and copies it into `supervisor.Result.Branch`.
 - **Web/tool policy:** `IngestionPolicy` defaults to `disabled`. `disabled` fails closed for Claude-facing web/tool events while preserving ordinary subprocess execution. `reviewed` requires `IngestionHarness` and routes web/tool events through it before any continuation or tool executor can run. Unknown policy values and reviewed-without-harness configurations fail before subprocess start.
-- **Auth contract:** the executor accepts either `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (OAuth token preferred when both are set). Exactly one credential is injected into subprocess env; the other is stripped. Host `HOME`/XDG dirs are replaced with temp dirs. Both credential values are redacted from subprocess failure output. The executor fails before subprocess start when both are absent.
+- **Auth contract (cloud mode):** when `BaseURL` is empty (cloud entry), the executor accepts either `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (OAuth token preferred when both are set). Exactly one credential is injected into subprocess env; the other is stripped. Host `HOME`/XDG dirs are replaced with temp dirs. Both credential values are redacted from subprocess failure output. The executor fails before subprocess start when both are absent.
+- **Auth contract (local/translation-proxy mode):** when `BaseURL` is non-empty (local entry, `entry.SecretRef == ""`), `ANTHROPIC_BASE_URL` is set to `BaseURL` in the subprocess env. No cloud auth vars (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`) are injected. The translation proxy at `BaseURL` converts Anthropic API requests to the local inference server. Missing cloud credentials are not an error in this mode.
+- **`NewClaudeCLIFromEntry` contract:** constructs a `ClaudeCLI` from a `registry.RegistryEntry`. When `entry.SecretRef == ""` (local entry), sets `BaseURL = entry.Endpoint` and omits cloud auth. When `entry.SecretRef != ""` (cloud entry), resolves credentials via `secretSource.ProviderToken()`. Additive constructor — existing `NewClaudeCLI` and `NewClaudeCLIFromEnv` call sites are unchanged.
 
 ### Concrete executor: `executor.CodexCLI`
 
@@ -205,6 +215,10 @@ const (
 
 func (h HarnessDriver) String() string
 
+// TranslationProxySeam names the local-entry endpoint convention:
+// local inference server → translation proxy (LiteLLM/claude-code-router) → Claude CLI via ANTHROPIC_BASE_URL.
+const TranslationProxySeam = "litellm/claude-code-router"
+
 type QuotaBudget struct {
     Limit  int
     Window time.Duration
@@ -229,11 +243,13 @@ type RegistryEntry struct {
     CostWeight     int
     ModelID        string
     Endpoint       string
-    SecretRef      string
+    SecretRef      string  // empty for local entries (no cloud auth)
     Budget         QuotaBudget
     Usage          int
     Availability   Availability
 }
+
+func (e RegistryEntry) IsUnlimited() bool
 
 type Catalog struct { /* unexported */ }
 
@@ -251,14 +267,16 @@ func LoadFromEnv() ([]RegistryEntry, error)
 - **Required behavior:**
   - `HarnessDriver` discriminates which harness CLI runs the loop; three values are supported (`claude-cli`, `codex-cli`, `gemini-cli`).
   - `String()` returns human-readable harness names.
+  - `TranslationProxySeam` is a named constant identifying the local-entry pattern: local model → translation proxy (LiteLLM / claude-code-router) → Claude CLI redirected via `ANTHROPIC_BASE_URL`. Consumers may reference this constant for documentation or routing logic.
   - `QuotaBudget` with `Limit == 0` means unlimited (no cap). Non-zero limit caps dispatches over the rolling window.
+  - `IsUnlimited()` returns `true` when `Budget.Limit == 0`. Local entries always have `Limit == 0` and are therefore always unlimited; the router must never mark an unlimited entry as exhausted.
   - `Availability` tracks whether an entry can be selected (`available`) or must be skipped until `ResetAt` (`exhausted`). Mutable state owned by the router.
-  - `RegistryEntry` is a value type: all fields are directly accessible.
+  - `RegistryEntry` is a value type: all fields are directly accessible. `SecretRef` is empty for local entries (translation-proxy mode; no cloud auth needed).
   - `NewCatalog()` creates an empty, thread-safe catalog.
   - `RegisterEntry` adds an entry; panics if an entry with the same ID already exists.
   - `LookupEntry(id)` retrieves an entry by ID; returns `(RegistryEntry{}, false)` if not found. Empty ID returns `(_, false)`.
   - `ListEntries()` returns all entries in stable, deterministic (insertion) order.
-  - `LoadFromEnv()` parses well-known env-var prefixes (`AGENT_BUILDER_REGISTRY_<ID>_*`) and returns enabled entries; missing required fields or non-integer tier/cost/budget values return a descriptive error.
+  - `LoadFromEnv()` parses well-known env-var prefixes (`AGENT_BUILDER_REGISTRY_<ID>_*`) and returns enabled entries. For local entries (`local-qwen`, `local`), `SECRET_REF` is optional (empty is valid). For cloud entries, missing required fields or non-integer tier/cost/budget values return a descriptive error.
 
 ### Interface: supervisor dispatch lifecycle seams
 

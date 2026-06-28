@@ -64,3 +64,11 @@ type RegistryEntry struct {
 	Usage          int           // running tally against Budget
 	Availability   Availability  // available or exhausted-until ResetAt
 }
+
+// IsUnlimited reports whether the entry has no quota cap configured.
+// An entry is unlimited when Budget.Limit == 0 (the zero value).
+// Local entries always have Budget.Limit == 0 and are therefore always unlimited —
+// the router must never mark an unlimited entry as exhausted.
+func (e RegistryEntry) IsUnlimited() bool {
+	return e.Budget.Limit == 0
+}

@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/tkdtaylor/agent-builder/internal/executorharness"
+	"github.com/tkdtaylor/agent-builder/internal/registry"
 	"github.com/tkdtaylor/agent-builder/internal/secrets"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
@@ -21,6 +22,12 @@ const (
 	ClaudeCLIAuthEnv = "ANTHROPIC_API_KEY"
 	// ClaudeCLIOAuthEnv is the subscription OAuth token alternative to ClaudeCLIAuthEnv.
 	ClaudeCLIOAuthEnv = "CLAUDE_CODE_OAUTH_TOKEN"
+	// ClaudeCLIBaseURLEnv redirects the Claude Code CLI to a custom endpoint.
+	// For local entries, this is set to the translation-proxy URL (e.g. http://localhost:8080).
+	// The translation proxy presents an Anthropic-compatible endpoint over a local OpenAI-API
+	// inference server (the LiteLLM / claude-code-router pattern — see internal/registry for
+	// the named TranslationProxySeam constant). When non-empty, no cloud auth is injected.
+	ClaudeCLIBaseURLEnv = "ANTHROPIC_BASE_URL"
 
 	claudeCLIHistoryEnv = "CLAUDE_CODE_SKIP_PROMPT_HISTORY"
 )
@@ -48,12 +55,17 @@ const (
 	ClaudeIngestionReviewed ClaudeIngestionPolicy = "reviewed"
 )
 
+// claudeCommandCreator is a factory function for exec.Cmd. Tests override this to inject
+// a stub subprocess without needing a real claude binary on PATH.
+type claudeCommandCreator func(ctx context.Context, name string, args ...string) *exec.Cmd
+
 // ClaudeCLIConfig configures the Claude Code CLI subprocess executor.
 type ClaudeCLIConfig struct {
 	CLIPath          string
 	Worktree         string
 	AuthToken        string
 	OAuthToken       string
+	BaseURL          string // translation-proxy URL for local entries; empty for cloud entries
 	IngestionPolicy  ClaudeIngestionPolicy
 	IngestionHarness *executorharness.Harness
 }
@@ -64,8 +76,10 @@ type ClaudeCLI struct {
 	worktree         string
 	authToken        string
 	oauthToken       string
+	baseURL          string // translation-proxy URL for local entries; empty = cloud mode
 	ingestionPolicy  ClaudeIngestionPolicy
 	ingestionHarness *executorharness.Harness
+	cmdFactory       claudeCommandCreator
 }
 
 // NewClaudeCLI constructs a Claude Code CLI executor with an explicit token.
@@ -75,8 +89,10 @@ func NewClaudeCLI(config ClaudeCLIConfig) *ClaudeCLI {
 		worktree:         strings.TrimSpace(config.Worktree),
 		authToken:        config.AuthToken,
 		oauthToken:       config.OAuthToken,
+		baseURL:          strings.TrimSpace(config.BaseURL),
 		ingestionPolicy:  normalizeClaudeIngestionPolicy(config.IngestionPolicy),
 		ingestionHarness: config.IngestionHarness,
+		cmdFactory:       exec.CommandContext,
 	}
 }
 
@@ -91,6 +107,35 @@ func NewClaudeCLIFromEnv(worktree string) *ClaudeCLI {
 // used by tests (via a fake) and will be used by task 066 for vault wiring.
 func NewClaudeCLIFromSecretSource(worktree string, src secrets.SecretSource) *ClaudeCLI {
 	authToken, oauthToken := src.ProviderToken()
+	return NewClaudeCLI(ClaudeCLIConfig{
+		CLIPath:    "claude",
+		Worktree:   worktree,
+		AuthToken:  authToken,
+		OAuthToken: oauthToken,
+	})
+}
+
+// NewClaudeCLIFromEntry constructs a ClaudeCLI adapter from a registry.RegistryEntry and
+// a SecretSource. The worktree parameter is the path on disk where the CLI will operate.
+//
+// For cloud entries (entry.SecretRef != ""), the secret is resolved via
+// secretSource.ProviderToken() — no per-entry named resolution is applied here because
+// ClaudeCLI pre-dates the per-entry secret pattern; future tasks may refine this.
+//
+// For local entries (entry.SecretRef == ""), no cloud auth is injected. Instead,
+// entry.Endpoint is set as ANTHROPIC_BASE_URL in the subprocess env so the Claude CLI
+// routes its requests through the translation proxy at that URL.
+func NewClaudeCLIFromEntry(entry registry.RegistryEntry, secretSource secrets.SecretSource, worktree string) *ClaudeCLI {
+	if entry.SecretRef == "" {
+		// Local entry: no cloud auth; redirect to translation proxy.
+		return NewClaudeCLI(ClaudeCLIConfig{
+			CLIPath:  "claude",
+			Worktree: worktree,
+			BaseURL:  entry.Endpoint,
+		})
+	}
+	// Cloud entry: resolve credentials from the secret source.
+	authToken, oauthToken := secretSource.ProviderToken()
 	return NewClaudeCLI(ClaudeCLIConfig{
 		CLIPath:    "claude",
 		Worktree:   worktree,
@@ -158,9 +203,9 @@ func (e *ClaudeCLI) RunContext(ctx context.Context, task supervisor.Task) (super
 	branchPath := filepath.Join(runDir, "produced-branch.txt")
 	prompt := buildClaudePrompt(task, e.worktree, branchPath)
 
-	cmd := exec.CommandContext(ctx, e.cliPath, "-p", prompt)
+	cmd := e.cmdFactory(ctx, e.cliPath, "-p", prompt)
 	cmd.Dir = e.worktree
-	cmd.Env = claudeEnv(os.Environ(), e.authToken, e.oauthToken, runDir)
+	cmd.Env = claudeEnv(os.Environ(), e.authToken, e.oauthToken, e.baseURL, runDir)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -190,9 +235,12 @@ func (e *ClaudeCLI) validate(task supervisor.Task) error {
 	if strings.TrimSpace(e.worktree) == "" {
 		return ErrBlankWorktree
 	}
-	// Accept either OAuth token or API key credential
-	if strings.TrimSpace(e.oauthToken) == "" && strings.TrimSpace(e.authToken) == "" {
-		return ErrMissingClaudeCredential
+	// Local entries (baseURL non-empty, SecretRef == "") require no cloud auth.
+	// Cloud entries require at least one credential.
+	if e.baseURL == "" {
+		if strings.TrimSpace(e.oauthToken) == "" && strings.TrimSpace(e.authToken) == "" {
+			return ErrMissingClaudeCredential
+		}
 	}
 	if strings.TrimSpace(task.ID) == "" {
 		return ErrBlankTaskID
@@ -241,13 +289,19 @@ When finished, write only the produced branch name to this file:
 `, task.ID, task.Repo, task.Spec, worktree, branchPath)
 }
 
-func claudeEnv(base []string, authToken, oauthToken, tempHome string) []string {
+// claudeEnv builds the subprocess environment. When baseURL is non-empty (local entry),
+// it sets ANTHROPIC_BASE_URL and omits all cloud auth vars (ANTHROPIC_API_KEY,
+// CLAUDE_CODE_OAUTH_TOKEN). When baseURL is empty (cloud entry), it injects exactly one
+// cloud credential (OAuth preferred over API key when both are set).
+func claudeEnv(base []string, authToken, oauthToken, baseURL, tempHome string) []string {
 	env := make([]string, 0, len(base)+5)
 	for _, entry := range base {
 		switch {
 		case strings.HasPrefix(entry, ClaudeCLIAuthEnv+"="):
 			continue
 		case strings.HasPrefix(entry, ClaudeCLIOAuthEnv+"="):
+			continue
+		case strings.HasPrefix(entry, ClaudeCLIBaseURLEnv+"="):
 			continue
 		case strings.HasPrefix(entry, "HOME="):
 			continue
@@ -262,11 +316,16 @@ func claudeEnv(base []string, authToken, oauthToken, tempHome string) []string {
 		}
 	}
 
-	// OAuth token preferred over API key when both present (ADR 033)
-	if strings.TrimSpace(oauthToken) != "" {
-		env = append(env, ClaudeCLIOAuthEnv+"="+oauthToken)
-	} else if strings.TrimSpace(authToken) != "" {
-		env = append(env, ClaudeCLIAuthEnv+"="+authToken)
+	if baseURL != "" {
+		// Local mode: point the CLI at the translation proxy; no cloud auth injected.
+		env = append(env, ClaudeCLIBaseURLEnv+"="+baseURL)
+	} else {
+		// Cloud mode: OAuth token preferred over API key when both present (ADR 033).
+		if strings.TrimSpace(oauthToken) != "" {
+			env = append(env, ClaudeCLIOAuthEnv+"="+oauthToken)
+		} else if strings.TrimSpace(authToken) != "" {
+			env = append(env, ClaudeCLIAuthEnv+"="+authToken)
+		}
 	}
 
 	env = append(env,

@@ -2,6 +2,7 @@ package registry
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -300,6 +301,130 @@ func TestDuplicateRegisterEntryPanics(t *testing.T) {
 	}()
 
 	catalog.RegisterEntry(entry)
+}
+
+// TC-091-01: LoadFromEnv with local-entry env vars → HarnessClaudeCLI, SecretRef="", Budget=zero
+func TestLoadFromEnv_LocalQwenEntry(t *testing.T) {
+	// Set only the local-entry vars (no SECRET_REF — it is optional for local entries)
+	keys := []string{
+		"AGENT_BUILDER_REGISTRY_LOCAL_QWEN_ENABLED",
+		"AGENT_BUILDER_REGISTRY_LOCAL_QWEN_ENDPOINT",
+		"AGENT_BUILDER_REGISTRY_LOCAL_QWEN_MODEL",
+		"AGENT_BUILDER_REGISTRY_LOCAL_QWEN_CAPABILITY_TIER",
+		"AGENT_BUILDER_REGISTRY_LOCAL_QWEN_COST_WEIGHT",
+	}
+	origValues := make(map[string]string, len(keys))
+	for _, k := range keys {
+		origValues[k] = os.Getenv(k)
+	}
+	defer func() {
+		for k, v := range origValues {
+			if v != "" {
+				_ = os.Setenv(k, v)
+			} else {
+				_ = os.Unsetenv(k)
+			}
+		}
+	}()
+
+	_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_QWEN_ENABLED", "true")
+	_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_QWEN_ENDPOINT", "http://localhost:8080")
+	_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_QWEN_MODEL", "qwen2.5-coder-7b-instruct")
+	_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_QWEN_CAPABILITY_TIER", "1")
+	_ = os.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_QWEN_COST_WEIGHT", "1")
+	// SECRET_REF is intentionally NOT set — local entries have no cloud auth
+
+	entries, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() failed: %v", err)
+	}
+
+	var found *RegistryEntry
+	for i := range entries {
+		if entries[i].ID == "local-qwen" {
+			found = &entries[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("local-qwen entry not found in LoadFromEnv result")
+	}
+
+	// TC-091-01: Harness must be HarnessClaudeCLI
+	if found.Harness != HarnessClaudeCLI {
+		t.Errorf("Harness: expected %v, got %v", HarnessClaudeCLI, found.Harness)
+	}
+	// TC-091-01: SecretRef must be empty (no cloud auth for local)
+	if found.SecretRef != "" {
+		t.Errorf("SecretRef: expected empty, got %q", found.SecretRef)
+	}
+	// TC-091-01: Budget must be zero (unlimited)
+	if found.Budget.Limit != 0 {
+		t.Errorf("Budget.Limit: expected 0 (unlimited), got %d", found.Budget.Limit)
+	}
+	if found.Budget.Window != 0 {
+		t.Errorf("Budget.Window: expected 0, got %v", found.Budget.Window)
+	}
+
+	// TC-091-02: Endpoint is the translation-proxy URL, not the model URL
+	if found.Endpoint != "http://localhost:8080" {
+		t.Errorf("Endpoint: expected %q, got %q", "http://localhost:8080", found.Endpoint)
+	}
+	// TC-091-02: Harness is still HarnessClaudeCLI (same harness as cloud, different endpoint)
+	if found.Harness != HarnessClaudeCLI {
+		t.Errorf("Harness: expected HarnessClaudeCLI for local entry, got %v", found.Harness)
+	}
+}
+
+// TC-091-02: TranslationProxySeam constant names the LiteLLM / claude-code-router pattern
+func TestTranslationProxySeamConstant(t *testing.T) {
+	// The constant must be non-empty and name the translation-proxy pattern.
+	if TranslationProxySeam == "" {
+		t.Error("TranslationProxySeam constant must not be empty")
+	}
+	// It should reference the LiteLLM or claude-code-router pattern.
+	if !strings.Contains(TranslationProxySeam, "litellm") && !strings.Contains(TranslationProxySeam, "claude-code-router") {
+		t.Errorf("TranslationProxySeam %q does not reference litellm or claude-code-router", TranslationProxySeam)
+	}
+}
+
+// TC-091-04: IsUnlimited() returns true when Budget.Limit == 0
+func TestRegistryEntry_IsUnlimited(t *testing.T) {
+	tests := []struct {
+		name    string
+		entry   RegistryEntry
+		want    bool
+	}{
+		{
+			name:  "zero budget (unlimited)",
+			entry: RegistryEntry{Budget: QuotaBudget{Limit: 0}},
+			want:  true,
+		},
+		{
+			name:  "local entry (unlimited by design)",
+			entry: RegistryEntry{ID: "local-qwen", Harness: HarnessClaudeCLI, SecretRef: "", Budget: QuotaBudget{}},
+			want:  true,
+		},
+		{
+			name:  "cloud entry with budget cap",
+			entry: RegistryEntry{ID: "claude-oauth", Budget: QuotaBudget{Limit: 100}},
+			want:  false,
+		},
+		{
+			name:  "budget limit 1",
+			entry: RegistryEntry{Budget: QuotaBudget{Limit: 1}},
+			want:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.entry.IsUnlimited()
+			if got != tt.want {
+				t.Errorf("IsUnlimited() = %v, want %v", got, tt.want)
+			}
+		})
+	}
 }
 
 // TC-087-06: ListEntries returns entries in stable, deterministic order
