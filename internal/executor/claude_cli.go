@@ -22,6 +22,11 @@ const (
 	ClaudeCLIAuthEnv = "ANTHROPIC_API_KEY"
 	// ClaudeCLIOAuthEnv is the subscription OAuth token alternative to ClaudeCLIAuthEnv.
 	ClaudeCLIOAuthEnv = "CLAUDE_CODE_OAUTH_TOKEN"
+	// ClaudeCLIAuthTokenEnv is the gateway/proxy bearer-token env var passed to Claude Code CLI.
+	// When ANTHROPIC_BASE_URL is set (local translation-proxy mode), this var is set to the
+	// placeholder and passed straight through to the custom endpoint without validation.
+	// The CLI does not validate this token as a real Anthropic credential (unlike ClaudeCLIAuthEnv).
+	ClaudeCLIAuthTokenEnv = "ANTHROPIC_AUTH_TOKEN"
 	// ClaudeCLIBaseURLEnv redirects the Claude Code CLI to a custom endpoint.
 	// For local entries, this is set to the translation-proxy URL (e.g. http://localhost:8080).
 	// The translation proxy presents an Anthropic-compatible endpoint over a local OpenAI-API
@@ -31,11 +36,12 @@ const (
 
 	claudeCLIHistoryEnv = "CLAUDE_CODE_SKIP_PROMPT_HISTORY"
 
-	// LocalProxyAuthPlaceholder is a fixed sentinel injected as ANTHROPIC_API_KEY for local
-	// proxy entries. It satisfies the Claude Code CLI's local auth-state check and is not
-	// a real Anthropic credential. The translation proxy ignores the key value; its presence
-	// is sufficient for the CLI to proceed with requests to the custom ANTHROPIC_BASE_URL.
-	// This placeholder MUST NOT be derived from the operator's real authToken or oauthToken.
+	// LocalProxyAuthPlaceholder is a fixed sentinel injected as ANTHROPIC_AUTH_TOKEN for local
+	// proxy entries. It is passed through to the translation proxy at the custom ANTHROPIC_BASE_URL
+	// and is not validated by the Claude Code CLI as a real Anthropic credential.
+	// The translation proxy ignores the token value; its presence is sufficient for the CLI to
+	// proceed with requests to the custom endpoint. This placeholder MUST NOT be derived from
+	// the operator's real authToken or oauthToken.
 	LocalProxyAuthPlaceholder = "local-proxy-no-auth"
 )
 
@@ -297,10 +303,11 @@ When finished, write only the produced branch name to this file:
 }
 
 // claudeEnv builds the subprocess environment. When baseURL is non-empty (local entry),
-// it sets ANTHROPIC_BASE_URL, injects LocalProxyAuthPlaceholder as ANTHROPIC_API_KEY,
-// and omits CLAUDE_CODE_OAUTH_TOKEN and the operator's real credentials. When baseURL is
-// empty (cloud entry), it injects exactly one cloud credential (OAuth preferred over API
-// key when both are set), and no placeholder.
+// it sets ANTHROPIC_BASE_URL, injects LocalProxyAuthPlaceholder as ANTHROPIC_AUTH_TOKEN
+// (the gateway bearer-token var, not validated as a real credential), and omits
+// ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, and the operator's real credentials.
+// When baseURL is empty (cloud entry), it injects exactly one cloud credential (OAuth
+// preferred over API key when both are set), and no placeholder.
 func claudeEnv(base []string, authToken, oauthToken, baseURL, tempHome string) []string {
 	env := make([]string, 0, len(base)+5)
 	for _, entry := range base {
@@ -308,6 +315,8 @@ func claudeEnv(base []string, authToken, oauthToken, baseURL, tempHome string) [
 		case strings.HasPrefix(entry, ClaudeCLIAuthEnv+"="):
 			continue
 		case strings.HasPrefix(entry, ClaudeCLIOAuthEnv+"="):
+			continue
+		case strings.HasPrefix(entry, ClaudeCLIAuthTokenEnv+"="):
 			continue
 		case strings.HasPrefix(entry, ClaudeCLIBaseURLEnv+"="):
 			continue
@@ -325,10 +334,12 @@ func claudeEnv(base []string, authToken, oauthToken, baseURL, tempHome string) [
 	}
 
 	if baseURL != "" {
-		// Local mode: point the CLI at the translation proxy; inject placeholder sentinel.
-		// The proxy ignores the key value; its presence satisfies the CLI's auth check.
+		// Local mode: point the CLI at the translation proxy; inject placeholder sentinel as
+		// ANTHROPIC_AUTH_TOKEN (the gateway bearer-token var, not validated by the CLI).
+		// The proxy ignores the token value; its presence is sufficient for the CLI to
+		// proceed with requests to the custom ANTHROPIC_BASE_URL.
 		env = append(env, ClaudeCLIBaseURLEnv+"="+baseURL)
-		env = append(env, ClaudeCLIAuthEnv+"="+LocalProxyAuthPlaceholder)
+		env = append(env, ClaudeCLIAuthTokenEnv+"="+LocalProxyAuthPlaceholder)
 	} else {
 		// Cloud mode: OAuth token preferred over API key when both present (ADR 033).
 		if strings.TrimSpace(oauthToken) != "" {

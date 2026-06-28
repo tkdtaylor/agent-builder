@@ -14,12 +14,13 @@ returned 7×200 OK but the Claude Code CLI refused to run, printing:
 Not logged in · Please run /login
 ```
 
-Root cause 1 (FINDING 1): `claudeEnv` with `baseURL != ""` (local entry) creates a
-fresh temp `HOME` (no stored OAuth) AND injects NO `ANTHROPIC_API_KEY`. The CLI has
-zero credentials and refuses to talk to the custom `ANTHROPIC_BASE_URL`, even though
-the translation proxy does not validate the key value. The fix is to inject a fixed
-placeholder sentinel as `ANTHROPIC_API_KEY` for local entries. The proxy ignores the
-key value; its presence satisfies the CLI's local auth-state check.
+Root cause 1 (FINDING 1 — CORRECTED 2026-06-28 post-merge): `claudeEnv` with
+`baseURL != ""` (local entry) injects a fixed placeholder sentinel, but the current
+Claude Code CLI v2.1.150 validates `ANTHROPIC_API_KEY` as a real Anthropic credential
+and rejects a placeholder (prints `Not logged in`). The fix is to inject the placeholder
+as `ANTHROPIC_AUTH_TOKEN` instead — this is the gateway/proxy bearer-token env var the
+CLI passes straight through to a custom `ANTHROPIC_BASE_URL` without validation. The
+proxy ignores the token value; its presence satisfies the CLI's auth flow.
 
 Root cause 2 (FINDING 2): `ConfigFromEnv` in `internal/runtime/run.go` unconditionally
 errors when neither `ANTHROPIC_API_KEY` nor `CLAUDE_CODE_OAUTH_TOKEN` is set, even
@@ -51,6 +52,8 @@ would drift. Consulting the loader directly keeps the single source of truth.
 **Const name for the sentinel:** `LocalProxyAuthPlaceholder = "local-proxy-no-auth"`
 defined in `internal/executor/claude_cli.go` alongside the existing auth-env constants.
 The value is deliberately non-secret, documented, and obviously not a real credential.
+This constant is injected as `ANTHROPIC_AUTH_TOKEN` (the CLI's gateway bearer-token var),
+not `ANTHROPIC_API_KEY` (which the CLI validates as a real Anthropic credential per v2.1.150).
 
 ## Requirements coverage
 
@@ -74,7 +77,7 @@ The value is deliberately non-secret, documented, and obviously not a real crede
 
 ## Test cases
 
-### TC-101-01 — claudeEnv (local mode) injects placeholder sentinel as ANTHROPIC_API_KEY
+### TC-101-01 — claudeEnv (local mode) injects placeholder sentinel as ANTHROPIC_AUTH_TOKEN
 
 - **Requirement:** REQ-101-01
 - **Level:** L2 (unit test)
@@ -88,18 +91,20 @@ The `baseEnv` slice contains arbitrary prior values for `ANTHROPIC_API_KEY` and
 
 **Expected output:**
 - The returned `env` slice contains exactly one entry matching
-  `"ANTHROPIC_API_KEY=" + executor.LocalProxyAuthPlaceholder`.
-- The value of `ANTHROPIC_API_KEY` equals `executor.LocalProxyAuthPlaceholder`
+  `"ANTHROPIC_AUTH_TOKEN=" + executor.LocalProxyAuthPlaceholder`.
+- The value of `ANTHROPIC_AUTH_TOKEN` equals `executor.LocalProxyAuthPlaceholder`
   (assert `==`, not merely non-empty).
 - `executor.LocalProxyAuthPlaceholder` is a non-empty named constant (`"local-proxy-no-auth"`
   or equivalent fixed sentinel).
 - The returned env also contains `"ANTHROPIC_BASE_URL=http://localhost:8080"`.
+- The returned env does NOT contain any entry with the prefix `"ANTHROPIC_API_KEY="`.
 - The returned env does NOT contain any entry with the prefix `"CLAUDE_CODE_OAUTH_TOKEN="`.
 - Neither `"real-operator-key"` nor `"real-oauth"` appears anywhere in the returned env
   (assert via `strings.Join(env, " ")` contains neither string).
 
-**Rationale:** The placeholder satisfies the CLI's auth check; the real credentials
-are not forwarded to the local entry.
+**Rationale:** The placeholder as `ANTHROPIC_AUTH_TOKEN` (the gateway bearer-token var)
+bypasses the CLI's real-credential validation; the real credentials are not forwarded
+to the local entry.
 
 ---
 
@@ -113,10 +118,10 @@ are not forwarded to the local entry.
 baseURL="http://localhost:8080", tempHome="/tmp/h")`.
 
 **Expected output:**
-- The `ANTHROPIC_API_KEY` value in the returned env equals
+- The `ANTHROPIC_AUTH_TOKEN` value in the returned env equals
   `executor.LocalProxyAuthPlaceholder` — NOT `"sk-ant-realkey"`.
-- Assert `apiKeyValue != "sk-ant-realkey"` (the operator's real key was NOT forwarded).
-- Assert `apiKeyValue == executor.LocalProxyAuthPlaceholder`.
+- Assert `authTokenValue != "sk-ant-realkey"` (the operator's real key was NOT forwarded).
+- Assert `authTokenValue == executor.LocalProxyAuthPlaceholder`.
 
 **Rationale:** The invariant "no real cloud credential reaches a local entry" is
 explicitly checked as a negative assertion, not just implied by the positive one.
@@ -136,6 +141,7 @@ tempHome="/tmp/h")` (empty baseURL = cloud mode).
 - The returned env contains `"ANTHROPIC_API_KEY=sk-ant-prod"` (exact real value).
 - The returned env does NOT contain `executor.LocalProxyAuthPlaceholder`.
 - The returned env does NOT contain `"ANTHROPIC_BASE_URL="` (no base-URL set for cloud).
+- The returned env does NOT contain `"ANTHROPIC_AUTH_TOKEN="` (not used in cloud mode).
 - `CLAUDE_CODE_OAUTH_TOKEN` is absent (no OAuth token passed).
 
 Call `claudeEnv(baseEnv, authToken="sk-ant-prod", oauthToken="oauth-tok", baseURL="",
@@ -143,6 +149,7 @@ tempHome="/tmp/h")` (OAuth preferred):
 
 - The returned env contains `"CLAUDE_CODE_OAUTH_TOKEN=oauth-tok"`.
 - The returned env does NOT contain `"ANTHROPIC_API_KEY="` (OAuth preferred per ADR 033).
+- The returned env does NOT contain `"ANTHROPIC_AUTH_TOKEN="` (not used in cloud mode).
 - The returned env does NOT contain `executor.LocalProxyAuthPlaceholder`.
 
 **Rationale:** This is a regression guard. Task 101 must not alter the cloud-entry
@@ -216,15 +223,18 @@ Fail-closed when any cloud entry is present or when no entries are configured at
 
 **L2 part (CI-automatable):** Call `NewClaudeCLIFromEntry` with a local entry
 (`SecretRef=""`, `Endpoint="http://localhost:8080"`) and a stub subprocess that:
-1. Checks that `ANTHROPIC_API_KEY` is set and non-empty in the subprocess env.
+1. Checks that `ANTHROPIC_AUTH_TOKEN` is set and non-empty in the subprocess env.
 2. Checks that `ANTHROPIC_BASE_URL` is set to `"http://localhost:8080"` in the
    subprocess env.
-3. Writes a valid branch name to the branch-file path and exits 0.
+3. Checks that `ANTHROPIC_API_KEY` is NOT set in the subprocess env.
+4. Writes a valid branch name to the branch-file path and exits 0.
 
-Assert: `Result.OK == true` and the stub captured both expected env vars.
+Assert: `Result.OK == true` and the stub captured both expected env vars (AUTH_TOKEN
+and BASE_URL) and confirmed API_KEY is absent.
 
 This test replaces TC-091-03's negative assertion ("no cloud auth vars") with the
-corrected behavior: a placeholder key IS present, ANTHROPIC_BASE_URL IS present.
+corrected behavior: a placeholder AUTH_TOKEN IS present, ANTHROPIC_BASE_URL IS present,
+and API_KEY is absent.
 
 **L6 operator confirmation (not CI-automatable):** On the 2026-06-28 live run,
 `ANTHROPIC_BASE_URL` pointed at the LiteLLM proxy at `http://localhost:4000` and the

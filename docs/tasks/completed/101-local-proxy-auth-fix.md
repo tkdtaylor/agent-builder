@@ -12,14 +12,14 @@ Fix two confirmed bugs that blocked the pure-local (translation-proxy) deploymen
 driving the Claude Code CLI during the live L6 run of task 094 on 2026-06-28. Both
 bugs are reproducible in isolation.
 
-**FINDING 1 (the blocker):** For a local registry entry (`entry.SecretRef == ""`),
-`claudeEnv` in `internal/executor/claude_cli.go` injects NO `ANTHROPIC_API_KEY` AND
-creates a fresh temp `HOME` (no stored OAuth). The Claude Code CLI has zero credentials
-and refuses to run, printing `"Not logged in · Please run /login"`. The LiteLLM
-translation proxy does not validate the key value — it already returned 7×200 OK
-before the CLI failure. Fix: inject a fixed placeholder sentinel as `ANTHROPIC_API_KEY`
-for local entries. The placeholder satisfies the CLI's local auth check; the proxy
-ignores it.
+**FINDING 1 (the blocker — CORRECTED 2026-06-28 post-merge):** For a local registry
+entry (`entry.SecretRef == ""`), the current Claude Code CLI v2.1.150 validates
+`ANTHROPIC_API_KEY` as a real Anthropic credential and rejects a placeholder (prints
+`"Not logged in · Please run /login"`). The fix is to inject the placeholder as
+`ANTHROPIC_AUTH_TOKEN` instead — this is the gateway/proxy bearer-token env var the
+CLI passes straight through to a custom `ANTHROPIC_BASE_URL` without validation.
+The LiteLLM translation proxy ignores the token value; its presence is sufficient
+for the CLI to proceed.
 
 **FINDING 2:** `ConfigFromEnv` in `internal/runtime/run.go` (line ~224)
 unconditionally errors `"run config: missing at least one of ANTHROPIC_API_KEY or
@@ -32,13 +32,15 @@ operator must not need a dummy cloud credential to start the orchestrator.
 
 `claudeEnv` (in `internal/executor/claude_cli.go`) MUST, when `baseURL != ""`
 (local entry mode):
-1. Inject `ANTHROPIC_API_KEY` set to the value of a named package-level constant
+1. Inject `ANTHROPIC_AUTH_TOKEN` set to the value of a named package-level constant
    `LocalProxyAuthPlaceholder` (value: `"local-proxy-no-auth"` or a similarly
-   unambiguous fixed string).
+   unambiguous fixed string). This is the gateway bearer-token var the CLI passes
+   through to the custom ANTHROPIC_BASE_URL without credential validation.
 2. Continue injecting `ANTHROPIC_BASE_URL=baseURL` (unchanged).
-3. NOT inject `CLAUDE_CODE_OAUTH_TOKEN`.
-4. NOT inject the operator's real `authToken` or `oauthToken` arguments as
-   `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN`.
+3. NOT inject `ANTHROPIC_API_KEY`.
+4. NOT inject `CLAUDE_CODE_OAUTH_TOKEN`.
+5. NOT inject the operator's real `authToken` or `oauthToken` arguments as
+   `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_OAUTH_TOKEN`.
 
 The sentinel MUST be:
 - Non-empty (satisfies the CLI's auth check).
@@ -97,8 +99,10 @@ The task is done when:
 
 1. `executor.LocalProxyAuthPlaceholder` is defined as a named constant in
    `internal/executor/claude_cli.go`.
-2. `claudeEnv` injects `ANTHROPIC_API_KEY=LocalProxyAuthPlaceholder` for local
-   entries and does not inject `CLAUDE_CODE_OAUTH_TOKEN` or the operator's real tokens.
+2. `claudeEnv` injects `ANTHROPIC_AUTH_TOKEN=LocalProxyAuthPlaceholder` for local
+   entries (corrected 2026-06-28: the current Claude CLI rejects a placeholder
+   `ANTHROPIC_API_KEY` with `Not logged in`) and does not inject `ANTHROPIC_API_KEY`,
+   `CLAUDE_CODE_OAUTH_TOKEN`, or the operator's real tokens.
 3. `configFromEnvWithSource` skips the cloud-credential check when all enabled
    registry entries are local (empty `SecretRef`).
 4. `go test -count=1 ./internal/executor/... ./internal/runtime/...` passes, with
@@ -106,8 +110,10 @@ The task is done when:
    spec (not smoke tests).
 5. `make check` passes (all fitness checks green, including `fitness-supervisor-isolation`).
 6. `docs/spec/configuration.md` is updated in the same commit:
-   - `ANTHROPIC_API_KEY` row: note that for local entries a placeholder sentinel is
-     injected (not the real operator key); cite `LocalProxyAuthPlaceholder`.
+   - `ANTHROPIC_API_KEY` row: note it is NOT injected for local entries (local entries
+     use `ANTHROPIC_AUTH_TOKEN` instead).
+   - `ANTHROPIC_AUTH_TOKEN` row: note that for local entries the placeholder sentinel
+     is injected here (not the real operator key); cite `LocalProxyAuthPlaceholder`.
    - `CLAUDE_CODE_OAUTH_TOKEN` row: note it is never injected for local entries.
    - Executor Registry Configuration section: note that a pure-local registry (all
      entries with empty `SecretRef`) requires no `ANTHROPIC_API_KEY` or
