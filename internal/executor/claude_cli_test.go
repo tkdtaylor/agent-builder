@@ -25,6 +25,10 @@ func (f *fakeSecretSource) PublisherTokens() (string, string) {
 	return f.gitToken, f.githubToken
 }
 
+func (f *fakeSecretSource) NamedProviderToken(ref string) (string, error) {
+	return "", secrets.ErrSecretNotFound
+}
+
 // Compile-time assertion: fakeSecretSource satisfies secrets.SecretSource.
 var _ secrets.SecretSource = (*fakeSecretSource)(nil)
 

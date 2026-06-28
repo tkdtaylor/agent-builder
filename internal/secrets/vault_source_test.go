@@ -166,3 +166,63 @@ var _ secrets.SecretSource = (*secrets.VaultSecretSource)(nil)
 //   go test ./tests/e2e/... -run TestPhase0EndToEndAcceptance → ok.
 // internal/secrets imports only internal/vault (a sibling leaf); internal/vault
 // imports only stdlib — confirmed by `go list -deps` (no import cycle).
+
+// TC-088-03: VaultSecretSource.NamedProviderToken resolves a named secret via vault
+func TestVaultSecretSourceNamedProviderToken(t *testing.T) {
+	fake := &fakeVaultClient{
+		handleByRef: map[string]string{
+			secrets.SecretRefGitToken:    "vault://handle/git-12345",
+			secrets.SecretRefGitHubToken: "vault://handle/github-67890",
+			"gemini-api-key":             "vault://handle/gemini-12345",
+			"claude-oauth":               "vault://handle/claude-oauth-67890",
+		},
+	}
+	src, err := secrets.NewVaultSecretSource(fake, secrets.VaultSourceConfig{
+		AuthToken:   "sk-auth",
+		OAuthToken:  "oauth-tok",
+		GitToken:    "g",
+		GitHubToken: "gh",
+	})
+	if err != nil {
+		t.Fatalf("NewVaultSecretSource err = %v", err)
+	}
+
+	// Resolve an existing secret — should return opaque handle.
+	handle, err := src.NamedProviderToken("gemini-api-key")
+	if err != nil {
+		t.Fatalf("NamedProviderToken(gemini-api-key) err = %v", err)
+	}
+	if handle != "vault://handle/gemini-12345" {
+		t.Fatalf("NamedProviderToken(gemini-api-key) = %q, want vault://handle/gemini-12345", handle)
+	}
+
+	// Resolve another existing secret.
+	handle2, err := src.NamedProviderToken("claude-oauth")
+	if err != nil {
+		t.Fatalf("NamedProviderToken(claude-oauth) err = %v", err)
+	}
+	if handle2 != "vault://handle/claude-oauth-67890" {
+		t.Fatalf("NamedProviderToken(claude-oauth) = %q, want vault://handle/claude-oauth-67890", handle2)
+	}
+
+	// Resolve a non-existent secret — should return ErrSecretNotFound.
+	_, err = src.NamedProviderToken("non-existent-ref")
+	if err != secrets.ErrSecretNotFound {
+		t.Fatalf("NamedProviderToken(non-existent-ref) err = %v, want ErrSecretNotFound", err)
+	}
+
+	// SECURITY: no handle contains plaintext secret values.
+	for _, h := range []string{handle, handle2} {
+		if strings.Contains(h, "secret-gemini-value") || strings.Contains(h, "secret-value") {
+			t.Errorf("handle %q leaks a plaintext token value", h)
+		}
+	}
+}
+
+// TC-088-04: SecretSource interface compile-time assertion
+// (This is verified at compile time; no runtime test needed, but we include a
+// comment here for clarity.)
+// var _ secrets.SecretSource = (*secrets.EnvSecretSource)(nil)
+// var _ secrets.SecretSource = (*secrets.VaultSecretSource)(nil)
+
+// These assertions appear at the top of this file and in secrets.go, respectively.

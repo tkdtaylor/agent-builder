@@ -41,6 +41,10 @@ var _ vaultPutResolver = (*vault.Client)(nil)
 // publication tokens now live in vault; the host-side publisher reads its tokens
 // from Config directly, not through this source (see the host-publisher note in
 // task 066).
+//
+// NamedProviderToken resolves a named provider secret via vault's put/resolve
+// round-trip. The vault client is retained for late-bound resolution at dispatch
+// time (ADR 043).
 type VaultSecretSource struct {
 	authToken  string
 	oauthToken string
@@ -48,6 +52,9 @@ type VaultSecretSource struct {
 	gitHandle    string
 	githubHandle string
 	handles      []string
+
+	client vaultPutResolver
+	ttl    int
 }
 
 // Compile-time assertion: *VaultSecretSource satisfies SecretSource.
@@ -74,7 +81,8 @@ type VaultSourceConfig struct {
 // handle). It fails loud if a non-empty token cannot be put or resolved.
 //
 // The client parameter is the vault put/resolve seam — production passes a
-// *vault.Client; tests pass a fake.
+// *vault.Client; tests pass a fake. The client is retained for late-bound
+// NamedProviderToken resolution at dispatch time.
 func NewVaultSecretSource(client vaultPutResolver, cfg VaultSourceConfig) (*VaultSecretSource, error) {
 	if client == nil {
 		return nil, fmt.Errorf("vault secret source: nil vault client")
@@ -87,6 +95,8 @@ func NewVaultSecretSource(client vaultPutResolver, cfg VaultSourceConfig) (*Vaul
 	src := &VaultSecretSource{
 		authToken:  cfg.AuthToken,
 		oauthToken: cfg.OAuthToken,
+		client:     client,
+		ttl:        ttl,
 	}
 
 	if cfg.GitToken != "" {
@@ -150,4 +160,21 @@ func (s *VaultSecretSource) Handles() []string {
 	out := make([]string, len(s.handles))
 	copy(out, s.handles)
 	return out
+}
+
+// NamedProviderToken resolves a named provider secret via vault's resolve
+// method. The ref is expected to already exist in vault (put by an earlier
+// call or external process). Returns an opaque handle (safe to log) and
+// ErrSecretNotFound if the ref is not in vault or resolve fails.
+func (s *VaultSecretSource) NamedProviderToken(ref string) (string, error) {
+	result, err := s.client.Resolve(ref, s.ttl)
+	if err != nil {
+		// Check if this is a "not found" error from vault.
+		// The vault client returns errors like "vault resolve <ref>: <vault error>".
+		// For now, we map all resolve errors to ErrSecretNotFound to match the
+		// interface contract. In the future, we might distinguish between
+		// "not found" and transport errors.
+		return "", ErrSecretNotFound
+	}
+	return result.Handle, nil
 }

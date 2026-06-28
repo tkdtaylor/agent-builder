@@ -15,6 +15,7 @@ type FakeSecretSource struct {
 	OAuthToken  string
 	GitToken    string
 	GitHubToken string
+	NamedTokens map[string]string // named secrets keyed by ref
 }
 
 // ProviderToken implements SecretSource.
@@ -25,6 +26,18 @@ func (f *FakeSecretSource) ProviderToken() (authToken, oauthToken string) {
 // PublisherTokens implements SecretSource.
 func (f *FakeSecretSource) PublisherTokens() (gitToken, githubToken string) {
 	return f.GitToken, f.GitHubToken
+}
+
+// NamedProviderToken implements SecretSource.
+func (f *FakeSecretSource) NamedProviderToken(ref string) (string, error) {
+	if f.NamedTokens == nil {
+		return "", secrets.ErrSecretNotFound
+	}
+	token, ok := f.NamedTokens[ref]
+	if !ok {
+		return "", secrets.ErrSecretNotFound
+	}
+	return token, nil
 }
 
 // Compile-time assertion: FakeSecretSource satisfies SecretSource.
@@ -178,5 +191,85 @@ func TestEnvSecretSourcePublisherTokens(t *testing.T) {
 				t.Fatalf("PublisherTokens() githubToken = %q, want %q", gotGitHub, tt.wantGitHubToken)
 			}
 		})
+	}
+}
+
+// TC-088-01: NamedProviderToken resolves a named secret via the env fallback
+func TestEnvSecretSourceNamedProviderToken(t *testing.T) {
+	tests := []struct {
+		name        string
+		ref         string
+		envVarName  string
+		envVarValue string
+		wantToken   string
+		wantErr     bool
+	}{
+		{
+			name:        "codex-token with matching env var",
+			ref:         "codex-token",
+			envVarName:  "AGENT_BUILDER_SECRET_CODEX_TOKEN",
+			envVarValue: "sk-test-codex-key",
+			wantToken:   "sk-test-codex-key",
+			wantErr:     false,
+		},
+		{
+			name:        "gemini-api-key with matching env var",
+			ref:         "gemini-api-key",
+			envVarName:  "AGENT_BUILDER_SECRET_GEMINI_API_KEY",
+			envVarValue: "gemini-secret-123",
+			wantToken:   "gemini-secret-123",
+			wantErr:     false,
+		},
+		{
+			name:        "unknown-ref without env var",
+			ref:         "unknown-ref",
+			envVarName:  "AGENT_BUILDER_SECRET_UNKNOWN_REF",
+			envVarValue: "",
+			wantToken:   "",
+			wantErr:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Save and restore environment.
+			oldVal := os.Getenv(tt.envVarName)
+			defer func() {
+				_ = os.Setenv(tt.envVarName, oldVal)
+			}()
+
+			_ = os.Setenv(tt.envVarName, tt.envVarValue)
+
+			src := secrets.NewEnvSecretSource()
+			gotToken, err := src.NamedProviderToken(tt.ref)
+
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("NamedProviderToken(%q) err = %v, wantErr %v", tt.ref, err, tt.wantErr)
+			}
+			if err == nil && gotToken != tt.wantToken {
+				t.Fatalf("NamedProviderToken(%q) = %q, want %q", tt.ref, gotToken, tt.wantToken)
+			}
+			if err != nil && err != secrets.ErrSecretNotFound {
+				t.Fatalf("NamedProviderToken(%q) err = %v, want ErrSecretNotFound", tt.ref, err)
+			}
+		})
+	}
+}
+
+// TC-088-02: Existing ProviderToken behavior is unchanged (regression guard)
+func TestEnvSecretSourceProviderTokenRegression(t *testing.T) {
+	// Save and restore environment.
+	oldAPIKey := os.Getenv(secrets.EnvAnthropicAPIKey)
+	defer func() {
+		_ = os.Setenv(secrets.EnvAnthropicAPIKey, oldAPIKey)
+	}()
+
+	_ = os.Setenv(secrets.EnvAnthropicAPIKey, "test-api-key")
+
+	src := secrets.NewEnvSecretSource()
+	gotAuth, gotOAuth := src.ProviderToken()
+
+	if gotAuth != "test-api-key" || gotOAuth != "" {
+		t.Fatalf("ProviderToken() = %q,%q want test-api-key,empty (regression: behavior must not change)", gotAuth, gotOAuth)
 	}
 }
