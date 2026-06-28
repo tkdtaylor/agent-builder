@@ -527,6 +527,65 @@ func (o *Orchestrator) HasPendingPlan(goalID string) bool
 
 ---
 
+### Orchestrator↔worker transport (`internal/channel/worker`)
+
+The transport adapter carries work-items and results across the orchestrator↔worker
+trust boundary (ADR 042) wrapped in `internal/envelope.Envelope` objects — Ed25519-signed,
+X25519+AEAD-sealed, replay-checked. Per ADR 048 the v1 wire is **in-process** (matching
+task 081's sequential dispatch), but the envelope is the load-bearing security layer
+regardless of the wire (tamper-evidence, provenance, replay resistance, and a ready seam
+for a future out-of-process worker). The package is a leaf (F-011): its only direct
+`internal/` imports are `internal/envelope`, `internal/supervisor`, and `internal/audit`.
+
+```go
+// Sender wraps a payload in a signed+sealed envelope.
+type Sender struct{ /* unexported */ }
+func NewWorkItemSender(SenderConfig) *Sender // orchestrator → worker (From=orchestrator, To=worker)
+func NewResultSender(SenderConfig) *Sender   // worker → orchestrator (From=worker, To=orchestrator)
+func (s *Sender) DispatchWorkItem(supervisor.Task) (envelope.Envelope, error)
+func (s *Sender) DispatchResult(supervisor.Result) (envelope.Envelope, error)
+
+// Receiver verifies+opens an inbound envelope, then asserts the From/To roles.
+type Receiver struct{ /* unexported */ }
+func NewWorkItemReceiver(ReceiverConfig) *Receiver // worker side; asserts orchestrator→worker
+func NewResultReceiver(ReceiverConfig) *Receiver   // orchestrator side; asserts worker→orchestrator
+func (r *Receiver) ReceiveWorkItem(envelope.Envelope) (supervisor.Task, error)
+func (r *Receiver) ReceiveResult(envelope.Envelope) (supervisor.Result, error)
+
+// Startup key-material loader (REQ-083-05).
+const EnvWorkerSigningKey = "AGENT_BUILDER_WORKER_SIGNING_KEY"
+var ErrMissingSigningKey error // NAMED sentinel
+func LoadSigningKey() (ed25519.PrivateKey, error)
+func NewWorkItemSenderFromEnv(orchXPriv, workerXPub [32]byte) (*Sender, error)
+
+var ErrRoleMismatch error // verified envelope From/To ≠ expected direction (task 098 SEC-001)
+```
+
+- **Key roles (mirror the Telegram adapter):** work-items — orchestrator signs (its
+  Ed25519 priv) + seals (its X25519 priv → worker X25519 pub); results — worker signs +
+  seals (→ orchestrator X25519 pub). A fresh `crypto/rand` nonce per message (from
+  `envelope.Seal`), never reused.
+- **Inbound ordering + role assertion:** receivers run `envelope.VerifyAndOpen` (verify →
+  replay check → open) then assert `env.From`/`env.To` match the expected direction
+  before returning the payload (task 098 SEC-001 carry-forward — key separation is not
+  relied on alone). On any rejection the receiver returns the zero `Task`/`Result` plus a
+  classified error and emits an `audit.ActionChannelReject` event whose `Detail.Reason`
+  carries the classification (`bad_signature`, `unknown_key`, `replay_detected`,
+  `role_mismatch`); plaintext and key material never appear in the event or in logs.
+- **Startup fail-closed (REQ-083-05):** `LoadSigningKey` / `NewWorkItemSenderFromEnv`
+  fail at construction (not at first receipt) when `AGENT_BUILDER_WORKER_SIGNING_KEY` is
+  unset or names an absent/malformed key file; the error satisfies
+  `errors.Is(err, ErrMissingSigningKey)` and names the variable.
+- **Integration depth (ADR 048 §1):** v1 wires the transport's startup key-material check
+  and the envelope wrap/unwrap seam; full live dispatch through
+  `Orchestrator.dispatchPlan` (and N-concurrent workers) is task 086. An out-of-process /
+  cross-host concrete (e.g. agent-mesh A2A, ADR 048 §5) can implement the same seam later
+  without changing the orchestrator.
+- **Stability:** governed by ADR 048 (extends ADR 042/045). Leaf isolation enforced by
+  `make fitness-worker-transport-isolation` (F-011).
+
+---
+
 ### Interface: supervisor dispatch lifecycle seams
 
 ```go
