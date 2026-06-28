@@ -151,7 +151,7 @@ OK          bool      true only after successful subprocess exit and branch capt
 ### State: Executor Registry
 
 - **Shape:** `*registry.Catalog` stores an in-process map of executor entries keyed by stable ID, and a deterministic ordering list for stable list operations.
-- **Owner:** callers construct it with `registry.NewCatalog()` and add entries via `RegisterEntry(e RegistryEntry)`. The runtime wiring initializes entries from `registry.LoadFromEnv()`.
+- **Owner:** callers construct it with `registry.NewCatalog()` and add entries via `RegisterEntry(e RegistryEntry)`. The runtime wiring initializes the catalog from `registry.LoadFromEnv()` at dispatch (ADR 043, task 095); when the loader returns no entries, the runtime synthesizes a single default Claude entry (`claude-default`, capability tier 1, cost weight 1) so single-provider deployments still resolve to the Claude CLI Executor.
 - **Lifetime:** process-local; no registry state is persisted. Entries are registered before dispatch and remain stable for the duration of a run.
 - **Concurrency rules:** read operations (`LookupEntry`, `ListEntries`) use reader locks. Write operations (`RegisterEntry`) use writer locks and panic on duplicate IDs.
 - **Bounds:** one `RegisterEntry` call adds at most one entry; duplicate IDs panic.

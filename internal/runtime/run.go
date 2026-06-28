@@ -19,6 +19,8 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/policy"
 	branchpub "github.com/tkdtaylor/agent-builder/internal/publisher"
 	"github.com/tkdtaylor/agent-builder/internal/recipe"
+	"github.com/tkdtaylor/agent-builder/internal/registry"
+	"github.com/tkdtaylor/agent-builder/internal/router"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox/execsandbox"
 	"github.com/tkdtaylor/agent-builder/internal/sandbox/podman"
@@ -347,17 +349,124 @@ func newProductionGateFactory() supervisor.Gate {
 	return gate
 }
 
-// stubResolveExecutor maps a RoutingSpec to a concrete supervisor.Executor.
-// This is a temporary stand-in that always returns the Claude CLI executor.
-// TODO: this function is replaced by the real registry+router in task 095.
-func stubResolveExecutor(spec recipe.RoutingSpec, config Config) supervisor.Executor {
-	_ = spec // ignore the routing spec for now; the stub always returns Claude CLI
-	return executor.NewClaudeCLI(executor.ClaudeCLIConfig{
-		CLIPath:    config.ClaudeCLI,
-		Worktree:   config.Worktree,
-		AuthToken:  config.ClaudeToken,
-		OAuthToken: config.ClaudeOAuthToken,
-	})
+// defaultClaudeEntryID is the synthetic registry entry the runtime injects when
+// no AGENT_BUILDER_REGISTRY_* entries are configured. It preserves the original
+// task-077 behavior (route the coding-agent recipe to the Claude CLI executor
+// built from Config) so existing single-provider deployments are zero-drift: the
+// router selects this one entry and the runtime builds the Claude executor from
+// Config exactly as the old stub did.
+const defaultClaudeEntryID = "claude-default"
+
+// buildCatalog is the seam runtime.Run uses to obtain the executor catalog. The
+// production implementation reads AGENT_BUILDER_REGISTRY_* via
+// registry.LoadFromEnv and synthesizes the default Claude entry when none are
+// configured. Tests override it to inject a fake catalog (empty, or multi-entry)
+// without setting process env vars.
+var buildCatalog = func(config Config) (*registry.Catalog, error) {
+	entries, err := registry.LoadFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("run: load executor registry: %w", err)
+	}
+
+	catalog := registry.NewCatalog()
+	if len(entries) == 0 {
+		// No registry entries configured: synthesize the default Claude entry so
+		// the coding-agent recipe still routes to Claude (zero-drift with the
+		// task-077 stub). The runtime builds the concrete executor from Config —
+		// the entry only carries the routing attributes the router selects on.
+		catalog.RegisterEntry(defaultClaudeEntry(config))
+		return catalog, nil
+	}
+	for _, e := range entries {
+		catalog.RegisterEntry(e)
+	}
+	return catalog, nil
+}
+
+// defaultClaudeEntry constructs the synthetic single-provider Claude entry. It is
+// the cheapest possible eligible entry at the base capability tier so the router
+// always selects it when it is the only entry. CapabilityTier 1 matches the
+// coding-agent recipe's MinCapability floor.
+func defaultClaudeEntry(_ Config) registry.RegistryEntry {
+	return registry.RegistryEntry{
+		ID:             defaultClaudeEntryID,
+		Harness:        registry.HarnessClaudeCLI,
+		CapabilityTier: 1,
+		CostWeight:     1,
+		Availability:   registry.Availability{Status: registry.AvailStatusAvailable},
+	}
+}
+
+// resolveExecutor resolves a recipe's RoutingSpec to a concrete
+// supervisor.Executor via the real registry+router (ADR 043). It builds the
+// catalog (buildCatalog), constructs a Router over it, and asks the router to
+// Select the cheapest eligible entry at sufficient capability. The selected
+// entry's harness determines which concrete executor is constructed.
+//
+// It returns ErrNoEligibleExecutor (wrapped, descriptive) when no entry
+// qualifies, so runtime.Run can fail before any sandbox creation.
+func resolveExecutor(spec recipe.RoutingSpec, config Config) (supervisor.Executor, registry.RegistryEntry, error) {
+	catalog, err := buildCatalog(config)
+	if err != nil {
+		return nil, registry.RegistryEntry{}, err
+	}
+
+	r := router.New(catalog)
+	entry, err := r.Select(toRouterSpec(spec))
+	if err != nil {
+		return nil, registry.RegistryEntry{}, fmt.Errorf("run: resolve executor for routing spec (min_capability=%d): %w", spec.MinCapability, err)
+	}
+
+	exec, err := buildExecutorForEntry(entry, config)
+	if err != nil {
+		return nil, registry.RegistryEntry{}, err
+	}
+	return exec, entry, nil
+}
+
+// toRouterSpec maps the recipe-leaf RoutingSpec to the router's equivalent value
+// type. The two types are intentionally decoupled (the recipe leaf must not
+// import the router); the assembler is the single site that bridges them.
+func toRouterSpec(spec recipe.RoutingSpec) router.RoutingSpec {
+	hint := router.SensitivityNone
+	if spec.SensitivityHint == recipe.SensitivitySensitive {
+		hint = router.SensitivitySensitive
+	}
+	return router.RoutingSpec{
+		MinCapability:   spec.MinCapability,
+		SensitivityHint: hint,
+	}
+}
+
+// buildExecutorForEntry constructs the concrete supervisor.Executor for a
+// selected registry entry.
+//
+// The synthetic default Claude entry is built from Config (CLI path + tokens)
+// exactly as the task-077 stub did — this is the zero-drift path for
+// single-provider deployments. All other entries are configured via the
+// AGENT_BUILDER_REGISTRY_* env contract and are constructed through their
+// harness adapter, with credentials brokered by the env-backed SecretSource.
+func buildExecutorForEntry(entry registry.RegistryEntry, config Config) (supervisor.Executor, error) {
+	if entry.ID == defaultClaudeEntryID {
+		return executor.NewClaudeCLI(executor.ClaudeCLIConfig{
+			CLIPath:    config.ClaudeCLI,
+			Worktree:   config.Worktree,
+			AuthToken:  config.ClaudeToken,
+			OAuthToken: config.ClaudeOAuthToken,
+		}), nil
+	}
+
+	src := secrets.NewEnvSecretSource()
+	switch entry.Harness {
+	case registry.HarnessClaudeCLI:
+		return executor.NewClaudeCLIFromEntry(entry, src, config.Worktree), nil
+	case registry.HarnessCodexCLI:
+		return executor.NewCodexCLI(entry, src, config.Worktree), nil
+	case registry.HarnessGeminiCLI:
+		return executor.NewGeminiCLI(entry, src, config.Worktree), nil
+	default:
+		return nil, fmt.Errorf("run: entry %q names unknown harness driver %q", entry.ID, entry.Harness)
+	}
 }
 
 // verifyGateExists asserts that the GateFactory is non-nil and produces a real,
@@ -439,9 +548,15 @@ func Run(config Config, stdout io.Writer) error {
 		return fmt.Errorf("run config: invalid %s: %w", EnvMaxAttempts, err)
 	}
 
-	// Resolve the recipe's RoutingSpec to a concrete executor via the stub resolver.
-	// stubResolveExecutor — replaced by registry+router in task 095.
-	exec := stubResolveExecutor(r.RoutingSpec, config)
+	// Resolve the recipe's RoutingSpec to a concrete executor via the real
+	// registry+router (ADR 043, task 095). This runs BEFORE any sandbox creation
+	// and before the audit sink is constructed, so an unresolvable routing spec
+	// (empty registry / all entries exhausted) fails the run without creating a
+	// box or emitting any audit event.
+	exec, _, err := resolveExecutor(r.RoutingSpec, config)
+	if err != nil {
+		return err
+	}
 
 	// Select the run backend: if AGENT_BUILDER_EXEC_SANDBOX_BIN is set, use execsandbox
 	// as the default; otherwise fall back to the Podman launcher.
@@ -484,7 +599,7 @@ func Run(config Config, stdout io.Writer) error {
 	// obligation can emit a policy-decision event even when the gate denies (task 073).
 	var auditSink audit.Sink
 	if config.AuditRecordPath != "" {
-		sink, err := newBlockSink(config)
+		sink, err := newAuditSink(config)
 		if err != nil {
 			return err
 		}
@@ -534,13 +649,13 @@ func Run(config Config, stdout io.Writer) error {
 	publisher := &resultSinkAdapter{sink: resultSink}
 
 	inBox := retryingInBoxLoop{
-		executor:     exec,
-		gate:         verifier,
-		worktree:     config.Worktree,
-		launcher:     config.ExecBoxLauncher,
-		statusWriter: tasksource.NewStatusWriter(config.TaskRoot, tasksource.DefaultTaskDirs...),
-		policy:       policy,
-		publisher:    publisher,
+		executor:      exec,
+		gate:          verifier,
+		worktree:      config.Worktree,
+		launcher:      config.ExecBoxLauncher,
+		statusWriter:  tasksource.NewStatusWriter(config.TaskRoot, tasksource.DefaultTaskDirs...),
+		policy:        policy,
+		publisher:     publisher,
 		publishRemote: config.PublishRemote,
 		publishSecrets: []string{
 			config.GitToken,
@@ -735,6 +850,13 @@ func resolvePolicyBin(configured string) (string, error) {
 	}
 	return resolved, nil
 }
+
+// newAuditSink is the seam runtime.Run uses to construct the audit Sink when
+// AGENT_BUILDER_AUDIT_RECORD is set. The production implementation is
+// newBlockSink (the os/exec-backed audit-trail block sink). Tests override it to
+// inject a FakeSink and assert exactly which audit events the run emits — in
+// particular, that the no-eligible-executor path (task 095) emits none.
+var newAuditSink = newBlockSink
 
 // newBlockSink resolves the audit-trail binary and verifies the chain logfile
 // path is writable, then constructs the production audit.BlockSink. It fails
