@@ -2,178 +2,211 @@
 
 **Linked task:** `docs/tasks/backlog/083-agent-mesh-adoption.md`
 **Written:** 2026-06-27
-**Revised:** 2026-06-27 — agent-mesh framing corrected per ADR 045: the shared envelope
-  leaf is `internal/envelope` (task 096), not a separate `internal/agentmesh` IPC client;
-  REQ-083-04/05 updated accordingly; dependency on 096 added. If agent-mesh's live
-  A2A transport between worker processes is also needed (distinct from envelope signing),
-  that is a clearly-separated concern deferred to task detailing after task 081 lands.
-**Status:** stub — blocked by task 081 (orchestrator core)
+**Revised:** 2026-06-28 — expanded from stub to concrete TC-083-01..05 per ADR 048
+  (in-process delivery v1 behind a transport-adapter seam; adapter package
+  `internal/channel/worker`; agent-mesh A2A deferred). ADR 045 fixed the sign/verify
+  primitive to `internal/envelope`; ADR 042 fixed the orchestrator↔worker boundary as a
+  trust boundary.
+**Status:** active
 
 ## Context
 
-The orchestrator↔worker transport provides signed, replay-resistant envelopes for
-work items dispatched to workers and results returned from workers. This ensures that
-work items cannot be forged and results cannot be replayed or tampered before the
-orchestrator accepts them.
+The orchestrator↔worker transport carries work-items (a sub-goal's `supervisor.Task`)
+from the orchestrator to a worker and results back from the worker, each wrapped in an
+`internal/envelope.Envelope` (Ed25519-signed, X25519+AEAD-sealed, replay-checked). Per
+ADR 048 the v1 wire is **in-process** (matching task 081's sequential dispatch), but the
+envelope is the load-bearing security layer regardless of the wire: tamper-evidence,
+provenance, replay resistance, and a ready seam for a future out-of-process worker.
 
-**ADR 045 (accepted 2026-06-27) corrects the original agent-mesh framing:**
+The transport adapter lives at `internal/channel/worker` (sibling of
+`internal/channel/telegram`). It is a **leaf**: its only `agent-builder/internal/`
+imports are `internal/envelope` and `internal/supervisor`. It also depends on
+`internal/audit` for the `Sink` rejection-event seam — see the note under TC-083-04 for
+why audit is on the allowed list alongside envelope+supervisor.
 
-- The original task assumed `internal/agentmesh` would be an IPC leaf client wrapping
-  an `agent-mesh` binary for sign/verify operations (similar to how `internal/audit`
-  wraps `audit-trail emit`).
-- The agent-mesh survey (ADR 045 §Context) found: agent-mesh is `package main` (not
-  importable), and exposes **no** sign/verify filter verb — only a two-process A2A
-  `serve`/`sendto` pair with no `sign <stdin> → envelope` one-shot. There is no binary
-  to wrap for the sign/verify operation.
-- **The sign/verify primitive is `internal/envelope` (task 096)**, the same shared leaf
-  that task 080 (Telegram adapter) uses. Both tasks import it; it is already the
-  correct factoring.
-- If task 083 additionally needs agent-mesh's **live A2A transport** (running `agent-mesh
-  serve` on workers and `agent-mesh sendto` from the orchestrator for actual TCP/HTTP
-  message delivery between processes), that is a **distinct and separately-scoped
-  concern** from the envelope signing. The scope of that A2A concern is to be confirmed
-  once task 081 (orchestrator core) lands — it may be that the orchestrator uses a
-  different in-process or gRPC transport instead, with `internal/envelope` providing
-  only the signing layer.
+### Key roles (mirrors the telegram adapter exactly)
 
-**Retained from the original spec (unchanged):** the task is blocked by task 081
-(orchestrator core must exist before the transport is needed). This task's
-REQ-083-04 and REQ-083-05 are revised below.
+- **Work-item dispatch (orchestrator → worker):** orchestrator signs with its Ed25519
+  private key (`orchEdPriv`), seals with its X25519 private key (`orchXPriv`) to the
+  worker's X25519 public key (`workerXPub`). Envelope `From="orchestrator"`,
+  `To="worker"`.
+- **Result return (worker → orchestrator):** worker signs with its Ed25519 private key
+  (`workerEdPriv`), seals with its X25519 private key (`workerXPriv`) to the
+  orchestrator's X25519 public key (`orchXPub`). Envelope `From="worker"`,
+  `To="orchestrator"`.
+
+### SEC carry-forwards
+
+- **Task 098 SEC-001:** after `Verify`+`Open` succeeds, the receiver MUST additionally
+  assert the envelope `From`/`To` match the expected roles for the direction. Key
+  separation alone is not sufficient — assert the declared roles too.
+- No plaintext work-item/result on any logged surface; no key material in logs.
+- Fresh per-message nonce (the nonce returned by `Seal`, which is `crypto/rand`-derived,
+  never reused).
 
 ## Requirements coverage
 
 | Req ID     | Description                                                                                       | Test cases  |
 |------------|---------------------------------------------------------------------------------------------------|-------------|
-| REQ-083-01 | Orchestrator sends work items to workers as Ed25519-signed envelopes (via `internal/envelope`)    | TC-083-01   |
-| REQ-083-02 | Worker results returned to orchestrator as signed envelopes; orchestrator verifies before accepting | TC-083-02  |
-| REQ-083-03 | Replayed envelope (same nonce) is rejected at the receiving end; audit event emitted             | TC-083-03   |
-| REQ-083-04 | The transport adapter (`internal/channel/worker` or equivalent) is a leaf: no other `agent-builder/internal/` imports except `internal/envelope` and `internal/supervisor`; a fitness check asserts this | TC-083-04 |
-| REQ-083-05 | Orchestrator worker-transport startup fails loudly when required key material or transport config is missing | TC-083-05 |
-
-**Notes on the revised REQ-083-04 and REQ-083-05:**
-- REQ-083-04 no longer references `internal/agentmesh` (that package does not exist
-  and was predicated on a non-existent binary IPC seam). The transport adapter package
-  name and its exact isolation invariant are to be confirmed post-task-081; the requirement
-  is that whatever adapter package is created is a leaf using `internal/envelope`.
-- REQ-083-05 replaces the `AGENT_BUILDER_AGENT_MESH_BIN` binary-missing check with a
-  startup check for required **key material** or transport configuration. The exact
-  config knob names are to be confirmed once the orchestrator core (task 081) defines
-  its configuration surface. The principle (fail loudly before accepting goals when
-  required config is absent) is preserved.
+| REQ-083-01 | Orchestrator sends a work-item to a worker as an Ed25519-signed + sealed envelope; worker verifies+opens to the byte-exact original sub-goal | TC-083-01 |
+| REQ-083-02 | Worker result returned as a signed+sealed envelope; orchestrator verifies before incorporating; tampered signature → not incorporated + audit event | TC-083-02 |
+| REQ-083-03 | Replayed envelope (same nonce) rejected at the receiver via `ReplayCache`; audit event; work-item not processed | TC-083-03 |
+| REQ-083-04 | `internal/channel/worker` is a leaf — fitness `make fitness-worker-transport-isolation` (F-011) asserts no `internal/` imports except envelope + supervisor + audit | TC-083-04 |
+| REQ-083-05 | Worker-transport constructor fails loudly + named when required key material is unset/absent — at startup, before accepting work | TC-083-05 |
 
 ## Pre-implementation checklist
 
-- [ ] Task 081 merged (orchestrator core — this task is blocked until then)
-- [ ] Task 096 merged (`internal/envelope` leaf — required before this task can implement)
-- [ ] Post-081 scoping: confirm whether the orchestrator↔worker transport uses agent-mesh A2A (serve/sendto) or a different mechanism (gRPC, in-process channels, etc.); if agent-mesh A2A, scope the IPC wiring separately
-- [ ] All test cases refined into full inputs/expected-outputs (post-081 scoping)
-- [ ] `make check` green before branching
+- [x] Task 081 merged (orchestrator core)
+- [x] Task 096 merged (`internal/envelope` leaf)
+- [x] ADR 048 accepted (transport mechanism = in-process v1; adapter = `internal/channel/worker`)
+- [x] Config knob name chosen: `AGENT_BUILDER_WORKER_SIGNING_KEY` (path to the
+      orchestrator's Ed25519 signing-key file)
+- [x] F-number assigned: F-011
+- [x] All test cases refined into full inputs/expected-outputs
 
 ---
 
-## Test cases (stubs — to be expanded once task 081 is merged and transport mechanism confirmed)
+## Test cases
 
-### TC-083-01 — Orchestrator sends a work item as a signed envelope
+### TC-083-01 — Orchestrator sends a work-item as a signed+sealed envelope
 
 - **Requirement:** REQ-083-01
-- **Level:** L2 (unit test with stub worker)
-- **Status:** stub
+- **Level:** L2 (unit test with in-process stub worker)
+- **Status:** active
 
-**Input:** Orchestrator dispatches a sub-goal to a worker via the transport adapter.
+**Input:** A `supervisor.Task` sub-goal (`{ID:"sg-1", Repo:"exec-sandbox", Spec:"add rate limiter"}`).
+The orchestrator-side sender wraps it via `Sender.DispatchWorkItem(task)` and the
+in-process stub worker receives the resulting `envelope.Envelope`.
 
-**Expected output:**
-- The work item is serialized as an Ed25519-signed `internal/envelope.Envelope`.
-- The stub worker can call `envelope.Verify(received, orchEdPub)` and receive `nil`.
-- The envelope's `Payload` field (when decrypted with `envelope.Open`) equals the
-  original sub-goal plaintext.
-- The nonce is unique per dispatch (a fresh random nonce, not reused).
+**Expected output (real assertions):**
+- `envelope.Verify(received, orchEdPub)` returns `nil` (signature valid under the
+  orchestrator's Ed25519 public key).
+- The received envelope `From == "orchestrator"` and `To == "worker"`.
+- After `envelope.Open` with the worker's X25519 private key and the orchestrator's
+  X25519 public key, the decrypted bytes JSON-decode to a `supervisor.Task` that is
+  **byte-exact `reflect.DeepEqual`** to the original sub-goal (round-trip).
+- The nonce is non-empty and **unique across two dispatches** of the same task (dispatch
+  the same task twice; assert the two nonces differ — proves a fresh `crypto/rand` nonce
+  per message, never reused).
+- The plaintext spec string `"add rate limiter"` does **not** appear anywhere in the
+  marshalled envelope JSON (`Payload` is ciphertext, not plaintext).
 
 ---
 
-### TC-083-02 — Worker result returned as a signed envelope; orchestrator verifies before aggregating
+### TC-083-02 — Worker result returned as a signed envelope; orchestrator verifies before incorporating; tamper rejected
 
 - **Requirement:** REQ-083-02
 - **Level:** L2 (unit test)
-- **Status:** stub
+- **Status:** active
 
-**Input:** Worker completes successfully; returns result through the transport adapter.
+**Input (happy path):** A worker `Result` (`{Branch:"task/083", OK:true}`) wrapped by the
+worker-side sender (`Sender.DispatchResult(result)`) and received by the orchestrator-side
+receiver (`Receiver.ReceiveResult(env)`).
 
-**Expected output:**
-- Result is sealed and signed by the worker's Ed25519 private key.
-- Orchestrator calls `envelope.Verify(result, workerEdPub)` before incorporating the
-  result — verification succeeds.
-- A result with a bad signature (tampered `Sig` field) is NOT incorporated; an audit
-  event is emitted with a rejection reason.
+**Expected output (happy path):**
+- `Receiver.ReceiveResult` returns the byte-exact `supervisor.Result`
+  (`reflect.DeepEqual` to the original) and `nil` error.
+- The received envelope `From == "worker"` and `To == "orchestrator"`.
+
+**Input (tamper path):** Take the valid signed result envelope and flip one byte of the
+`Sig` field (so `envelope.Verify` fails under the worker's Ed25519 public key). Feed it to
+`Receiver.ReceiveResult`.
+
+**Expected output (tamper path):**
+- `Receiver.ReceiveResult` returns a non-nil error that satisfies
+  `errors.Is(err, envelope.ErrBadSignature)` (the specific sentinel).
+- The result is **NOT incorporated** (the returned `supervisor.Result` is the zero value).
+- The audit `FakeSink` recorded exactly one `audit.ActionChannelReject` event whose
+  `Detail.Reason` contains the rejection classification (e.g. `"unknown_key"`/
+  `"bad_signature"` group, asserted via substring on the reason).
 
 ---
 
-### TC-083-03 — Replayed work-item envelope is rejected at the receiver
+### TC-083-03 — Replayed envelope is rejected at the receiver; audit event; work-item not processed
 
 - **Requirement:** REQ-083-03
 - **Level:** L2 (unit test)
-- **Status:** stub
+- **Status:** active
 
-**Input:** A valid signed work-item envelope is delivered once (accepted), then
-delivered again with the same nonce (replayed).
+**Input:** A valid signed+sealed work-item envelope is delivered to the worker-side
+receiver (`Receiver.ReceiveWorkItem(env)`) once, then the **same envelope (same nonce)** is
+delivered a second time. A shared `*envelope.ReplayCache` is used across both calls.
 
 **Expected output:**
-- First delivery: accepted; worker processes the work item.
-- Second delivery (same nonce): `ReplayCache.Check` rejects with a replay error.
-- An audit event is emitted with `"replay"` or `"nonce"` in the reason.
-- The replayed work item is NOT processed.
+- First delivery: returns the byte-exact `supervisor.Task` and `nil` error
+  (work-item processed).
+- Second delivery (same nonce): returns a non-nil error satisfying
+  `errors.Is(err, envelope.ErrReplay)`.
+- The returned `supervisor.Task` on the second delivery is the zero value
+  (work-item **NOT processed**).
+- The audit `FakeSink` recorded a `audit.ActionChannelReject` event whose `Detail.Reason`
+  contains `"replay"` (substring assertion).
 
 ---
 
-### TC-083-04 — Transport adapter is a leaf; fitness check asserts its isolation
+### TC-083-04 — `internal/channel/worker` is a leaf; fitness check asserts its isolation (F-011)
 
 - **Requirement:** REQ-083-04
-- **Level:** L3 (fitness check — to be defined post-task-081 scoping)
-- **Status:** stub
+- **Level:** L3 (fitness check)
+- **Status:** active
 
-**Note:** The exact package name and fitness-check target are to be confirmed after
-task 081 lands. The pattern mirrors F-005 / F-006 / F-007:
-
-**Input (when defined):** `go list -deps ./internal/channel/worker/...` (or
-`./internal/transport/...` — name TBD)
+**Input:** `make fitness-worker-transport-isolation`, which runs
+`go list -deps ./internal/channel/worker/...` and filters for
+`github.com/tkdtaylor/agent-builder/internal/` paths.
 
 **Expected output:**
-- No `agent-builder/internal/` import other than the adapter itself, `internal/envelope`,
-  and `internal/supervisor`.
-- A `make fitness-worker-transport-isolation` target (or equivalent) added to the
-  `.PHONY` list and `fitness:` prerequisites.
+- The only `agent-builder/internal/` paths in the dependency graph are
+  `internal/channel/worker` itself, `internal/envelope`, `internal/supervisor`, and
+  `internal/audit`.
+- Any other `agent-builder/internal/` import (e.g. `internal/executor`,
+  `internal/runtime`, `internal/orchestrator`) → check exits non-zero (`FAIL`).
+- The target is added to `.PHONY`, to the `fitness:` prerequisites, and documented as
+  **F-011** in `docs/spec/SPEC.md` and `docs/spec/fitness-functions.md`.
+
+**Note on the allowed-import set:** ADR 048 §3 names `internal/envelope` and
+`internal/supervisor` as the leaf's allowed internal imports. The adapter additionally
+imports `internal/audit` for the rejection-event `Sink` seam — the same dependency the
+telegram channel adapter (`internal/channel/telegram`) carries. `internal/audit` is itself
+a verified leaf (F-005) with no executor/LLM/web reach, so including it does not widen the
+transport's blast radius. F-011 therefore allows envelope + supervisor + audit and blocks
+everything else.
 
 ---
 
-### TC-083-05 — Missing key material or transport config → orchestrator startup fails loudly
+### TC-083-05 — Missing key material → worker-transport startup fails loudly with a named error
 
 - **Requirement:** REQ-083-05
 - **Level:** L2 (unit test)
-- **Status:** stub
+- **Status:** active
 
-**Note:** The exact config knob name(s) for worker transport key material are to be
-confirmed post-task-081. The requirement pattern:
+**Input:** Construct the worker transport via its config-driven constructor
+(`NewSenderFromEnv` / `LoadKeyMaterial`) with `AGENT_BUILDER_WORKER_SIGNING_KEY` (a) unset
+and (b) pointing to a nonexistent file path.
 
-**Input:** Start the transport adapter with required key material unset or pointing to
-a nonexistent path (e.g. `AGENT_BUILDER_WORKER_SIGNING_KEY` unset, or key file absent).
-
-**Expected output:**
-- Orchestrator startup fails loudly (non-zero exit or named error) before accepting any goals.
-- Error message names the missing configuration (not a generic "config error").
-- The failure occurs at startup, not at first message receipt.
+**Expected output (both sub-cases):**
+- The constructor returns a non-nil error at construction time (startup), **before** any
+  work-item is dispatched or received.
+- The error satisfies `errors.Is(err, worker.ErrMissingSigningKey)` (a NAMED sentinel).
+- The error message **names the missing configuration** — the string contains
+  `"AGENT_BUILDER_WORKER_SIGNING_KEY"` (asserted via substring), not a generic
+  "config error".
+- No key material is read into a usable transport: the returned `*Sender` is nil.
 
 ---
 
-## Verification plan (preliminary)
+## Verification plan
 
-- **Highest level achievable:** L2 with stub worker processes. L5 requires a live
-  orchestrator + worker round-trip (post-task-081). L6 requires a live multi-process
-  A2A run with real envelopes.
-- **L2 harness command (to be confirmed post-task-081):**
+- **Highest level achievable:** L2 (unit tests with in-process stub workers) + L3 (the new
+  fitness check). L5/L6 (live orchestrator + out-of-process worker round-trip) is deferred
+  to a future out-of-process transport concrete (the envelope seam is ready for it; ADR
+  048 §2/§5).
+- **L2 + L3 harness commands:**
   ```
-  go test -count=1 ./internal/channel/worker/...
+  go test -count=1 ./internal/channel/worker/... ./internal/orchestrator/...
+  make fitness-worker-transport-isolation
+  make fitness-supervisor-isolation
   ```
-  (Package name TBD — confirmed when task 081 defines the transport shape.)
-  Expected: `ok`.
+  Expected: `ok`; `PASS fitness-worker-transport-isolation`; `PASS fitness-supervisor-isolation`.
 - **Full gate:**
   ```
   make check
@@ -183,11 +216,13 @@ a nonexistent path (e.g. `AGENT_BUILDER_WORKER_SIGNING_KEY` unset, or key file a
 ## Out of scope
 
 - `internal/envelope` implementation — task 096.
-- Orchestrator core — task 081 (this task depends on it).
+- Orchestrator core — task 081.
 - memory-guard for orchestrator state — task 084.
 - Multi-worker concurrent dispatch — task 086.
-- Key management / key distribution for worker signing keys.
-- If agent-mesh A2A transport (`serve`/`sendto` HTTP+JSON-RPC) is adopted for
-  the actual delivery mechanism between processes, that wiring is a distinct, clearly-
-  separated concern from envelope signing and may be treated as a sub-task or
-  follow-on once the transport mechanism is confirmed post-task-081.
+- Key management / key distribution for worker signing keys (this task reads a configured
+  Ed25519 key file; provisioning/rotation is separate).
+- agent-mesh A2A transport (`serve`/`sendto`) — deferred (ADR 048 §5); if adopted, it is a
+  new transport concrete behind the same `internal/channel/worker` seam.
+- Full live wiring of the transport into `Orchestrator.dispatchPlan` (the orchestrator
+  integration here is the startup key-material check + the envelope wrap/unwrap seam; deeper
+  live dispatch is left to task 086's concurrent-dispatch work).
