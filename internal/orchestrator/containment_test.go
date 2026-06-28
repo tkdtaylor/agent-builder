@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/tkdtaylor/agent-builder/internal/audit"
@@ -31,6 +32,7 @@ import (
 // spawn-worker Resource.ID) overrides for a specific recipe. Unmapped actions
 // default to allow.
 type recordingPolicy struct {
+	mu       sync.Mutex // guards requests; Decide is called concurrently under task-086 fan-out
 	requests []policy.DecideRequest
 	byAction map[string]policy.Decision
 	byRecipe map[string]policy.Decision // overrides spawn-worker by Resource.ID
@@ -38,7 +40,9 @@ type recordingPolicy struct {
 }
 
 func (p *recordingPolicy) Decide(req policy.DecideRequest) (policy.DecideResponse, error) {
+	p.mu.Lock()
 	p.requests = append(p.requests, req)
+	p.mu.Unlock()
 	if p.failOn != "" && req.Action.Name == p.failOn {
 		// Fail-closed: the production client returns DecisionDeny on any error.
 		return policy.DecideResponse{Decision: policy.DecisionDeny}, errString("simulated policy transport error")

@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-28 (task 085 — orchestrator self-containment, per-worker spawn-worker gate, self-repo bright line, fleet audit chain)
+**Last updated:** 2026-06-28 (task 086 — concurrent multi-worker dispatch: one goroutine per sub-goal, best-effort partial failure, race-safe shared audit chain + PlanStore)
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -98,7 +98,7 @@ C4Component
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
         Component(cli, "Command Surface", "internal/cli", "Flag parsing and run/version/verify/verify-checkpoint dispatch with exit codes")
-        Component(orchestrator, "Tier-1 Orchestrator", "internal/orchestrator", "Goal → Planner plan → policy spawn-plan gate (pause/resume approval) → per-sub-goal spawn-worker gate + self-repo deny → sequential dispatch via runtime.Run → typed PlanResult over Reporter. Itself contained (exec-sandbox, default-deny egress) and emits a fleet-audit chain across both tiers (task 085). Authors no code; no direct executor import (ADR 042/046/050)")
+        Component(orchestrator, "Tier-1 Orchestrator", "internal/orchestrator", "Goal → Planner plan → policy spawn-plan gate (pause/resume approval) → per-sub-goal spawn-worker gate + self-repo deny → CONCURRENT dispatch via runtime.Run (one goroutine per sub-goal, all start before any completes, best-effort partial failure, race-safe shared audit chain + PlanStore — task 086) → typed PlanResult over Reporter. Itself contained (exec-sandbox, default-deny egress) and emits a fleet-audit chain across both tiers (task 085). Authors no code; no direct executor import (ADR 042/046/050)")
         Component(runtime, "Default Run Wiring", "internal/runtime", "CLI bootstrap that composes configured Phase 0 adapters")
         Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher, lifecycle logger, run-record writer, and stable seams")
         Component(agentloop, "Agent Loop", "internal/loop", "Inside-the-box pick-attempt-verify cycle plus bounded retry policy")
@@ -122,7 +122,7 @@ C4Component
 
     Rel(main, cli, "Delegates to cli.Main")
     Rel(cli, runtime, "Dispatches run to the default pipeline")
-    Rel(orchestrator, runtime, "Dispatches one worker per sub-goal via runtime.Run (reuse, not reimplement)")
+    Rel(orchestrator, runtime, "Dispatches one worker per sub-goal via runtime.Run, CONCURRENTLY — one goroutine per sub-goal (task 086); reuse, not reimplement")
     Rel(orchestrator, gate, "Selects recipe per sub-goal (recipe.SelectRecipe)")
     Rel(orchestrator, policyGate, "Decides spawn-plan (plan-level) + per-sub-goal spawn-worker (task 085); self-repo deny is fail-closed before the policy call")
     Rel(runtime, tasksource, "Selects one ready task")
@@ -306,7 +306,7 @@ sequenceDiagram
     Policy-->>Orch: decision
     Orch->>Audit: plan-decided
     alt allow
-        loop each sub-goal (sequential)
+        loop each sub-goal — CONCURRENT: one goroutine per sub-goal, joined by WaitGroup (task 086)
             Orch->>Recipe: SelectRecipe(name)
             alt recipe found
                 Orch->>Orch: self-repo guard (deny if target_repo/sink == own-repo)
@@ -325,7 +325,8 @@ sequenceDiagram
                 Orch-->>Orch: record failed outcome (no dispatch)
             end
         end
-        Orch->>Audit: completion
+        Note over Orch,Audit: goroutines join (WaitGroup.Wait) — a worker failure is recorded best-effort and never halts siblings, and the shared audit chain + Store serialize writes (race-safe)
+        Orch->>Audit: completion (after join — last orchestrator event)
         Orch->>Reporter: Report(RenderPlanResult)
     else require_approval (pause)
         Orch->>Store: Put(plan)
@@ -355,8 +356,11 @@ L2 run-record posture; L6 live enforcement operator-deferred) and emits its own
 the SAME `audit.Sink` chain its workers write to, so one chain is tamper-evident across
 both tiers. `require_approval` is **pause-and-resume**, not a terminal halt; `Resume`
 asserts the verified envelope roles (operator → orchestrator) before acting (task 098
-SEC-001); dispatch is one `runtime.Run` per sub-goal, sequential (concurrency is task
-086).
+SEC-001); dispatch is one `runtime.Run` per sub-goal, run **concurrently** (task 086 /
+ADR 042) — one goroutine per sub-goal, all started before any completes, best-effort on
+partial failure (a worker failure never halts siblings), outcomes aggregated into a
+pre-sized slice by index (deterministic order), and the shared audit chain + `PlanStore`
+serialized so `go test -race` is clean.
 
 ---
 

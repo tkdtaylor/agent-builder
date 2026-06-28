@@ -217,6 +217,16 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 
 ---
 
+### B-026: Orchestrator dispatches a plan's sub-goals concurrently, best-effort
+
+- **Trigger:** `Orchestrator.Handle` (or `Resume` after approval) reaches `dispatchPlan` for a plan whose `spawn-plan` decision is `allow`/approved.
+- **Response:** Every approved sub-goal is dispatched **concurrently** — one goroutine per sub-goal, all started before any completes, joined by a `sync.WaitGroup` (ADR 042: multiple workers from the start). Each goroutine runs the full per-sub-goal pipeline: `recipe.SelectRecipe` → `spawn-worker` policy gate + self-repo bright-line deny + `spawn-decided` audit → dispatch via `DispatchFunc` (default `runtime.Run`). After the join the orchestrator emits the `completion` audit event (always last) and reports the rendered `PlanResult`.
+- **Side effects:** Per-sub-goal outcomes are written into a pre-sized `PlanResult.Outcomes` slice **at the sub-goal index**, so the aggregated result is deterministically ordered by sub-goal even though dispatch order is not. The shared `audit.Sink` (a mutex-guarded hash chain) and the `PlanStore` serialize concurrent writes; `go test -race -count=1 ./internal/orchestrator/...` is clean. The fleet-audit chain covers every concurrent worker in one chain (each worker's `spawn-decided` event, plus the worker tier's events on the same chain), with `goal-intake` first and `completion` last.
+- **Failure modes:** A single worker's dispatch error is recorded in **its own** outcome (`Success=false`, `Detail` = reason) and **never halts or cancels sibling workers** — best-effort completion. A per-worker `spawn-worker` deny / `require_approval` / policy error skips exactly that worker (recorded as a denied outcome, denial reported) without affecting the others. A failed audit-append for a security-relevant **deny** event remains a hard error (SEC-003): it is collected from the goroutines and halts the plan after the join, so a deny is never silently un-audited.
+- **References:** ADR 042; ADR 046 §5; ADR 050; task 086; `docs/tasks/test-specs/086-multi-worker-concurrent-dispatch-test-spec.md`.
+
+---
+
 ## Edge cases and error behaviors
 
 ### B-003: Native tool absence fails loudly
