@@ -148,6 +148,87 @@ OK          bool      true only after successful subprocess exit and branch capt
 - **Lifecycle:** produced by `(*executor.ClaudeCLI).Run` and consumed by the agent loop.
 - **Relationships:** missing, blank, or unavailable branch output produces `OK == false` plus an error, so the loop treats the attempt as failed before Gate verification.
 
+### State: Executor Registry
+
+- **Shape:** `*registry.Catalog` stores an in-process map of executor entries keyed by stable ID, and a deterministic ordering list for stable list operations.
+- **Owner:** callers construct it with `registry.NewCatalog()` and add entries via `RegisterEntry(e RegistryEntry)`. The runtime wiring initializes entries from `registry.LoadFromEnv()`.
+- **Lifetime:** process-local; no registry state is persisted. Entries are registered before dispatch and remain stable for the duration of a run.
+- **Concurrency rules:** read operations (`LookupEntry`, `ListEntries`) use reader locks. Write operations (`RegisterEntry`) use writer locks and panic on duplicate IDs.
+- **Bounds:** one `RegisterEntry` call adds at most one entry; duplicate IDs panic.
+
+#### Value: `registry.RegistryEntry`
+
+```
+field            type               notes
+────────────────────────────────────────────────────────────
+ID               string             stable handle, e.g. "claude-oauth", "local-qwen"
+Harness          registry.HarnessDriver  which harness runs the loop
+CapabilityTier   int                ordered: higher = stronger
+CostWeight       int                relative cost per dispatch; lower = cheaper
+ModelID          string             model identifier (e.g. "claude-opus-4-5")
+Endpoint         string             base URL the harness points at (cloud API or local proxy)
+SecretRef        string             which vault secret to resolve (NOT the secret itself)
+Budget           registry.QuotaBudget    configured cap over a rolling window, or zero for unlimited
+Usage            int                running tally against Budget
+Availability     registry.Availability   available or exhausted-until ResetAt
+```
+
+- **Identity:** `ID` is the stable registry key.
+- **Lifecycle:** parsed from environment by `LoadFromEnv` at runtime startup; populated entries are registered into the Catalog.
+- **Relationships:** `SecretRef` names a secret resolved by the vault at dispatch time (never stored in plaintext). `Availability` is mutable state owned by the router and updated as quota signals arrive.
+
+#### Value: `registry.HarnessDriver`
+
+```
+value          notes
+────────────────────────────────────────────────────────────
+claude-cli     Claude Code CLI harness (also used for local models via translation proxy)
+codex-cli      Codex CLI harness
+gemini-cli     Google Gemini CLI harness
+```
+
+- **Identity:** discriminates the executor harness to run.
+- **Lifecycle:** set at entry construction from environment; immutable for the entry's lifetime.
+- **Relationships:** **one harness can back many entries** — e.g., `claude-cli` backs both `claude-oauth` (cloud) and `local-qwen` (local model via proxy).
+
+#### Value: `registry.QuotaBudget`
+
+```
+field            type               notes
+────────────────────────────────────────────────────────────
+Limit            int                maximum dispatches over the window; 0 = unlimited
+Window           time.Duration      rolling time window (e.g. 5h)
+```
+
+- **Identity:** scoped to one entry's quota model.
+- **Lifecycle:** parsed from optional env vars `BUDGET_LIMIT` and `BUDGET_WINDOW` at entry construction.
+- **Semantics:** `Limit == 0` means no quota cap (typical for local entries). A non-zero `Limit` caps dispatches over a rolling window.
+
+#### Value: `registry.Availability`
+
+```
+field            type               notes
+────────────────────────────────────────────────────────────
+Status           registry.AvailStatus   available or exhausted
+ResetAt          time.Time          when the entry becomes available again (for exhausted entries)
+```
+
+- **Identity:** scoped to one entry's current availability state.
+- **Lifecycle:** initialized to `AvailStatusAvailable` at entry construction; updated by the router as quota signals arrive.
+- **Semantics:** `Status == available` means the entry can be selected. `Status == exhausted` means the entry is skipped until the clock passes `ResetAt`.
+
+#### Value: `registry.AvailStatus`
+
+```
+value          notes
+────────────────────────────────────────────────────────────
+available      entry can be selected for dispatch
+exhausted      entry is skipped until ResetAt (rate-limited, quota exceeded, or similar)
+```
+
+- **Identity:** discriminates current availability.
+- **Lifecycle:** set to `available` at entry construction; transitioned to `exhausted` and back by the router as quota signals arrive and reset times pass.
+
 #### Value: `tasksource.Candidate`
 
 ```

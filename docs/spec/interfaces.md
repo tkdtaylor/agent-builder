@@ -162,6 +162,74 @@ func (e *ClaudeCLI) HandleToolCall(ctx context.Context, event executorharness.To
 - **Web/tool policy:** `IngestionPolicy` defaults to `disabled`. `disabled` fails closed for Claude-facing web/tool events while preserving ordinary subprocess execution. `reviewed` requires `IngestionHarness` and routes web/tool events through it before any continuation or tool executor can run. Unknown policy values and reviewed-without-harness configurations fail before subprocess start.
 - **Auth contract:** the executor accepts either `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (OAuth token preferred when both are set). Exactly one credential is injected into subprocess env; the other is stripped. Host `HOME`/XDG dirs are replaced with temp dirs. Both credential values are redacted from subprocess failure output. The executor fails before subprocess start when both are absent.
 
+### Executor Registry Interface
+
+```go
+type HarnessDriver string
+
+const (
+    HarnessClaudeCLI HarnessDriver = "claude-cli"
+    HarnessCodexCLI  HarnessDriver = "codex-cli"
+    HarnessGeminiCLI HarnessDriver = "gemini-cli"
+)
+
+func (h HarnessDriver) String() string
+
+type QuotaBudget struct {
+    Limit  int
+    Window time.Duration
+}
+
+type AvailStatus string
+
+const (
+    AvailStatusAvailable AvailStatus = "available"
+    AvailStatusExhausted AvailStatus = "exhausted"
+)
+
+type Availability struct {
+    Status  AvailStatus
+    ResetAt time.Time
+}
+
+type RegistryEntry struct {
+    ID             string
+    Harness        HarnessDriver
+    CapabilityTier int
+    CostWeight     int
+    ModelID        string
+    Endpoint       string
+    SecretRef      string
+    Budget         QuotaBudget
+    Usage          int
+    Availability   Availability
+}
+
+type Catalog struct { /* unexported */ }
+
+func NewCatalog() *Catalog
+func (c *Catalog) RegisterEntry(e RegistryEntry)
+func (c *Catalog) LookupEntry(id string) (RegistryEntry, bool)
+func (c *Catalog) ListEntries() []RegistryEntry
+
+func LoadFromEnv() ([]RegistryEntry, error)
+```
+
+- **Implementors:** `*registry.Catalog` (in-process catalog); `registry.LoadFromEnv` (env-var loader).
+- **Consumers:** router (task 092), harness adapters (tasks 089–091), dispatcher/runtime wiring.
+- **Stability:** governed by ADR 043 and updated with any task that changes executor registration, entry structure, or env-var config surface.
+- **Required behavior:**
+  - `HarnessDriver` discriminates which harness CLI runs the loop; three values are supported (`claude-cli`, `codex-cli`, `gemini-cli`).
+  - `String()` returns human-readable harness names.
+  - `QuotaBudget` with `Limit == 0` means unlimited (no cap). Non-zero limit caps dispatches over the rolling window.
+  - `Availability` tracks whether an entry can be selected (`available`) or must be skipped until `ResetAt` (`exhausted`). Mutable state owned by the router.
+  - `RegistryEntry` is a value type: all fields are directly accessible.
+  - `NewCatalog()` creates an empty, thread-safe catalog.
+  - `RegisterEntry` adds an entry; panics if an entry with the same ID already exists.
+  - `LookupEntry(id)` retrieves an entry by ID; returns `(RegistryEntry{}, false)` if not found. Empty ID returns `(_, false)`.
+  - `ListEntries()` returns all entries in stable, deterministic (insertion) order.
+  - `LoadFromEnv()` parses well-known env-var prefixes (`AGENT_BUILDER_REGISTRY_<ID>_*`) and returns enabled entries; missing required fields or non-integer tier/cost/budget values return a descriptive error.
+
 ### Interface: supervisor dispatch lifecycle seams
 
 ```go

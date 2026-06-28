@@ -99,7 +99,7 @@
 | 084 | memory-guard adoption (orchestrator goal/fleet state) | 084-memory-guard-adoption-test-spec.md | ✅ | ◻️ | not started — blocked by task 081 |
 | 085 | Orchestrator self-containment + policy gating + fleet audit | 085-orchestrator-containment-policy-audit-test-spec.md | ✅ | ◻️ | not started — blocked by tasks 081, 083, 084 |
 | 086 | Multi-worker concurrent dispatch | 086-multi-worker-concurrent-dispatch-test-spec.md | ✅ | ◻️ | not started — blocked by tasks 081, 083 |
-| 087 | Executor registry type + entry config | 087-executor-registry-type-test-spec.md | ✅ | ◻️ | not started |
+| 087 | Executor registry type + entry config | 087-executor-registry-type-test-spec.md | ✅ | 🟡 | L3: `go test ./internal/registry` OK + `go list -deps` leaf-clean + `make check` green (all 6 TCs + 4 requirements); no runtime surface |
 | 088 | Vault-brokered per-provider auth | 088-vault-per-provider-auth-test-spec.md | ✅ | ◻️ | not started — depends on 087 |
 | 089 | Codex harness adapter | 089-codex-harness-adapter-test-spec.md | ✅ | ◻️ | not started — depends on 087, 088 |
 | 090 | Gemini harness adapter | 090-gemini-harness-adapter-test-spec.md | ✅ | ◻️ | not started — depends on 087, 088 |

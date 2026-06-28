@@ -111,6 +111,38 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `VAULT_MASTER_KEY` | secret string (hex) | none | required when vault is enabled and `VAULT_MASTER_KEY_FILE` is unset | 32-byte hex-encoded master key for the vault daemon's encryption. Validated to decode to exactly 32 bytes; an invalid or short key is a fail-fast error. **Never auto-generated** — absence when vault is enabled fails loud (a silent ephemeral key would lose secrets across restarts). Never logged. |
 | `VAULT_MASTER_KEY_FILE` | path | none | alternative to `VAULT_MASTER_KEY` | Path to a file containing the hex master key. **Takes precedence over `VAULT_MASTER_KEY`** when both are set. The file contents are read and validated identically to `VAULT_MASTER_KEY`; the key value is never logged. |
 
+### Executor Registry Configuration
+
+The executor registry is configured via well-known env-var prefixes per entry ID, allowing per-deployment tuning of which executor entries are enabled and their endpoints. Each entry supports the following variables (where `<ID>` is the entry ID in `SCREAMING_SNAKE_CASE`, e.g., `CLAUDE_OAUTH` for `claude-oauth`):
+
+| Variable | Type | Default | Required (if enabled) | Effect |
+|----------|------|---------|------------|--------|
+| `AGENT_BUILDER_REGISTRY_<ID>_ENABLED` | enum: `true`, `false` | (not set = disabled) | no | When `true`, the entry is loaded and registered into the catalog; when `false` or unset, the entry is skipped. |
+| `AGENT_BUILDER_REGISTRY_<ID>_ENDPOINT` | URL string | none | yes (if enabled) | Base URL the harness points at (cloud API, or a local model translation proxy). Blank values fail with a descriptive error. |
+| `AGENT_BUILDER_REGISTRY_<ID>_SECRET_REF` | string | none | yes (if enabled) | Vault secret name to resolve at dispatch time (never the secret itself). Blank values fail with a descriptive error. |
+| `AGENT_BUILDER_REGISTRY_<ID>_MODEL` | string | none | yes (if enabled) | Model identifier (e.g., `claude-opus-4-5`, `qwen-7b`). Blank values fail with a descriptive error. |
+| `AGENT_BUILDER_REGISTRY_<ID>_CAPABILITY_TIER` | non-negative integer | none | yes (if enabled) | Ordered capability ranking (higher = stronger). Non-integer values fail with a descriptive error. |
+| `AGENT_BUILDER_REGISTRY_<ID>_COST_WEIGHT` | non-negative integer | none | yes (if enabled) | Relative cost per dispatch (lower = cheaper). Non-integer values fail with a descriptive error. |
+| `AGENT_BUILDER_REGISTRY_<ID>_BUDGET_LIMIT` | non-negative integer | `0` (unlimited) | no | Maximum dispatches over the rolling window. `0` means no cap. Non-integer values fail with a descriptive error. |
+| `AGENT_BUILDER_REGISTRY_<ID>_BUDGET_WINDOW` | duration string | `0` (unlimited) | no | Rolling time window for budget enforcement (e.g., `5h`, `30m`). Non-duration values fail with a descriptive error. |
+
+**Known entry IDs and their harnesses:**
+- `claude-oauth` → `claude-cli` (Anthropic Claude via OAuth/subscription)
+- `local-qwen` → `claude-cli` (Local Qwen model via translation proxy)
+- `codex` → `codex-cli` (OpenAI Codex)
+- `gemini` → `gemini-cli` (Google Gemini)
+
+**Example configuration for `claude-oauth`:**
+```
+AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_ENABLED=true
+AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_ENDPOINT=https://api.anthropic.com
+AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_SECRET_REF=claude-oauth-token
+AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_MODEL=claude-opus-4-5
+AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_CAPABILITY_TIER=3
+AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_COST_WEIGHT=10
+AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_BUDGET_LIMIT=0
+```
+
 **Removed variables** (rejected loudly when set — see ADR 021):
 - `AGENT_BUILDER_SANDBOX_RUNTIME` — the Phase 0 `srt` selector for the rented `@anthropic-ai/sandbox-runtime` backend. Containment now runs through the Podman execution-box launcher (`AGENT_BUILDER_EXEC_BOX_LAUNCHER`). If a non-empty value is present, `agent-builder run` fails with a migration error naming the variable rather than silently ignoring it.
 
