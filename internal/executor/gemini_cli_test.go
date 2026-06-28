@@ -240,20 +240,25 @@ func TestGeminiCLI_RunSucceedsVariantA(t *testing.T) {
 
 func TestGeminiCLI_RunSubprocessNonZeroExitReturnsError(t *testing.T) {
 	// TC-090-04: subprocess exits 1 with stderr "Gemini API error" →
-	// Run returns non-nil error; Result.OK == false.
+	// Run returns non-nil error containing the stderr text; Result.OK == false.
 	const secretRef = "gemini-api-key"
 	const apiKey = "gai-test-gemini-key"
+	const stderrMsg = "Gemini API error"
 
 	src := &fakeGeminiSecretSource{
 		namedTokens: map[string]string{secretRef: apiKey},
 	}
 	entry := testGeminiEntry(secretRef)
 
-	// Stub subprocess: exits 1 (the helper writes "Codex API error" to stderr by
-	// convention from runHelperProcess; text not tested here since it comes from
-	// the shared helper — what matters is that Run returns an error and OK==false).
+	// Stub subprocess: custom factory that exits 1 and captures stderr.
+	// We can't use the shared runHelperProcess (it emits "Codex API error").
+	// Instead, create a minimal subprocess that exits non-zero with Gemini-specific stderr.
 	cli := NewGeminiCLI(entry, src, t.TempDir())
-	cli.cmdFactory = stubGeminiCommandFactory(t, "", 1, nil)
+	cli.cmdFactory = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		// Use a shell command that exits 1 and writes to stderr.
+		cmd := exec.CommandContext(ctx, "sh", "-c", "echo 'Gemini API error' >&2; exit 1")
+		return cmd
+	}
 
 	task := supervisor.Task{ID: "090", Repo: "agent-builder", Spec: "spec"}
 
@@ -267,9 +272,13 @@ func TestGeminiCLI_RunSubprocessNonZeroExitReturnsError(t *testing.T) {
 	if result.Branch != "" {
 		t.Fatalf("result.Branch = %q, want empty on failure", result.Branch)
 	}
-	// The error should contain subprocess failure indication.
+	// TC-090-04: assert the error contains the subprocess failure indication.
 	if !strings.Contains(err.Error(), "gemini CLI failed") {
 		t.Fatalf("error does not mention 'gemini CLI failed': %v", err)
+	}
+	// TC-090-04: assert the error contains the subprocess stderr text (proves it was captured).
+	if !strings.Contains(err.Error(), stderrMsg) {
+		t.Fatalf("error does not contain stderr text %q: %v", stderrMsg, err)
 	}
 }
 
