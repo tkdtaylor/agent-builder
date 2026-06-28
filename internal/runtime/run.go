@@ -220,8 +220,26 @@ func configFromEnvWithSource(getenv func(string) string, src secrets.SecretSourc
 	if config.Worktree == "" {
 		return Config{}, missingConfig(EnvWorktree)
 	}
-	// Require at least one credential (OAuth token or API key)
-	if strings.TrimSpace(config.ClaudeToken) == "" && strings.TrimSpace(config.ClaudeOAuthToken) == "" {
+
+	// Check if all enabled registry entries are local (SecretRef == "").
+	// If so, skip the cloud-credential check; pure-local operators do not need ANTHROPIC_API_KEY.
+	allLocal := false
+	entries, err := registry.LoadFromEnv()
+	if err == nil && len(entries) > 0 {
+		// Check if all enabled entries have empty SecretRef (local entries).
+		allLocal = true
+		for _, entry := range entries {
+			if entry.SecretRef != "" {
+				allLocal = false
+				break
+			}
+		}
+	}
+	// If registry.LoadFromEnv fails or returns no entries, enforce the cloud-credential check
+	// (fail-closed: no evidence of a local-only config).
+
+	// Require at least one credential (OAuth token or API key), unless all entries are local.
+	if !allLocal && strings.TrimSpace(config.ClaudeToken) == "" && strings.TrimSpace(config.ClaudeOAuthToken) == "" {
 		return Config{}, fmt.Errorf("run config: missing at least one of %s or %s", executor.ClaudeCLIAuthEnv, executor.ClaudeCLIOAuthEnv)
 	}
 	if config.PublishRemote == "" {

@@ -30,6 +30,13 @@ const (
 	ClaudeCLIBaseURLEnv = "ANTHROPIC_BASE_URL"
 
 	claudeCLIHistoryEnv = "CLAUDE_CODE_SKIP_PROMPT_HISTORY"
+
+	// LocalProxyAuthPlaceholder is a fixed sentinel injected as ANTHROPIC_API_KEY for local
+	// proxy entries. It satisfies the Claude Code CLI's local auth-state check and is not
+	// a real Anthropic credential. The translation proxy ignores the key value; its presence
+	// is sufficient for the CLI to proceed with requests to the custom ANTHROPIC_BASE_URL.
+	// This placeholder MUST NOT be derived from the operator's real authToken or oauthToken.
+	LocalProxyAuthPlaceholder = "local-proxy-no-auth"
 )
 
 var (
@@ -290,9 +297,10 @@ When finished, write only the produced branch name to this file:
 }
 
 // claudeEnv builds the subprocess environment. When baseURL is non-empty (local entry),
-// it sets ANTHROPIC_BASE_URL and omits all cloud auth vars (ANTHROPIC_API_KEY,
-// CLAUDE_CODE_OAUTH_TOKEN). When baseURL is empty (cloud entry), it injects exactly one
-// cloud credential (OAuth preferred over API key when both are set).
+// it sets ANTHROPIC_BASE_URL, injects LocalProxyAuthPlaceholder as ANTHROPIC_API_KEY,
+// and omits CLAUDE_CODE_OAUTH_TOKEN and the operator's real credentials. When baseURL is
+// empty (cloud entry), it injects exactly one cloud credential (OAuth preferred over API
+// key when both are set), and no placeholder.
 func claudeEnv(base []string, authToken, oauthToken, baseURL, tempHome string) []string {
 	env := make([]string, 0, len(base)+5)
 	for _, entry := range base {
@@ -317,8 +325,10 @@ func claudeEnv(base []string, authToken, oauthToken, baseURL, tempHome string) [
 	}
 
 	if baseURL != "" {
-		// Local mode: point the CLI at the translation proxy; no cloud auth injected.
+		// Local mode: point the CLI at the translation proxy; inject placeholder sentinel.
+		// The proxy ignores the key value; its presence satisfies the CLI's auth check.
 		env = append(env, ClaudeCLIBaseURLEnv+"="+baseURL)
+		env = append(env, ClaudeCLIAuthEnv+"="+LocalProxyAuthPlaceholder)
 	} else {
 		// Cloud mode: OAuth token preferred over API key when both present (ADR 033).
 		if strings.TrimSpace(oauthToken) != "" {

@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -347,5 +348,142 @@ func TestConfigFromEnvRecipeNameExplicit(t *testing.T) {
 	}
 	if config.RecipeName != "test-recipe" {
 		t.Errorf("RecipeName = %q, want \"test-recipe\"", config.RecipeName)
+	}
+}
+
+// TC-101-04: ConfigFromEnv accepts a local-only registry (no cloud credential in env)
+func TestConfigFromEnvAcceptsLocalOnlyRegistry(t *testing.T) {
+	// Use t.Setenv to set real environment variables (since registry.LoadFromEnv() uses os.Getenv directly).
+	t.Setenv("AGENT_BUILDER_TASK_ROOT", "/tmp/tasks")
+	t.Setenv("AGENT_BUILDER_WORKTREE", "/tmp/work")
+	t.Setenv("AGENT_BUILDER_EXEC_BOX_LAUNCHER", "containment/execution-box/run.sh")
+	t.Setenv("AGENT_BUILDER_RUN_TIMEOUT", "5m")
+	t.Setenv("AGENT_BUILDER_MAX_ATTEMPTS", "2")
+	t.Setenv("AGENT_BUILDER_PUBLISH_REMOTE", "origin")
+	// Local registry entry configuration (using the "local" entry ID which is in knownEntries)
+	t.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_ENABLED", "true")
+	t.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_ENDPOINT", "http://localhost:8080")
+	t.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_MODEL", "qwen2.5-coder:7b")
+	t.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_CAPABILITY_TIER", "1")
+	t.Setenv("AGENT_BUILDER_REGISTRY_LOCAL_COST_WEIGHT", "1")
+	// NO cloud credentials in environment
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+	getenv := func(key string) string {
+		// Delegate to actual environment (which we've set up with t.Setenv above).
+		val, _ := os.LookupEnv(key)
+		return val
+	}
+
+	config, err := ConfigFromEnv(getenv)
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() for local-only registry failed: %v", err)
+	}
+
+	// Verify that config was successfully created with no cloud credentials
+	if config.ClaudeToken != "" {
+		t.Fatalf("ClaudeToken should be empty for local-only registry, got %q", config.ClaudeToken)
+	}
+	if config.ClaudeOAuthToken != "" {
+		t.Fatalf("ClaudeOAuthToken should be empty for local-only registry, got %q", config.ClaudeOAuthToken)
+	}
+}
+
+// TC-101-05: ConfigFromEnv still errors when a cloud entry is configured but no credential is present
+func TestConfigFromEnvErrorsOnCloudEntryWithoutCredential(t *testing.T) {
+	tests := []struct {
+		name        string
+		getenvSetup func() func(string) string
+	}{
+		{
+			name: "Cloud entry (claude-oauth) without credential",
+			getenvSetup: func() func(string) string {
+				return func(key string) string {
+					switch key {
+					case "AGENT_BUILDER_TASK_ROOT":
+						return "/tmp/tasks"
+					case "AGENT_BUILDER_WORKTREE":
+						return "/tmp/work"
+					case "AGENT_BUILDER_EXEC_BOX_LAUNCHER":
+						return "containment/execution-box/run.sh"
+					case "AGENT_BUILDER_RUN_TIMEOUT":
+						return "5m"
+					case "AGENT_BUILDER_MAX_ATTEMPTS":
+						return "2"
+					case "AGENT_BUILDER_PUBLISH_REMOTE":
+						return "origin"
+					// Cloud entry configuration
+					case "AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_ENABLED":
+						return "true"
+					case "AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_ENDPOINT":
+						return "https://api.anthropic.com"
+					case "AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_SECRET_REF":
+						return "claude-oauth-token"
+					case "AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_MODEL":
+						return "claude-opus-4-5"
+					case "AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_CAPABILITY_TIER":
+						return "3"
+					case "AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_COST_WEIGHT":
+						return "10"
+					// NO cloud credentials
+					case executor.ClaudeCLIAuthEnv:
+						return ""
+					case executor.ClaudeCLIOAuthEnv:
+						return ""
+					default:
+						return ""
+					}
+				}
+			},
+		},
+		{
+			name: "No registry entries at all (no local, no cloud)",
+			getenvSetup: func() func(string) string {
+				return func(key string) string {
+					switch key {
+					case "AGENT_BUILDER_TASK_ROOT":
+						return "/tmp/tasks"
+					case "AGENT_BUILDER_WORKTREE":
+						return "/tmp/work"
+					case "AGENT_BUILDER_EXEC_BOX_LAUNCHER":
+						return "containment/execution-box/run.sh"
+					case "AGENT_BUILDER_RUN_TIMEOUT":
+						return "5m"
+					case "AGENT_BUILDER_MAX_ATTEMPTS":
+						return "2"
+					case "AGENT_BUILDER_PUBLISH_REMOTE":
+						return "origin"
+					// NO registry entries enabled
+					// NO cloud credentials
+					case executor.ClaudeCLIAuthEnv:
+						return ""
+					case executor.ClaudeCLIOAuthEnv:
+						return ""
+					default:
+						return ""
+					}
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			getenv := tt.getenvSetup()
+			config, err := ConfigFromEnv(getenv)
+			if err == nil {
+				t.Fatalf("ConfigFromEnv() should have errored for %s, but got config: %+v", tt.name, config)
+			}
+
+			// Verify error message contains both credential names
+			errMsg := err.Error()
+			if !strings.Contains(errMsg, executor.ClaudeCLIAuthEnv) {
+				t.Errorf("error message missing %s: %s", executor.ClaudeCLIAuthEnv, errMsg)
+			}
+			if !strings.Contains(errMsg, executor.ClaudeCLIOAuthEnv) {
+				t.Errorf("error message missing %s: %s", executor.ClaudeCLIOAuthEnv, errMsg)
+			}
+		})
 	}
 }
