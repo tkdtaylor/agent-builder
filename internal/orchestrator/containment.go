@@ -1,5 +1,9 @@
 package orchestrator
 
+import (
+	"strings"
+)
+
 // Containment, egress posture, and the self-repo bright line (task 085 / ADR 050).
 //
 // The orchestrator is itself privileged, network-connected, and long-lived (ADR
@@ -84,7 +88,7 @@ func SelfRepoSinkViolation(source string) bool {
 	// The own-repo path appears; treat it as a sink violation only when it co-occurs
 	// with a sink/remote/publish indicator on the same logical declaration.
 	for _, token := range []string{"Sink", "sink", "Remote", "remote", "Publish", "publish", "PublishRemote"} {
-		if containsToken(source, token) {
+		if strings.Contains(source, token) {
 			return true
 		}
 	}
@@ -92,104 +96,96 @@ func SelfRepoSinkViolation(source string) bool {
 }
 
 func containsOwnRepo(s string) bool {
-	return containsToken(s, OwnRepo)
-}
-
-// containsToken is a tiny stdlib-free substring check so containment.go imports
-// nothing beyond the package itself (keeping the predicate trivially portable).
-func containsToken(haystack, needle string) bool {
-	if needle == "" {
-		return false
-	}
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(s, OwnRepo)
 }
 
 // CanonicalizeRepo normalizes a repository reference into a canonical form for
-// comparison. It handles multiple formats:
+// comparison. It handles multiple formats and variants:
 //   - https://github.com/tkdtaylor/agent-builder → github.com/tkdtaylor/agent-builder
+//   - HTTPS://github.com/... (case-insensitive) → github.com/tkdtaylor/agent-builder
 //   - git@github.com:tkdtaylor/agent-builder → github.com/tkdtaylor/agent-builder
-//   - ssh://git@github.com/tkdtaylor/agent-builder → github.com/tkdtaylor/agent-builder
-//   - github.com/tkdtaylor/agent-builder.git → github.com/tkdtaylor/agent-builder
-//   - Uppercase paths → lowercased
-//   - Trailing slashes → stripped
+//   - ssh://git@github.com:22/tkdtaylor/agent-builder (with port) → github.com/tkdtaylor/agent-builder
+//   - github.com/tkdtaylor/agent-builder.GIT (case insensitive) → github.com/tkdtaylor/agent-builder
+//   - "  github.com/tkdtaylor/agent-builder  " (whitespace) → github.com/tkdtaylor/agent-builder
 //
-// Empty input returns empty (not an error). Non-canonical forms (unparseable)
-// return empty; the caller (targetsOwnRepo) is responsible for fail-closed logic
-// when canonicalization fails.
+// Normalization order (load-bearing, must match this sequence):
+//   1. TrimSpace (whitespace removal)
+//   2. ToLower (case folding — makes subsequent string checks case-insensitive)
+//   3. Strip scheme (https://, http://, ssh://, git://)
+//   4. Strip scp-form prefix (git@) and convert scp-colon to slash
+//   5. Strip port (:[0-9]+ after host, before first path slash)
+//   6. Strip trailing slash
+//   7. Strip trailing .git suffix
+//
+// Empty input returns empty (not an error). Non-empty input that canonicalizes to
+// empty is treated as a match by fail-closed logic in targetsOwnRepo (deny).
 func CanonicalizeRepo(s string) string {
 	if s == "" {
 		return ""
 	}
 
-	// Strip scheme: https://, ssh://, http://, git://
+	// 1. Trim whitespace
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+
+	// 2. Lowercase FIRST so all subsequent checks are case-insensitive
+	s = strings.ToLower(s)
+
+	// 3. Strip scheme: https://, http://, ssh://, git://
 	for _, scheme := range []string{"https://", "http://", "ssh://", "git://"} {
-		if len(s) > len(scheme) && s[:len(scheme)] == scheme {
-			s = s[len(scheme):]
+		if strings.HasPrefix(s, scheme) {
+			s = strings.TrimPrefix(s, scheme)
 			break
 		}
 	}
 
-	// Strip scp-form: git@host:path → host/path (convert : to /) or git@host/path → host/path
-	if containsToken(s, "git@") {
-		idx := indexOfToken(s, "git@")
+	// 4. Strip scp-form: git@host:path → host/path (convert : to /)
+	// BUT FIRST strip any port that appears as :digits in the scp form
+	if strings.Contains(s, "git@") {
+		idx := strings.Index(s, "git@")
 		if idx >= 0 {
 			s = s[idx+4:] // skip "git@"
-			// Replace first colon with slash if present (scp-style: host:path → host/path)
-			// Otherwise the path already has slashes (e.g., git@github.com/path)
-			for i := 0; i < len(s); i++ {
-				if s[i] == ':' {
-					s = s[:i] + "/" + s[i+1:]
-					break
+			// Handle scp-form: git@host:path or git@host:port/path
+			// First, check if there's a colon
+			if colonIdx := strings.Index(s, ":"); colonIdx >= 0 {
+				// Check what comes after the colon
+				afterColon := s[colonIdx+1:]
+				// If it's all digits followed by /, it's a port; strip it
+				// Otherwise it's a path in scp-form, convert : to /
+				isPort := false
+				slashAfterColon := strings.Index(afterColon, "/")
+				if slashAfterColon >= 0 {
+					portCandidate := afterColon[:slashAfterColon]
+					isPortDigits := true
+					for _, c := range portCandidate {
+						if c < '0' || c > '9' {
+							isPortDigits = false
+							break
+						}
+					}
+					if isPortDigits {
+						// It's a port; strip it: git@host:22/path → host/path
+						isPort = true
+						s = s[:colonIdx] + afterColon[slashAfterColon:]
+					}
+				}
+				if !isPort {
+					// It's a path in scp-form; convert : to /
+					s = s[:colonIdx] + "/" + afterColon
 				}
 			}
 		}
 	}
 
-	// Strip trailing slashes FIRST so .git suffix detection works correctly
-	for len(s) > 0 && s[len(s)-1] == '/' {
-		s = s[:len(s)-1]
-	}
+	// 6. Strip trailing slash
+	s = strings.TrimSuffix(s, "/")
 
-	// Strip trailing .git
-	if len(s) >= 4 && s[len(s)-4:] == ".git" {
-		s = s[:len(s)-4]
-	}
-
-	// Lowercase for case-insensitive comparison
-	s = toLower(s)
+	// 7. Strip trailing .git suffix
+	s = strings.TrimSuffix(s, ".git")
 
 	return s
-}
-
-// toLower lowercases a string without importing strings package.
-func toLower(s string) string {
-	b := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c = c - 'A' + 'a'
-		}
-		b[i] = c
-	}
-	return string(b)
-}
-
-// indexOfToken returns the byte index of needle in haystack, or -1 if not found.
-func indexOfToken(haystack, needle string) int {
-	if needle == "" {
-		return -1
-	}
-	for i := 0; i+len(needle) <= len(haystack); i++ {
-		if haystack[i:i+len(needle)] == needle {
-			return i
-		}
-	}
-	return -1
 }
 
 // targetsOwnRepo reports whether a sub-goal's target repo or result sink is the

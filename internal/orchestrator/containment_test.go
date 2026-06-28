@@ -395,7 +395,19 @@ func TestTC085_05_CanonicalizeRepoVariants(t *testing.T) {
 		{"uppercase", "GITHUB.COM/TKDTAYLOR/AGENT-BUILDER", true},
 		{"mixed case", "GitHub.com/TkdTaylor/Agent-Builder", true},
 		{"combination", "https://git@github.com/TkdTaylor/Agent-Builder.git/", true},
+		// SEC-002 evasion cases — all should now be DENIED (fixed by stdlib + order)
+		{"HTTPS uppercase scheme", "HTTPS://github.com/tkdtaylor/agent-builder", true},
+		{"Https mixed case scheme", "Https://github.com/tkdtaylor/agent-builder", true},
+		{".GIT uppercase suffix", "github.com/tkdtaylor/agent-builder.GIT", true},
+		{"leading space", "  github.com/tkdtaylor/agent-builder", true},
+		{"trailing space", "github.com/tkdtaylor/agent-builder  ", true},
+		{"both spaces", "  github.com/tkdtaylor/agent-builder  ", true},
+		{"with port (scp)", "ssh://git@github.com:22/tkdtaylor/agent-builder", true},
+		{"git@scp no .git", "git@github.com:tkdtaylor/agent-builder", true},
+		// Near-misses and other repos — must NOT be denied
 		{"near-miss (evil)", "github.com/tkdtaylor/agent-builder-evil", false},
+		{"evil HTTPS", "HTTPS://github.com/tkdtaylor/agent-builder-evil", false},
+		{"evil with space", "  github.com/tkdtaylor/agent-builder-evil  ", false},
 		{"other repo", "github.com/other/repo", false},
 		{"empty", "", false},
 	}
