@@ -142,9 +142,10 @@ const (
 )
 
 const (
-	ClaudeCLIAuthEnv    = "ANTHROPIC_API_KEY"
-	ClaudeCLIOAuthEnv   = "CLAUDE_CODE_OAUTH_TOKEN"
-	ClaudeCLIBaseURLEnv = "ANTHROPIC_BASE_URL" // set for local/translation-proxy entries
+	ClaudeCLIAuthEnv      = "ANTHROPIC_API_KEY"
+	ClaudeCLIOAuthEnv     = "CLAUDE_CODE_OAUTH_TOKEN"
+	ClaudeCLIBaseURLEnv   = "ANTHROPIC_BASE_URL"   // set for local/translation-proxy entries
+	ClaudeCLIAuthTokenEnv = "ANTHROPIC_AUTH_TOKEN" // gateway bearer token; placeholder injected for local entries
 )
 
 type ClaudeCLIConfig struct {
@@ -171,7 +172,7 @@ func (e *ClaudeCLI) HandleToolCall(ctx context.Context, event executorharness.To
 - **Branch contract:** the prompt names an executor-owned temp file where the CLI must write the produced branch. The executor trims that file and copies it into `supervisor.Result.Branch`.
 - **Web/tool policy:** `IngestionPolicy` defaults to `disabled`. `disabled` fails closed for Claude-facing web/tool events while preserving ordinary subprocess execution. `reviewed` requires `IngestionHarness` and routes web/tool events through it before any continuation or tool executor can run. Unknown policy values and reviewed-without-harness configurations fail before subprocess start.
 - **Auth contract (cloud mode):** when `BaseURL` is empty (cloud entry), the executor accepts either `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` (OAuth token preferred when both are set). Exactly one credential is injected into subprocess env; the other is stripped. Host `HOME`/XDG dirs are replaced with temp dirs. Both credential values are redacted from subprocess failure output. The executor fails before subprocess start when both are absent.
-- **Auth contract (local/translation-proxy mode):** when `BaseURL` is non-empty (local entry, `entry.SecretRef == ""`), `ANTHROPIC_BASE_URL` is set to `BaseURL` in the subprocess env. `ANTHROPIC_API_KEY` is injected with the fixed placeholder value `executor.LocalProxyAuthPlaceholder` (value: `"local-proxy-no-auth"`, not the operator's real key) to satisfy the Claude Code CLI's local auth check. `CLAUDE_CODE_OAUTH_TOKEN` is NOT injected. The translation proxy at `BaseURL` converts Anthropic API requests to the local inference server and ignores the key value. Missing cloud credentials in the host environment are not an error when all registry entries are local.
+- **Auth contract (local/translation-proxy mode):** when `BaseURL` is non-empty (local entry, `entry.SecretRef == ""`), `ANTHROPIC_BASE_URL` is set to `BaseURL` in the subprocess env. `ANTHROPIC_AUTH_TOKEN` is injected with the fixed placeholder value `executor.LocalProxyAuthPlaceholder` (value: `"local-proxy-no-auth"`, not the operator's real key) to satisfy the Claude Code CLI's auth check. `ANTHROPIC_AUTH_TOKEN` (not `ANTHROPIC_API_KEY`) is required because the current Claude Code CLI validates `ANTHROPIC_API_KEY` as a real Anthropic credential and rejects a placeholder with `Not logged in`, whereas `ANTHROPIC_AUTH_TOKEN` is the gateway bearer-token var passed straight through to `ANTHROPIC_BASE_URL`. Neither `ANTHROPIC_API_KEY` nor `CLAUDE_CODE_OAUTH_TOKEN` is injected for local entries. The translation proxy at `BaseURL` converts Anthropic API requests to the local inference server and ignores the token value. Missing cloud credentials in the host environment are not an error when all registry entries are local.
 - **`NewClaudeCLIFromEntry` contract:** constructs a `ClaudeCLI` from a `registry.RegistryEntry`. When `entry.SecretRef == ""` (local entry), sets `BaseURL = entry.Endpoint` and omits cloud auth. When `entry.SecretRef != ""` (cloud entry), resolves credentials via `secretSource.ProviderToken()`. Additive constructor — existing `NewClaudeCLI` and `NewClaudeCLIFromEnv` call sites are unchanged.
 
 ### Concrete executor: `executor.CodexCLI`
