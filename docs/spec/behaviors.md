@@ -1,7 +1,7 @@
 # Behaviors
 
 **Project:** agent-builder
-**Last updated:** 2026-06-27 (task 078 — runtime gate-existence assertion)
+**Last updated:** 2026-06-28 (task 082 — agent-builder-worker recipe)
 
 What the system does, observably. Each behavior describes a triggering condition, the system's response, and any externally-visible side effects. This is the "you can verify this from outside the process" view.
 
@@ -206,6 +206,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Side effects:** No sandbox is created, no supervisor is constructed, no executor is dispatched, and no audit events are emitted when the gate-existence check fails.
 - **Failure modes:** A nil `GateFactory`, a gate returning `nil`, a gate not implementing `Blocker`, or a gate with `Blocks() == false` all return errors before assembly. This assertion applies unconditionally to every recipe path, regardless of whether the recipe is human-authored or generated, and cannot be disabled (no escape hatch / no `generated=true` flag exemption).
 - **References:** ADR 041; ADR 042; task 078; `docs/tasks/test-specs/078-runtime-gate-existence-assertion-test-spec.md`.
+
+### B-025: agent-builder-worker recipe gates, audits, and requires human approval for generated recipe dispatch
+
+- **Trigger:** `runtime.Run` is called with `AGENT_BUILDER_RECIPE=agent-builder-worker`.
+- **Response:** The worker recipe authors a new agent definition as a `.go` source file and publishes it via the standard branch/PR path (identical to any other worker — no special code path in `internal/runtime` or `internal/orchestrator`). The gate runs three non-skippable steps in order: (1) code-scanner on the generated code, (2) dep-scan on declared dependencies, (3) generated-gate-existence assertion on the generated `.go` output (fails if the generated recipe has no non-nil `GateFactory` binding). Human approval via the policy engine's `require_approval` decision is required before any generated agent is dispatched — the goal source withholds the task and sets `ApprovalSolicited=true` when the policy decision is `require_approval`. An `audit.ActionPublish` event is emitted with the generated file path in `Detail.Branch` and the SHA-256 content hash in `Detail.Remote`.
+- **Side effects:** The gate rejects a generated recipe that lacks a non-nil, blocking gate binding. The branch/PR artifact is the deliverable for v1; agent-mesh hand-back (task 083) is out of scope.
+- **Failure modes:** Code-scanner or dep-scan finding → `Verdict.OK=false`, run halted. Generated recipe with `GateFactory: nil` or no `GateFactory` → `Verdict.OK=false`, run halted. Policy `require_approval` → task withheld, no dispatch.
+- **References:** ADR 042; ADR 047; task 082; `docs/tasks/test-specs/082-agent-builder-worker-recipe-test-spec.md`.
 
 ---
 
