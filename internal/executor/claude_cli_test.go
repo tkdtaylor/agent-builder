@@ -300,7 +300,8 @@ func (f *fakeLocalSecretSource) NamedProviderToken(_ string) (string, error)  { 
 // Compile-time assertion: fakeLocalSecretSource satisfies secrets.SecretSource.
 var _ secrets.SecretSource = (*fakeLocalSecretSource)(nil)
 
-// TC-091-03a: claudeEnv with baseURL set injects ANTHROPIC_BASE_URL and omits cloud auth.
+// TC-091-03a (updated by TC-101): claudeEnv with baseURL set injects ANTHROPIC_BASE_URL
+// and a placeholder sentinel as ANTHROPIC_API_KEY (not the operator's real credentials).
 // This is the primary env-contract assertion: directly tests the env-building function.
 func TestClaudeEnv_LocalMode_SetsBaseURLAndOmitsCloudAuth(t *testing.T) {
 	const proxyURL = "http://localhost:8080"
@@ -328,13 +329,26 @@ func TestClaudeEnv_LocalMode_SetsBaseURLAndOmitsCloudAuth(t *testing.T) {
 		t.Fatalf("%s = %q, want %q", ClaudeCLIBaseURLEnv, baseURLValue, proxyURL)
 	}
 
-	// Assert cloud auth env vars are ABSENT (no-cloud-auth invariant).
+	// Assert ANTHROPIC_API_KEY is set to placeholder (TC-101: now required).
+	var foundAuthKey bool
+	var authKeyValue string
 	for _, e := range env {
 		if strings.HasPrefix(e, ClaudeCLIAuthEnv+"=") {
-			t.Fatalf("cloud auth %s must be absent in local mode; got: %s", ClaudeCLIAuthEnv, e)
+			foundAuthKey = true
+			authKeyValue = strings.TrimPrefix(e, ClaudeCLIAuthEnv+"=")
 		}
+	}
+	if !foundAuthKey {
+		t.Fatalf("%s not found in local mode env; expected placeholder", ClaudeCLIAuthEnv)
+	}
+	if authKeyValue != LocalProxyAuthPlaceholder {
+		t.Fatalf("%s = %q, want %q (placeholder)", ClaudeCLIAuthEnv, authKeyValue, LocalProxyAuthPlaceholder)
+	}
+
+	// Assert CLAUDE_CODE_OAUTH_TOKEN is ABSENT (no OAuth in local mode).
+	for _, e := range env {
 		if strings.HasPrefix(e, ClaudeCLIOAuthEnv+"=") {
-			t.Fatalf("cloud auth %s must be absent in local mode; got: %s", ClaudeCLIOAuthEnv, e)
+			t.Fatalf("OAuth token %s must be absent in local mode; got: %s", ClaudeCLIOAuthEnv, e)
 		}
 	}
 }
@@ -422,13 +436,27 @@ func TestClaudeCLI_LocalEntry_SetsBaseURLAndNoCloudAuth(t *testing.T) {
 		t.Fatalf("%s = %q, want %q", ClaudeCLIBaseURLEnv, baseURLValue, proxyURL)
 	}
 
-	// Assert ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are ABSENT (no-cloud-auth invariant).
+	// Assert ANTHROPIC_API_KEY is set to placeholder (TC-101: now required).
+	// CLAUDE_CODE_OAUTH_TOKEN must still be ABSENT.
+	var foundAuthKey bool
+	var authKeyValue string
 	for _, e := range cmd.Env {
 		if strings.HasPrefix(e, ClaudeCLIAuthEnv+"=") {
-			t.Fatalf("cloud auth env %s must not be present for local entry; got: %s", ClaudeCLIAuthEnv, e)
+			foundAuthKey = true
+			authKeyValue = strings.TrimPrefix(e, ClaudeCLIAuthEnv+"=")
 		}
+	}
+	if !foundAuthKey {
+		t.Fatalf("%s not found in subprocess env for local entry; expected placeholder", ClaudeCLIAuthEnv)
+	}
+	if authKeyValue != LocalProxyAuthPlaceholder {
+		t.Fatalf("%s = %q, want %q (placeholder)", ClaudeCLIAuthEnv, authKeyValue, LocalProxyAuthPlaceholder)
+	}
+
+	// Assert CLAUDE_CODE_OAUTH_TOKEN is still ABSENT.
+	for _, e := range cmd.Env {
 		if strings.HasPrefix(e, ClaudeCLIOAuthEnv+"=") {
-			t.Fatalf("cloud auth env %s must not be present for local entry; got: %s", ClaudeCLIOAuthEnv, e)
+			t.Fatalf("OAuth token %s must not be present for local entry; got: %s", ClaudeCLIOAuthEnv, e)
 		}
 	}
 }
@@ -512,5 +540,234 @@ func TestNewClaudeCLIFromSecretSourceDelegatesToSecretSource(t *testing.T) {
 				t.Fatalf("oauthToken = %q, want %q", cli.oauthToken, tt.wantOAuthToken)
 			}
 		})
+	}
+}
+
+// TC-101-01: claudeEnv (local mode) injects placeholder sentinel as ANTHROPIC_API_KEY
+func TestClaudeEnvLocalModeInjectsPlaceholder(t *testing.T) {
+	baseEnv := []string{
+		"PATH=/usr/bin",
+		ClaudeCLIAuthEnv + "=old-api-key",
+		ClaudeCLIOAuthEnv + "=old-oauth",
+	}
+	env := claudeEnv(baseEnv, "real-operator-key", "real-oauth", "http://localhost:8080", "/tmp/h")
+
+	// Verify ANTHROPIC_API_KEY is set to the placeholder
+	apiKeyFound := false
+	apiKeyValue := ""
+	for _, e := range env {
+		if strings.HasPrefix(e, ClaudeCLIAuthEnv+"=") {
+			apiKeyFound = true
+			apiKeyValue = strings.TrimPrefix(e, ClaudeCLIAuthEnv+"=")
+		}
+	}
+
+	if !apiKeyFound {
+		t.Fatal("ANTHROPIC_API_KEY not found in env")
+	}
+	if apiKeyValue != LocalProxyAuthPlaceholder {
+		t.Fatalf("ANTHROPIC_API_KEY = %q, want %q", apiKeyValue, LocalProxyAuthPlaceholder)
+	}
+
+	// Verify ANTHROPIC_BASE_URL is set
+	baseURLFound := false
+	baseURLValue := ""
+	for _, e := range env {
+		if strings.HasPrefix(e, ClaudeCLIBaseURLEnv+"=") {
+			baseURLFound = true
+			baseURLValue = strings.TrimPrefix(e, ClaudeCLIBaseURLEnv+"=")
+		}
+	}
+
+	if !baseURLFound {
+		t.Fatal("ANTHROPIC_BASE_URL not found in env")
+	}
+	if baseURLValue != "http://localhost:8080" {
+		t.Fatalf("ANTHROPIC_BASE_URL = %q, want %q", baseURLValue, "http://localhost:8080")
+	}
+
+	// Verify CLAUDE_CODE_OAUTH_TOKEN is NOT present
+	for _, e := range env {
+		if strings.HasPrefix(e, ClaudeCLIOAuthEnv+"=") {
+			t.Fatalf("CLAUDE_CODE_OAUTH_TOKEN should not be in local mode env: %s", e)
+		}
+	}
+
+	// Verify real credentials are not in the env
+	envJoined := strings.Join(env, " ")
+	if strings.Contains(envJoined, "real-operator-key") {
+		t.Fatal("real operator auth token found in env")
+	}
+	if strings.Contains(envJoined, "real-oauth") {
+		t.Fatal("real oauth token found in env")
+	}
+}
+
+// TC-101-02: claudeEnv (local mode) placeholder is distinct from any real operator token
+func TestClaudeEnvLocalModePlaceholderNotRealKey(t *testing.T) {
+	baseEnv := []string{"PATH=/usr/bin"}
+	env := claudeEnv(baseEnv, "sk-ant-realkey", "", "http://localhost:8080", "/tmp/h")
+
+	apiKeyValue := ""
+	for _, e := range env {
+		if strings.HasPrefix(e, ClaudeCLIAuthEnv+"=") {
+			apiKeyValue = strings.TrimPrefix(e, ClaudeCLIAuthEnv+"=")
+		}
+	}
+
+	// Assert the placeholder value equals LocalProxyAuthPlaceholder
+	if apiKeyValue != LocalProxyAuthPlaceholder {
+		t.Fatalf("ANTHROPIC_API_KEY = %q, want %q", apiKeyValue, LocalProxyAuthPlaceholder)
+	}
+
+	// Assert the placeholder is NOT the operator's real key (security invariant)
+	if apiKeyValue == "sk-ant-realkey" {
+		t.Fatal("injectedKey == realOperatorKey: security invariant violated")
+	}
+	if apiKeyValue != LocalProxyAuthPlaceholder {
+		t.Fatalf("injectedKey != LocalProxyAuthPlaceholder: %q != %q", apiKeyValue, LocalProxyAuthPlaceholder)
+	}
+}
+
+// TC-101-03: claudeEnv (cloud mode) is unchanged: no placeholder, real credential injected
+func TestClaudeEnvCloudModeUnchanged(t *testing.T) {
+	// Test 1: API key in cloud mode (baseURL empty)
+	baseEnv := []string{"PATH=/usr/bin"}
+	env := claudeEnv(baseEnv, "sk-ant-prod", "", "", "/tmp/h")
+
+	// Should have real API key, not placeholder
+	apiKeyFound := false
+	apiKeyValue := ""
+	for _, e := range env {
+		if strings.HasPrefix(e, ClaudeCLIAuthEnv+"=") {
+			apiKeyFound = true
+			apiKeyValue = strings.TrimPrefix(e, ClaudeCLIAuthEnv+"=")
+		}
+	}
+
+	if !apiKeyFound {
+		t.Fatal("ANTHROPIC_API_KEY not found in cloud mode")
+	}
+	if apiKeyValue != "sk-ant-prod" {
+		t.Fatalf("ANTHROPIC_API_KEY = %q, want %q", apiKeyValue, "sk-ant-prod")
+	}
+
+	// Should NOT have placeholder
+	if apiKeyValue == LocalProxyAuthPlaceholder {
+		t.Fatal("cloud mode should not have placeholder")
+	}
+
+	// Should NOT have ANTHROPIC_BASE_URL
+	for _, e := range env {
+		if strings.HasPrefix(e, ClaudeCLIBaseURLEnv+"=") {
+			t.Fatalf("ANTHROPIC_BASE_URL should not be in cloud mode env: %s", e)
+		}
+	}
+
+	// Test 2: OAuth token in cloud mode (OAuth preferred)
+	env2 := claudeEnv(baseEnv, "sk-ant-prod", "oauth-tok", "", "/tmp/h")
+
+	oauthFound := false
+	oauthValue := ""
+	for _, e := range env2 {
+		if strings.HasPrefix(e, ClaudeCLIOAuthEnv+"=") {
+			oauthFound = true
+			oauthValue = strings.TrimPrefix(e, ClaudeCLIOAuthEnv+"=")
+		}
+	}
+
+	if !oauthFound {
+		t.Fatal("CLAUDE_CODE_OAUTH_TOKEN not found in cloud mode with OAuth")
+	}
+	if oauthValue != "oauth-tok" {
+		t.Fatalf("CLAUDE_CODE_OAUTH_TOKEN = %q, want %q", oauthValue, "oauth-tok")
+	}
+
+	// Should NOT have ANTHROPIC_API_KEY (OAuth preferred)
+	for _, e := range env2 {
+		if strings.HasPrefix(e, ClaudeCLIAuthEnv+"=") {
+			t.Fatalf("ANTHROPIC_API_KEY should not be present when OAuth is preferred: %s", e)
+		}
+	}
+
+	// Should NOT have placeholder
+	if oauthValue == LocalProxyAuthPlaceholder {
+		t.Fatal("cloud mode should not have placeholder")
+	}
+}
+
+// TC-101-06 (L2 part): End-to-end intent with NewClaudeCLIFromEntry local mode
+func TestNewClaudeCLIFromEntryLocalModeEnv(t *testing.T) {
+	// Create a local entry (SecretRef == "")
+	localEntry := registry.RegistryEntry{
+		ID:        "local",
+		Endpoint:  "http://localhost:8080",
+		ModelID:   "qwen2.5-coder:7b",
+		SecretRef: "", // Empty = local entry
+	}
+
+	// Create a fake secret source (should not be used for local entries)
+	fakeSource := &fakeSecretSource{
+		authToken:  "sk-should-not-be-used",
+		oauthToken: "oauth-should-not-be-used",
+	}
+
+	// Create the CLI from the local entry
+	cli := NewClaudeCLIFromEntry(localEntry, fakeSource, "/tmp/work")
+
+	if cli == nil {
+		t.Fatal("NewClaudeCLIFromEntry() returned nil")
+	}
+
+	// Verify the CLI has the correct baseURL
+	if cli.baseURL != "http://localhost:8080" {
+		t.Fatalf("cli.baseURL = %q, want %q", cli.baseURL, "http://localhost:8080")
+	}
+
+	// Verify the CLI has no real credentials (they should not be stored for local entries)
+	// For local entries, authToken and oauthToken are empty in the CLI object
+	if cli.authToken != "" {
+		t.Fatalf("cli.authToken should be empty for local entry, got %q", cli.authToken)
+	}
+	if cli.oauthToken != "" {
+		t.Fatalf("cli.oauthToken should be empty for local entry, got %q", cli.oauthToken)
+	}
+
+	// Create the environment to verify the placeholder is injected at Run time
+	tempHome := t.TempDir()
+	testEnv := claudeEnv(os.Environ(), cli.authToken, cli.oauthToken, cli.baseURL, tempHome)
+
+	// Verify ANTHROPIC_API_KEY is set to placeholder
+	apiKeyFound := false
+	apiKeyValue := ""
+	for _, e := range testEnv {
+		if strings.HasPrefix(e, ClaudeCLIAuthEnv+"=") {
+			apiKeyFound = true
+			apiKeyValue = strings.TrimPrefix(e, ClaudeCLIAuthEnv+"=")
+		}
+	}
+
+	if !apiKeyFound {
+		t.Fatal("ANTHROPIC_API_KEY not found when using local entry")
+	}
+	if apiKeyValue != LocalProxyAuthPlaceholder {
+		t.Fatalf("ANTHROPIC_API_KEY = %q, want %q", apiKeyValue, LocalProxyAuthPlaceholder)
+	}
+
+	// Verify ANTHROPIC_BASE_URL is set to the local endpoint
+	baseURLFound := false
+	baseURLValue := ""
+	for _, e := range testEnv {
+		if strings.HasPrefix(e, ClaudeCLIBaseURLEnv+"=") {
+			baseURLFound = true
+			baseURLValue = strings.TrimPrefix(e, ClaudeCLIBaseURLEnv+"=")
+		}
+	}
+
+	if !baseURLFound {
+		t.Fatal("ANTHROPIC_BASE_URL not found when using local entry")
+	}
+	if baseURLValue != "http://localhost:8080" {
+		t.Fatalf("ANTHROPIC_BASE_URL = %q, want %q", baseURLValue, "http://localhost:8080")
 	}
 }
