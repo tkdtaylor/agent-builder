@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/tkdtaylor/agent-builder/internal/registry"
@@ -81,10 +82,30 @@ func testCodexEntry(secretRef string) registry.RegistryEntry {
 	}
 }
 
+// capturedCmd holds the last *exec.Cmd created by the stubbing factory,
+// allowing tests to assert the subprocess environment and arguments.
+type capturedCmd struct {
+	mu  sync.Mutex
+	cmd *exec.Cmd
+}
+
+func (c *capturedCmd) set(cmd *exec.Cmd) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cmd = cmd
+}
+
+func (c *capturedCmd) get() *exec.Cmd {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cmd
+}
+
 // stubCommandFactory returns a commandCreator that re-invokes the test binary
 // as a subprocess (via TestMain/runHelperProcess) with GO_WANT_HELPER_PROCESS=1.
 // stdout is the text the helper writes to stdout; exitCode is the subprocess exit code.
-func stubCommandFactory(t *testing.T, stdout string, exitCode int) commandCreator {
+// The factory captures the created *exec.Cmd in captureState for test assertion.
+func stubCommandFactory(t *testing.T, stdout string, exitCode int, captureState *capturedCmd) commandCreator {
 	t.Helper()
 	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
 		// Re-invoke ourselves as a subprocess; TestMain routes to runHelperProcess.
@@ -93,6 +114,9 @@ func stubCommandFactory(t *testing.T, stdout string, exitCode int) commandCreato
 			"CODEX_HELPER_STDOUT=" + stdout,
 			fmt.Sprintf("CODEX_HELPER_EXIT=%d", exitCode),
 			"GO_WANT_HELPER_PROCESS=1",
+		}
+		if captureState != nil {
+			captureState.set(cmd)
 		}
 		return cmd
 	}
@@ -121,9 +145,11 @@ func TestCodexCLI_InterfaceSatisfied(t *testing.T) {
 
 func TestCodexCLI_RunInvokesSubprocessWithCorrectEnvAndArgs(t *testing.T) {
 	// TC-089-02: stub subprocess is invoked with auth token in env, model ID, worktree;
-	// returns OK result with branch.
+	// returns OK result with branch. Asserts that OPENAI_API_KEY, model ID, and worktree
+	// actually reach the subprocess environment/args.
 	const secretRef = "codex-openai-token"
 	const apiKey = "sk-test-codex-key"
+	const modelID = "gpt-4o"
 	const expectedBranch = "task/089-test-branch"
 
 	src := &fakeCodexSecretSource{
@@ -131,10 +157,13 @@ func TestCodexCLI_RunInvokesSubprocessWithCorrectEnvAndArgs(t *testing.T) {
 	}
 	entry := testCodexEntry(secretRef)
 
+	worktree := t.TempDir()
+
 	// Stub subprocess: exits 0, outputs the branch marker.
 	stubOut := "Running task...\nBRANCH: " + expectedBranch + "\n"
-	cli := NewCodexCLI(entry, src, t.TempDir())
-	cli.cmdFactory = stubCommandFactory(t, stubOut, 0)
+	capture := &capturedCmd{}
+	cli := NewCodexCLI(entry, src, worktree)
+	cli.cmdFactory = stubCommandFactory(t, stubOut, 0, capture)
 
 	task := supervisor.Task{ID: "089", Repo: "agent-builder", Spec: "docs/tasks/backlog/089-codex-harness-adapter.md"}
 
@@ -147,6 +176,43 @@ func TestCodexCLI_RunInvokesSubprocessWithCorrectEnvAndArgs(t *testing.T) {
 	}
 	if result.Branch != expectedBranch {
 		t.Fatalf("result.Branch = %q, want %q", result.Branch, expectedBranch)
+	}
+
+	// TC-089-02: assert the subprocess environment and args received the auth token, model, worktree.
+	cmd := capture.get()
+	if cmd == nil {
+		t.Fatal("subprocess command was not captured")
+	}
+
+	// Assert OPENAI_API_KEY is in the subprocess env.
+	var foundAuthToken bool
+	var foundModelVar bool
+	for _, env := range cmd.Env {
+		if strings.HasPrefix(env, CodexAPIKeyEnv+"=") {
+			value := strings.TrimPrefix(env, CodexAPIKeyEnv+"=")
+			if value != apiKey {
+				t.Fatalf("OPENAI_API_KEY env value = %q, want %q", value, apiKey)
+			}
+			foundAuthToken = true
+		}
+		if strings.HasPrefix(env, "CODEX_MODEL=") {
+			value := strings.TrimPrefix(env, "CODEX_MODEL=")
+			if value != modelID {
+				t.Fatalf("CODEX_MODEL env value = %q, want %q", value, modelID)
+			}
+			foundModelVar = true
+		}
+	}
+	if !foundAuthToken {
+		t.Fatalf("OPENAI_API_KEY not found in subprocess env")
+	}
+	if !foundModelVar {
+		t.Fatalf("CODEX_MODEL not found in subprocess env")
+	}
+
+	// Assert the worktree is set as cmd.Dir.
+	if cmd.Dir != worktree {
+		t.Fatalf("cmd.Dir = %q, want %q (the worktree path)", cmd.Dir, worktree)
 	}
 }
 
@@ -202,7 +268,7 @@ func TestCodexCLI_RunSucceedsVariantA(t *testing.T) {
 
 	stubOut := "BRANCH: " + expectedBranch + "\n"
 	cli := NewCodexCLI(entry, src, t.TempDir())
-	cli.cmdFactory = stubCommandFactory(t, stubOut, 0)
+	cli.cmdFactory = stubCommandFactory(t, stubOut, 0, nil)
 
 	task := supervisor.Task{ID: "089", Repo: "agent-builder", Spec: "spec"}
 	result, err := cli.Run(task)
@@ -232,7 +298,7 @@ func TestCodexCLI_RunSubprocessNonZeroExitReturnsError(t *testing.T) {
 
 	// Stub subprocess: exits 1 (stderr is written by the helper as "Codex API error").
 	cli := NewCodexCLI(entry, src, t.TempDir())
-	cli.cmdFactory = stubCommandFactory(t, "", 1)
+	cli.cmdFactory = stubCommandFactory(t, "", 1, nil)
 
 	task := supervisor.Task{ID: "089", Repo: "agent-builder", Spec: "spec"}
 
