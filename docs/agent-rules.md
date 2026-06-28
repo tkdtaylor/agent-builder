@@ -184,10 +184,18 @@ run doesn't re-debug them:
   registered (`podman info` → OCIRuntime `runc`), set `EXEC_BOX_RUNTIME=runc` or the
   create probe fails. `containment/execution-box/run.sh --print-runtime-plan` shows
   the selected runtime; `--probe --runtime runc` validates the box in isolation.
-- **Local 7–8B models clear auth/plumbing but do not reliably complete the executor
-  protocol.** With corrected task 101, `qwen2.5-coder:7b` authenticated and
-  round-tripped through the proxy but edited the wrong file and never wrote the
-  produced-branch file (escalated); `qwen3:8b` is a reasoning model returning
-  thinking-only/empty text unsuitable for the harness. The verify-gate correctly
-  escalated. Full branch+gate L6 (REQ-094-02) needs a more capable executor or
-  harness/prompt adaptation for small local models.
+- **The executor seam needs *structured* tool calls, and the proxy routing decides
+  whether they survive.** With corrected task 101 the auth/plumbing works, but the
+  full branch+gate round-trip (REQ-094-02) still failed — root cause is tool-call
+  serialization, not "the model is dumb." Drill-down (2026-06-28): the model produces
+  *correct* tool-call intent, but it only reaches the Claude CLI as an executable
+  `tool_use` block if the whole chain preserves structure. LiteLLM's **`openai/`**
+  provider (Ollama's OpenAI-compat `/v1`) returns tool calls as plain-text JSON →
+  the CLI can't execute them; LiteLLM's **`ollama_chat/`** provider (Ollama native
+  `/api/chat`) returns structured `tool_calls` → `tool_use` round-trips. AND it is
+  model-specific: `qwen3:8b` emits Ollama-parseable `tool_calls`; `qwen2.5-coder:7b`
+  emits bare JSON without the `<tool_call>` wrapper (deterministic, a Modelfile
+  `SYSTEM` override didn't fix it) so Ollama never parses it. Lesson: when an agentic
+  loop "does nothing," check the tool-call *serialization* end-to-end (model →
+  serving endpoint → proxy provider → harness) before blaming model capability. See
+  `docs/operating.md` → "Driving local models" for the verified config.

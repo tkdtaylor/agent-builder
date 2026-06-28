@@ -72,6 +72,63 @@ Common optional:
 > Do **not** set `AGENT_BUILDER_SANDBOX_RUNTIME` — the rented `srt` backend was removed (ADR 021)
 > and a stale value fails loudly.
 
+## Driving local models through the translation proxy
+
+A local registry entry (empty `SECRET_REF`) points the executor at a LiteLLM
+translation proxy that presents an Anthropic-compatible endpoint over Ollama. The
+executor injects a placeholder `ANTHROPIC_AUTH_TOKEN` automatically (task 101 — the
+current Claude CLI rejects a placeholder `ANTHROPIC_API_KEY` with `Not logged in`),
+so a pure-local registry needs **no** cloud credential in the host env.
+
+Verified setup (2026-06-28; Ollama 0.17.7, Claude CLI v2.1.150, RTX 4060):
+
+1. `ollama serve` and pull the model(s).
+2. Run LiteLLM with the **native Ollama provider** (`ollama_chat/<model>`), **not** the
+   OpenAI-compat provider (`openai/<model>`). The OpenAI-compat path does not carry
+   structured tool calls back as Anthropic `tool_use` blocks — the Claude CLI then
+   receives tool calls as plain text and never executes them (no files, no branch →
+   escalation). Minimal `litellm.yaml`:
+
+   ```yaml
+   model_list:
+     - model_name: "*"            # CLI sends its own model name; orchestrator passes no --model
+       litellm_params:
+         model: "ollama_chat/qwen3:8b"
+         api_base: "http://localhost:11434"
+   litellm_settings:
+     drop_params: true
+   ```
+   `litellm --config litellm.yaml --port 4000`.
+3. Configure the local entry:
+   ```bash
+   export AGENT_BUILDER_REGISTRY_LOCAL_ENABLED=true
+   export AGENT_BUILDER_REGISTRY_LOCAL_ENDPOINT=http://localhost:4000
+   export AGENT_BUILDER_REGISTRY_LOCAL_MODEL=qwen3:8b
+   export AGENT_BUILDER_REGISTRY_LOCAL_CAPABILITY_TIER=1
+   export AGENT_BUILDER_REGISTRY_LOCAL_COST_WEIGHT=1
+   # no *_SECRET_REF — local entries have no cloud auth
+   ```
+4. Run from the **main checkout**, not a worktree: `gate-tools/` is gitignored, so a
+   worktree's copy is empty and box creation fails with a misleading
+   `create probe exited 1`. If only `runc` is registered (no gVisor `runsc`), set
+   `EXEC_BOX_RUNTIME=runc`.
+
+### Local-model tool-calling status (this host, 2026-06-28)
+
+The executor seam needs the model to emit **structured tool calls** (Ollama
+`tool_calls` → Anthropic `tool_use`) so the Claude CLI can actually edit files and
+manage the branch. Status of the installed models:
+
+| Model | Structured tool calls? | Agentic executor? |
+|-------|------------------------|-------------------|
+| `qwen3:8b` | **Yes** — Ollama emits `tool_calls`; `tool_use` round-trips through the proxy (verified). | Mechanically yes. Completion reliability is marginal at 8B (its reasoning can wander mid-task); the verify-gate escalates incomplete attempts. |
+| `qwen2.5-coder:7b` | **No** — emits the call as bare JSON text without the `<tool_call>` wrapper, so Ollama 0.17.7 never parses it (deterministic, 3/3; a Modelfile `SYSTEM` override did not fix it). | No, in this stack. Produces correct code *as text* but the harness can't execute it. Use for non-agentic completion only, or add a tool-call parsing shim / a serving stack with a tool parser (e.g. vLLM). |
+
+For an autonomous local executor today, prefer `qwen3:8b` via `ollama_chat/` and
+expect to lean on the gate. A more capable local model (or a purpose-built thin
+harness that calls Ollama's native `/api/chat` and executes tool calls directly) is
+the path to reliable local round-trips.
+
 ## Run one task
 
 ```bash
@@ -114,7 +171,7 @@ ready task.
 | Symptom | Cause / fix |
 |---------|-------------|
 | `missing Gate tool <x> in …/gate-tools` | The toolchain dir is missing a binary (often in a fresh clone/worktree). Populate `golangci-lint`, `dep-scan`, `code-scanner`. |
-| `supervisor: create box: sandbox: create probe exited N` | Box failed to launch — check rootless Podman + the runtime registration (L6 runbook §1a). |
+| `supervisor: create box: sandbox: create probe exited N` | Box failed to launch (the runner swallows the launcher's real stderr). Most common causes: (1) running from a **worktree** whose gitignored `gate-tools/` is empty — run from the main checkout or copy the tools in; (2) the agent workload defaults to `runsc` (gVisor) but only `runc` is registered — set `EXEC_BOX_RUNTIME=runc`; (3) rootless Podman / runtime registration (L6 runbook §1a). Reproduce in isolation: `containment/execution-box/run.sh --probe --runtime runc`. |
 | `Not logged in` / `Credit balance is too low` | Auth: ensure `CLAUDE_CODE_OAUTH_TOKEN` is set (subscription) and `ANTHROPIC_API_KEY` is unset/funded. The executor isolates Claude in a temp HOME, so it authenticates by the env credential alone. |
 | `gate failed: … FAIL dep-scan … sumdb signature verification failed` | dep-scan < 1.3.1 false-blocks Go deps. Upgrade dep-scan to ≥ 1.3.1 in gate-tools. |
 | Gate step needs the network and is blocked | The box enforces a default-deny egress allowlist (`containment/execution-box/egress.allowlist`). Add the required host:port with a justification comment. |
