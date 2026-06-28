@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-diagrams-render check l6-preflight l6-probe
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render check l6-preflight l6-probe
 
 lint:
 	golangci-lint run
@@ -10,7 +10,7 @@ test:
 	go test ./...
 
 # Fitness functions — see docs/spec/fitness-functions.md
-fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-diagrams-render
+fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render
 	@echo "All fitness checks passed."
 
 fitness-no-docker:
@@ -238,6 +238,35 @@ fitness-envelope-isolation:
 		exit 1; \
 	fi; \
 	echo "PASS fitness-envelope-isolation: internal/envelope is not in internal/supervisor's dependency graph."
+
+# fitness-worker-transport-isolation covers test-spec TC-083-04 (F-011, ADR 048 §3):
+# internal/channel/worker (the orchestrator↔worker transport adapter) must be a leaf:
+# its DIRECT agent-builder/internal/ imports must be exactly internal/envelope,
+# internal/supervisor, and internal/audit — nothing else. envelope is the
+# sign/verify/seal/replay primitive; supervisor supplies the Task/Result seam types;
+# audit supplies the rejection-event Sink seam (itself a verified leaf via F-005).
+#
+# This is a DIRECT-import assertion (go list .Imports), not a -deps transitive one, for
+# the same reason as F-010: internal/supervisor legitimately drags in internal/gate and
+# internal/sandbox transitively (it is the trusted control core), so a -deps check would
+# false-positive on that blessed path. The security intent — keep internal/executor,
+# internal/runtime, internal/orchestrator, LLM, and web-fetch code off the transport — is
+# fully covered by a direct-import check: none of the three allowed leaves imports the
+# executor/runtime/orchestrator (guaranteed by F-003/F-005/F-007), so the transport can
+# only reach them by importing them directly, which this check blocks.
+fitness-worker-transport-isolation:
+	@imports=$$(go list -f '{{ join .Imports "\n" }}' ./internal/channel/worker) || exit $$?; \
+	worker_forbidden=$$(printf '%s\n' "$$imports" \
+		| grep 'github.com/tkdtaylor/agent-builder/internal/' \
+		| grep -v 'agent-builder/internal/envelope\(/\|$$\)' \
+		| grep -v 'agent-builder/internal/supervisor\(/\|$$\)' \
+		| grep -v 'agent-builder/internal/audit\(/\|$$\)' || true); \
+	if [ -n "$$worker_forbidden" ]; then \
+		echo "FAIL fitness-worker-transport-isolation: internal/channel/worker DIRECTLY imports forbidden agent-builder/internal package(s):"; \
+		printf '%s\n' "$$worker_forbidden"; \
+		exit 1; \
+	fi; \
+	echo "PASS fitness-worker-transport-isolation: internal/channel/worker directly imports only envelope, supervisor, and audit internal packages."
 
 fitness-diagrams-render:
 	@python3 scripts/check-mermaid.py > /dev/null && \
