@@ -10,8 +10,8 @@
 //
 // It is a consumer of the recipe seam; it coordinates workers, it does not become
 // one. It MUST NOT directly import internal/executor (REQ-081-05). Its direct
-// imports are internal/recipe, internal/runtime, internal/policy, internal/audit,
-// and internal/supervisor (for the Task/Reporter/GoalSource seam types). The
+// imports are internal/recipe, internal/runtime, internal/policy, and
+// internal/supervisor (for the Task/Reporter/GoalSource seam types). The
 // transitive reach into internal/executor via internal/runtime is the
 // ADR-042-blessed dispatch path: the orchestrator dispatches a worker that runs
 // the executor inside its box; the orchestrator never references the executor

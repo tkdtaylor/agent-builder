@@ -120,10 +120,14 @@ dispatch happens.
 approval token). `Orchestrator.Resume(approval)`:
 - Spy `dispatchFunc` recorded **2** calls (one per sub-goal) in sub-goal order.
 - A `PlanResult` is reported over the Reporter after dispatch completes.
+- After the first successful Resume, the held plan is **consumed** (deleted from the store) so a second valid-role Resume on the same goal **fails** and produces 0 additional dispatches (no-replay protection).
 
 **Security (task 098 SEC-001 carry-forward):** a resume with a mismatched envelope
 role (`from="attacker"` or `to != "orchestrator"`) is REJECTED — `Resume` returns a
-non-nil error and the spy records **0** additional dispatch calls.
+non-nil error and the spy records **0** additional dispatch calls. Additionally, a
+**second** valid-role Resume on the same goal (after the first succeeded) also
+returns a non-nil error and triggers 0 additional dispatches — the held plan must
+be consumed before dispatch so approval tokens cannot be replayed.
 
 ---
 

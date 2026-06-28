@@ -232,6 +232,48 @@ func TestTC081_02_ResumeRejectsRoleMismatch(t *testing.T) {
 	}
 }
 
+// TC-081-02 no-replay: after a successful Resume consumes the plan, a second
+// valid-role Resume on the same goal fails and produces 0 additional dispatches.
+func TestTC081_02_ApprovalNoReplay(t *testing.T) {
+	spy := newDispatchSpy()
+	rep := &fakeReporter{}
+	pol := &fakePolicy{decision: policy.DecisionRequireApproval}
+	o := orchestrator.New(
+		orchestrator.NewStructuredPlanner(knownRecipes...),
+		pol, rep, runtime.Config{},
+		orchestrator.WithDispatchFunc(spy.fn),
+	)
+	goal := supervisor.Task{ID: "g1", Spec: "coding-agent: implement X\ndocs-fix: update Y"}
+	if _, err := o.Handle(context.Background(), goal); err != nil {
+		t.Fatalf("Handle: unexpected error: %v", err)
+	}
+
+	// First valid Resume: must succeed, dispatch, and consume the plan.
+	if _, err := o.Resume(context.Background(), orchestrator.Approval{
+		From: "operator", To: "orchestrator", GoalID: "g1", Approved: true,
+	}); err != nil {
+		t.Fatalf("first Resume: unexpected error: %v", err)
+	}
+	if spy.count() != 2 {
+		t.Fatalf("after first Resume: want 2 dispatches, got %d", spy.count())
+	}
+
+	// Second Resume on the same goal: must fail (plan already consumed).
+	if _, err := o.Resume(context.Background(), orchestrator.Approval{
+		From: "operator", To: "orchestrator", GoalID: "g1", Approved: true,
+	}); err == nil {
+		t.Errorf("second Resume (replay): want error (plan consumed), got nil")
+	}
+	// No additional dispatch should have happened (spy count unchanged).
+	if spy.count() != 2 {
+		t.Fatalf("after replay attempt: want still 2 dispatches (no additional), got %d", spy.count())
+	}
+	// Plan must not be pending (it was consumed by the first Resume).
+	if o.HasPendingPlan("g1") {
+		t.Errorf("plan should NOT be pending after successful Resume consumed it")
+	}
+}
+
 // --- TC-081-03 ---------------------------------------------------------------
 
 func TestTC081_03_AllowDispatchesPerSubGoal(t *testing.T) {
