@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-diagrams-render check l6-preflight l6-probe
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-diagrams-render check l6-preflight l6-probe
 
 lint:
 	golangci-lint run
@@ -10,7 +10,7 @@ test:
 	go test ./...
 
 # Fitness functions — see docs/spec/fitness-functions.md
-fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-diagrams-render
+fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-diagrams-render
 	@echo "All fitness checks passed."
 
 fitness-no-docker:
@@ -118,6 +118,22 @@ fitness-supervisor-isolation:
 		exit 1; \
 	fi; \
 	echo "PASS fitness-supervisor-isolation: supervisor import graph contains no executor/LLM/web-fetch packages."
+
+# fitness-orchestrator-no-executor covers test-spec TC-081-05 (ADR 046 D-2):
+# internal/orchestrator must have NO DIRECT import of internal/executor. The
+# orchestrator authors no code; it dispatches workers THROUGH internal/runtime,
+# which legitimately imports internal/executor — that transitive path is the
+# ADR-042-blessed dispatch path and is expected. So this check asserts DIRECT
+# imports only (go list -f '{{.Imports}}'), NOT the transitive graph (-deps).
+fitness-orchestrator-no-executor:
+	@imports=$$(go list -f '{{ join .Imports "\n" }}' ./internal/orchestrator) || exit $$?; \
+	forbidden=$$(printf '%s\n' "$$imports" | grep '/internal/executor\(/\|$$\)' || true); \
+	if [ -n "$$forbidden" ]; then \
+		echo "FAIL fitness-orchestrator-no-executor: internal/orchestrator DIRECTLY imports internal/executor:"; \
+		printf '%s\n' "$$forbidden"; \
+		exit 1; \
+	fi; \
+	echo "PASS fitness-orchestrator-no-executor: internal/orchestrator has no direct import of internal/executor."
 
 # fitness-no-srt covers test-spec TC-036-04: the default run pipeline must not
 # transitively import internal/sandbox/sandboxruntime.

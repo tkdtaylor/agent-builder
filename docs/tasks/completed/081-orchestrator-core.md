@@ -2,7 +2,8 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-27
-**Status:** backlog
+**Status:** completed (🟡 code merged — awaiting spec-verifier + ✅ promotion)
+**Governing ADR:** docs/architecture/decisions/046-orchestrator-core-decomposition-and-dispatch.md
 
 ## Goal
 

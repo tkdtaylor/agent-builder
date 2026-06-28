@@ -36,5 +36,6 @@ agent-builder is a Go orchestrator that composes the secure-agent ecosystem bloc
 - **F-003 — supervisor has no LLM/untrusted-content dependency:** implemented by `make fitness-supervisor-isolation`; the supervisor package import graph contains no executor/LLM/web-fetch packages.
 - **F-001 — no Docker dev-environment references:** implemented by `make fitness-no-docker`; working-tree files contain no `docker`/`docker-compose`/`Dockerfile` dev-environment references outside the allowed product-container path.
 - **F-002 — gate is blocking:** implemented by `make fitness-gate-blocking`; production gate and CLI source expose no `--no-verify`/skip route around `dep-scan`/`code-scanner`.
+- **F-010 — orchestrator authors no code (no direct executor import):** implemented by `make fitness-orchestrator-no-executor`; `internal/orchestrator`'s own direct imports contain no `internal/executor` (the executor is reached only transitively, through `internal/runtime`, for the dispatched worker — ADR 042/046).
 
 See [fitness-functions.md](fitness-functions.md) for executable rule definitions and commands.

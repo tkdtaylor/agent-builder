@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-27
+**Last updated:** 2026-06-28
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -98,6 +98,7 @@ C4Component
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
         Component(cli, "Command Surface", "internal/cli", "Flag parsing and run/version/verify/verify-checkpoint dispatch with exit codes")
+        Component(orchestrator, "Tier-1 Orchestrator", "internal/orchestrator", "Goal → Planner plan → policy spawn-plan gate (pause/resume approval) → sequential per-sub-goal dispatch via runtime.Run → typed PlanResult over Reporter. Authors no code; no direct executor import (ADR 042/046)")
         Component(runtime, "Default Run Wiring", "internal/runtime", "CLI bootstrap that composes configured Phase 0 adapters")
         Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher, lifecycle logger, run-record writer, and stable seams")
         Component(agentloop, "Agent Loop", "internal/loop", "Inside-the-box pick-attempt-verify cycle plus bounded retry policy")
@@ -121,6 +122,9 @@ C4Component
 
     Rel(main, cli, "Delegates to cli.Main")
     Rel(cli, runtime, "Dispatches run to the default pipeline")
+    Rel(orchestrator, runtime, "Dispatches one worker per sub-goal via runtime.Run (reuse, not reimplement)")
+    Rel(orchestrator, gate, "Selects recipe per sub-goal (recipe.SelectRecipe)")
+    Rel(orchestrator, policyGate, "Decides spawn-plan (pause-and-resume on require_approval)")
     Rel(runtime, tasksource, "Selects one ready task")
     Rel(runtime, modelRouter, "Resolves RoutingSpec → entry via Select (ADR 043)")
     Rel(modelRouter, executorRegistry, "Selects cheapest eligible entry from catalog")
@@ -165,6 +169,7 @@ C4Component
 
 **Legend — load-bearing edges and boundaries** (the things you can't read off the boxes). The full contract catalog with ADR citations is the spec's job: see [docs/spec/architecture.md](../spec/architecture.md) §5 *Cross-cutting decisions*.
 
+- **The orchestrator is Tier-1 above the worker stack** — it decomposes a goal, gates the plan on `policy.Decide` (`spawn-plan`, pause-and-resume on `require_approval`), and dispatches one worker per sub-goal by **reusing** `runtime.Run`. It authors no code and has **no direct import of `internal/executor`** (the executor is reached only transitively through `runtime`, for the dispatched worker — `make fitness-orchestrator-no-executor`).
 - **Supervisor is trusted and dumb** — it creates one box, runs one in-box loop, and tears down exactly once; no executor/LLM/web logic enters its graph.
 - **Two run backends behind one `sandbox.Runner` seam** — `execsandbox.Runner` (default when `AGENT_BUILDER_EXEC_SANDBOX_BIN` is set) else `podman.Runner`; the retired `srt` backend is out-of-graph, not in the pipeline.
 - **Policy decides before the box exists** — `decide` runs **after** vault resolution and **before** `sandboxBox.Create`; `deny`/`require_approval` means the box never starts.
@@ -270,6 +275,66 @@ sequenceDiagram
     Supervisor->>ContainmentBox: Teardown(BoxHandle)
     Supervisor-->>Supervisor: log box.torn_down
 ```
+
+---
+
+## 5. Orchestrator runtime flow — goal → plan → approval → dispatch
+
+Tier-1 (`internal/orchestrator`, ADR 042/046). The orchestrator sits **above** the
+Section-4 worker flow: each sub-goal it approves is dispatched by invoking
+`runtime.Run` (the entire Section-4 sequence) once. The orchestrator authors no code
+and reaches the executor only transitively through that dispatch.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Channel as Inbound Channel (GoalSource)
+    participant Orch as Tier-1 Orchestrator
+    participant Planner as StructuredPlanner
+    participant Policy as policy-engine (spawn-plan)
+    participant Store as PlanStore (in-memory)
+    participant Reporter as Reporter (outbound channel)
+    participant Recipe as recipe.SelectRecipe
+    participant Runtime as runtime.Run (per sub-goal worker)
+
+    Channel-->>Orch: goal (supervisor.Task, envelope-verified + armor-guarded)
+    Orch->>Planner: Plan(goal)
+    Planner-->>Orch: Plan{ ordered SubGoals } (>=1)
+    Orch->>Policy: Decide(spawn-plan, plan)
+    Policy-->>Orch: decision
+    alt allow
+        loop each sub-goal (sequential)
+            Orch->>Recipe: SelectRecipe(name)
+            alt recipe found
+                Orch->>Runtime: Run(base cfg with RecipeName) — dispatch worker
+                Runtime-->>Orch: nil / error
+            else unknown recipe
+                Orch-->>Orch: record failed outcome (no dispatch)
+            end
+        end
+        Orch->>Reporter: Report(RenderPlanResult)
+    else require_approval (pause)
+        Orch->>Store: Put(plan)
+        Orch->>Reporter: Report("Approve? <plan>")
+        Note over Orch,Store: dispatch NOTHING, hold plan in memory
+        Channel-->>Orch: Resume(approval) — verified From=operator,To=orchestrator
+        alt role mismatch
+            Orch-->>Orch: reject (no dispatch, plan stays pending)
+        else approved
+            Orch->>Store: Get + Delete(goalID)
+            Orch->>Runtime: dispatch each sub-goal (as in allow branch)
+            Orch->>Reporter: Report(RenderPlanResult)
+        end
+    else deny
+        Orch->>Reporter: Report("Plan denied")
+    end
+```
+
+**Load-bearing edges:** the `spawn-plan` decision is distinct from the worker
+`run-task` gate; `require_approval` is **pause-and-resume**, not a terminal halt;
+`Resume` asserts the verified envelope roles (operator → orchestrator) before acting
+(task 098 SEC-001); dispatch is one `runtime.Run` per sub-goal, sequential
+(concurrency is task 086).
 
 ---
 

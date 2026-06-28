@@ -386,8 +386,8 @@ type Reporter interface {
 }
 ```
 
-- **Implementors:** `*telegram.ReplyAdapter` (Telegram outbound concrete); `*telegram.FakeReporter` (in-memory test double for task 081 L2 tests).
-- **Consumers:** future orchestrator (task 081) for REQ-081-02 (solicit approval) and REQ-081-04 (report result summary).
+- **Implementors:** `*telegram.ReplyAdapter` (Telegram outbound concrete); `*telegram.FakeReporter` (in-memory test double for orchestrator L2 tests).
+- **Consumers:** `*orchestrator.Orchestrator` (task 081) for REQ-081-02 (solicit approval over `renderApprovalRequest`) and REQ-081-04 (report the rendered `PlanResult` summary).
 - **Package:** `internal/supervisor` — symmetric outbound counterpart to `supervisor.GoalSource` (the inbound seam). The pure-stdlib signature (`context.Context`, `string`, `error`) ensures that adding this interface adds no import to `internal/supervisor`, preserving F-003 / F-007 (enforced by `make fitness-supervisor-isolation` and `make fitness-envelope-isolation`).
 - **Stability:** governed by ADR 046 §2 and task 098.
 - **Required behavior:** `Report` sends `text` over the channel via an encrypted+signed envelope (ADR 045). The concrete implementation must never log or expose the bot token, private key material, or the plaintext on the wire. The fake captures reported strings in order via `Reported()` for test assertions.
@@ -432,6 +432,98 @@ func (f *FakeReporter) Reported() []string
 
 - **Purpose:** test double for task 081's L2 tests — assert "approval solicited" / "summary reported" without a live bot, network, or crypto setup.
 - **Behavior:** `Report` appends `text` to an internal slice; `Reported()` returns a copy in insertion order. Concurrent-safe.
+
+### Tier-1 orchestrator (`internal/orchestrator`)
+
+The orchestrator is the Tier-1 coordination layer above the `supervisor`/`runtime`
+worker stack (ADR 042, ADR 046). It accepts a goal, decomposes it into a plan, gates
+the plan on human approval, and — on allow/approval — dispatches one worker per
+sub-goal by reusing `runtime.Run`. It aggregates outcomes into a typed `PlanResult`
+and reports them over `supervisor.Reporter`. **It authors no code and never directly
+imports `internal/executor`** (REQ-081-05; enforced by `make
+fitness-orchestrator-no-executor` and TC-081-05's direct-import assertion).
+
+```go
+// Planner decomposes a goal into an ordered plan (ADR 046 §1).
+type Planner interface {
+    Plan(goal supervisor.Task) (Plan, error)
+}
+
+type Plan struct {
+    Goal     string    // original goal text (inbound Task.Spec)
+    GoalID   string    // original goal Task.ID — the plan-state key
+    SubGoals []SubGoal // ordered
+}
+
+type SubGoal struct {
+    RecipeName string          // recipe selected for this sub-goal
+    Task       supervisor.Task // payload the dispatched worker runs
+}
+
+// Typed aggregate (ADR 046 §2) — rendered to text only at the Reporter edge.
+type PlanResult struct {
+    Goal     string
+    Outcomes []SubGoalOutcome
+}
+type SubGoalOutcome struct {
+    SubGoal string // sub-goal spec text
+    Recipe  string // recipe used
+    Success bool
+    Detail  string // "dispatched" / failure reason / "recipe not found: …"
+}
+
+// In-memory plan state behind a swappable store (ADR 046 §3; task 084 backend).
+type PlanStore interface {
+    Put(plan Plan)
+    Get(goalID string) (Plan, bool)
+    Delete(goalID string)
+}
+
+// Dispatch seam (ADR 046 §5). Default wires to runtime.Run; tests inject a spy.
+type DispatchFunc func(ctx context.Context, sub SubGoal, base runtime.Config) error
+
+// Narrow policy decide seam (satisfied by *policy.PolicyClient and test fakes).
+type PolicyClient interface {
+    Decide(req policy.DecideRequest) (policy.DecideResponse, error)
+}
+
+// Envelope-verified inbound approval (ADR 046 §4; task 098 SEC-001 carry-forward).
+type Approval struct {
+    From, To string // verified envelope roles — MUST be operator → orchestrator
+    GoalID   string
+    Approved bool
+}
+
+func New(planner Planner, pol PolicyClient, reporter supervisor.Reporter,
+    base runtime.Config, opts ...Option) *Orchestrator
+func (o *Orchestrator) Handle(ctx context.Context, goal supervisor.Task) (PlanResult, error)
+func (o *Orchestrator) Resume(ctx context.Context, approval Approval) (PlanResult, error)
+func (o *Orchestrator) HasPendingPlan(goalID string) bool
+```
+
+- **v1 Planner concrete — `StructuredPlanner`** (ADR 046 §1 Option A, rule-based, no
+  LLM, no `internal/executor` import). Structured-plan text format: each non-blank,
+  non-`#` line is one sub-goal `"<recipe>: <spec>"`; a line with no recognized recipe
+  prefix uses the default recipe (`coding-agent`) with the whole line as the spec; a
+  goal with no parseable sub-goal line collapses to a single sub-goal on the default
+  recipe. The `LLMPlanner` is a named follow-on (ADR 046 §6) behind the same seam.
+- **Approval gate (ADR 046 §4):** `Handle` issues `policy.Decide` with action
+  `"spawn-plan"` (distinct from the worker `"run-task"`). `allow` → dispatch
+  immediately; `deny` → report + stop; `require_approval` → **pause**: report the
+  rendered plan (`"Approve? …"`), hold it in `PlanStore`, dispatch nothing. `Resume`
+  continues a held plan when an approval returns; it asserts the verified envelope
+  roles (`From == "operator"`, `To == "orchestrator"`) before acting and consumes the
+  held plan so a stale approval cannot be replayed.
+- **Dispatch (ADR 046 §5):** sequential, one worker per sub-goal (concurrency is task
+  086). For each sub-goal `Handle`/`Resume` calls `recipe.SelectRecipe` (an unknown
+  recipe is a failed outcome, not a dispatch) then `DispatchFunc`. The default
+  `DispatchFunc` sets `RecipeName` on a copy of the base `runtime.Config` and calls
+  `runtime.Run` — the orchestrator never reimplements supervisor assembly
+  (REQ-081-06).
+- **Rendering:** `RenderPlanResult(PlanResult) string` produces the plain-text summary
+  at the Reporter boundary; the typed `PlanResult` stays in the core (ADR 046 §2).
+- **Stability:** governed by ADR 046 (extends ADR 042). v1 plan state is in-memory
+  (`MemoryPlanStore`); durable + memory-guarded backend is task 084.
 
 ---
 
