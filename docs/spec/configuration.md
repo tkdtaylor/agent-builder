@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** agent-builder
-**Last updated:** 2026-06-27 (task 088 — vault-per-provider-auth)
+**Last updated:** 2026-06-27 (task 091 — local-entry-translation-proxy)
 
 Every knob the system exposes — env vars, config files, runtime parameters, deployment settings. Each entry is a public contract: changes to defaults or accepted values are observable.
 
@@ -78,8 +78,9 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `EXEC_BOX_EGRESS_PROBE_ALLOW_HOST` | `host:port` | `api.github.com:443` | no | Allowlisted probe target expected to connect during `--egress-probe` |
 | `EXEC_BOX_EGRESS_PROBE_DENY_HOST` | `host:port` | `example.com:443` | no | Non-allowlisted probe target expected to be blocked during `--egress-probe` |
 | `EXEC_BOX_EGRESS_PROBE_DENY_IP` | `host:port` IP literal | `1.1.1.1:443` | no | Direct-IP probe target expected to be blocked during `--egress-probe` |
-| `ANTHROPIC_API_KEY` | secret string | none | no (one of two) | Independently revocable Claude Code CLI credential injected into the subprocess environment. The executor accepts this OR `CLAUDE_CODE_OAUTH_TOKEN` (OAuth token preferred when both are set). The executor fails before subprocess start when both are absent. |
-| `CLAUDE_CODE_OAUTH_TOKEN` | secret string | none | no (one of two) | Subscription OAuth token alternative to `ANTHROPIC_API_KEY`. When set, it is preferred over the API key and injected into the subprocess environment. Minted by `claude setup-token` on a Claude Pro/Max subscription. The executor fails before subprocess start when both this and `ANTHROPIC_API_KEY` are absent. |
+| `ANTHROPIC_API_KEY` | secret string | none | no (one of two for cloud entries) | Independently revocable Claude Code CLI credential injected into the subprocess environment for cloud entries. The executor accepts this OR `CLAUDE_CODE_OAUTH_TOKEN` (OAuth token preferred when both are set). Not injected for local entries (entry has empty `SecretRef`). The executor fails before subprocess start when both are absent for cloud entries. |
+| `CLAUDE_CODE_OAUTH_TOKEN` | secret string | none | no (one of two for cloud entries) | Subscription OAuth token alternative to `ANTHROPIC_API_KEY`. When set, it is preferred over the API key and injected into the subprocess environment for cloud entries. Minted by `claude setup-token` on a Claude Pro/Max subscription. Not injected for local entries. The executor fails before subprocess start when both this and `ANTHROPIC_API_KEY` are absent for cloud entries. |
+| `ANTHROPIC_BASE_URL` | URL string | none | no (local entries only) | Redirects the Claude Code CLI to a custom endpoint. Set by `executor.ClaudeCLI` to `entry.Endpoint` when the entry has an empty `SecretRef` (local/translation-proxy mode). The translation proxy (LiteLLM, claude-code-router) presents an Anthropic-compatible endpoint over a local OpenAI-API inference server. When this is set, no cloud auth vars (`ANTHROPIC_API_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`) are injected — the local proxy ignores auth or uses a dummy token. |
 | `AGENT_BUILDER_TASK_ROOT` | path | none | yes for `agent-builder run` | Root containing `docs/plans/roadmap.md` and `docs/tasks/{backlog,active,completed}` for task selection and constrained status writes |
 | `AGENT_BUILDER_WORKTREE` | path | none | yes for `agent-builder run` | Target repo worktree passed to the Claude CLI Executor, Gate, and Podman execution-box containment probe |
 | `AGENT_BUILDER_CLAUDE_CLI` | path/name | `claude` | no | Claude Code CLI executable used by default run wiring |
@@ -119,7 +120,7 @@ The executor registry is configured via well-known env-var prefixes per entry ID
 |----------|------|---------|------------|--------|
 | `AGENT_BUILDER_REGISTRY_<ID>_ENABLED` | enum: `true`, `false` | (not set = disabled) | no | When `true`, the entry is loaded and registered into the catalog; when `false` or unset, the entry is skipped. |
 | `AGENT_BUILDER_REGISTRY_<ID>_ENDPOINT` | URL string | none | yes (if enabled) | Base URL the harness points at (cloud API, or a local model translation proxy). Blank values fail with a descriptive error. |
-| `AGENT_BUILDER_REGISTRY_<ID>_SECRET_REF` | string | none | yes (if enabled) | Vault secret name to resolve at dispatch time (never the secret itself). Blank values fail with a descriptive error. |
+| `AGENT_BUILDER_REGISTRY_<ID>_SECRET_REF` | string | none | yes for cloud entries; **optional (empty) for local entries** | Vault secret name to resolve at dispatch time (never the secret itself). For cloud entries, blank values fail with a descriptive error. For local entries (`local-qwen`, `local`), the field is intentionally empty — no cloud auth is needed; the harness uses `ANTHROPIC_BASE_URL` to point at the translation proxy instead. |
 | `AGENT_BUILDER_REGISTRY_<ID>_MODEL` | string | none | yes (if enabled) | Model identifier (e.g., `claude-opus-4-5`, `qwen-7b`). Blank values fail with a descriptive error. |
 | `AGENT_BUILDER_REGISTRY_<ID>_CAPABILITY_TIER` | non-negative integer | none | yes (if enabled) | Ordered capability ranking (higher = stronger). Non-integer values fail with a descriptive error. |
 | `AGENT_BUILDER_REGISTRY_<ID>_COST_WEIGHT` | non-negative integer | none | yes (if enabled) | Relative cost per dispatch (lower = cheaper). Non-integer values fail with a descriptive error. |
@@ -142,6 +143,18 @@ AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_CAPABILITY_TIER=3
 AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_COST_WEIGHT=10
 AGENT_BUILDER_REGISTRY_CLAUDE_OAUTH_BUDGET_LIMIT=0
 ```
+
+**Example configuration for `local-qwen` (translation-proxy seam):**
+```
+AGENT_BUILDER_REGISTRY_LOCAL_QWEN_ENABLED=true
+AGENT_BUILDER_REGISTRY_LOCAL_QWEN_ENDPOINT=http://localhost:8080   # LiteLLM or claude-code-router proxy URL
+AGENT_BUILDER_REGISTRY_LOCAL_QWEN_MODEL=qwen2.5-coder-7b-instruct
+AGENT_BUILDER_REGISTRY_LOCAL_QWEN_CAPABILITY_TIER=1
+AGENT_BUILDER_REGISTRY_LOCAL_QWEN_COST_WEIGHT=1
+# SECRET_REF is not set — local entries have no cloud auth
+# Budget is not set — local entries are unlimited (Budget.Limit == 0)
+```
+The executor sets `ANTHROPIC_BASE_URL=http://localhost:8080` in the Claude CLI subprocess and omits `ANTHROPIC_API_KEY` / `CLAUDE_CODE_OAUTH_TOKEN`. The translation proxy (LiteLLM, claude-code-router) converts Anthropic API requests to the local inference server's OpenAI API. See `registry.TranslationProxySeam` for the named seam constant.
 
 **Removed variables** (rejected loudly when set — see ADR 021):
 - `AGENT_BUILDER_SANDBOX_RUNTIME` — the Phase 0 `srt` selector for the rented `@anthropic-ai/sandbox-runtime` backend. Containment now runs through the Podman execution-box launcher (`AGENT_BUILDER_EXEC_BOX_LAUNCHER`). If a non-empty value is present, `agent-builder run` fails with a migration error naming the variable rather than silently ignoring it.

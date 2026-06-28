@@ -8,15 +8,40 @@ import (
 	"time"
 )
 
+// TranslationProxySeam names the local-entry endpoint convention.
+//
+// A local entry uses HarnessClaudeCLI with its Endpoint pointing at a
+// translation proxy rather than the Anthropic cloud API. The translation proxy
+// presents an Anthropic-compatible endpoint over an OpenAI-API local inference
+// server (the LiteLLM / claude-code-router pattern). The Claude Code CLI
+// honors ANTHROPIC_BASE_URL, so redirecting it to the proxy drives a local
+// model without introducing a new harness. Local entries carry no cloud auth
+// (SecretRef == "", Budget.Limit == 0 — unlimited).
+//
+// Typical setup:
+//
+//	Ollama (local model) → LiteLLM or claude-code-router (translation proxy) → Claude CLI (ANTHROPIC_BASE_URL)
+const TranslationProxySeam = "litellm/claude-code-router"
+
+// localHarnessEntries lists entry IDs that use the local/translation-proxy pattern:
+// Harness = HarnessClaudeCLI, SecretRef = "" (no cloud auth), Budget.Limit = 0 (unlimited).
+// These entries set ANTHROPIC_BASE_URL to their Endpoint at dispatch time instead of
+// injecting a cloud auth token.
+var localHarnessEntries = map[string]struct{}{
+	"local-qwen": {},
+	"local":      {},
+}
+
 // LoadFromEnv reads well-known env-var prefixes and constructs enabled entries.
 // Returns a slice of enabled entries, or an error if required fields are missing or malformed.
 func LoadFromEnv() ([]RegistryEntry, error) {
 	// Known entry IDs and their corresponding harness drivers
 	knownEntries := map[string]HarnessDriver{
-		"claude-oauth":  HarnessClaudeCLI,
-		"local-qwen":    HarnessClaudeCLI,
-		"codex":         HarnessCodexCLI,
-		"gemini":        HarnessGeminiCLI,
+		"claude-oauth": HarnessClaudeCLI,
+		"local-qwen":   HarnessClaudeCLI,
+		"local":        HarnessClaudeCLI,
+		"codex":        HarnessCodexCLI,
+		"gemini":       HarnessGeminiCLI,
 	}
 
 	var entries []RegistryEntry
@@ -45,10 +70,13 @@ func LoadFromEnv() ([]RegistryEntry, error) {
 		}
 		entry.Endpoint = endpoint
 
-		// Load SecretRef (required)
+		// Load SecretRef: required for cloud entries; optional (and expected empty) for local entries.
+		// Local entries use the translation-proxy pattern (TranslationProxySeam): they point
+		// ANTHROPIC_BASE_URL at a local translation proxy instead of using cloud auth tokens.
 		secretRefKey := fmt.Sprintf("AGENT_BUILDER_REGISTRY_%s_SECRET_REF", envSafeID(entryID))
 		secretRef := os.Getenv(secretRefKey)
-		if secretRef == "" {
+		_, isLocal := localHarnessEntries[entryID]
+		if secretRef == "" && !isLocal {
 			return nil, fmt.Errorf("missing required field SECRET_REF for enabled entry %q", entryID)
 		}
 		entry.SecretRef = secretRef

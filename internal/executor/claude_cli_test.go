@@ -1,10 +1,13 @@
 package executor
 
 import (
+	"context"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
+	"github.com/tkdtaylor/agent-builder/internal/registry"
 	"github.com/tkdtaylor/agent-builder/internal/secrets"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
@@ -116,7 +119,7 @@ func TestClaudeEnvInjectsExactlyOneAuthVar(t *testing.T) {
 				ClaudeCLIAuthEnv + "=old-api-key",
 				ClaudeCLIOAuthEnv + "=old-oauth",
 			}
-			env := claudeEnv(baseEnv, tt.authToken, tt.oauthToken, "/tmp/home")
+			env := claudeEnv(baseEnv, tt.authToken, tt.oauthToken, "", "/tmp/home")
 
 			hasAuthVar := false
 			hasOAuthVar := false
@@ -176,7 +179,7 @@ func TestClaudeEnvStripsOldCredentials(t *testing.T) {
 		ClaudeCLIOAuthEnv + "=old-oauth",
 		"USER=testuser",
 	}
-	env := claudeEnv(baseEnv, "new-api-key", "", "/tmp/home")
+	env := claudeEnv(baseEnv, "new-api-key", "", "", "/tmp/home")
 
 	for _, e := range env {
 		if strings.Contains(e, "old-api-key") {
@@ -286,6 +289,187 @@ func TestNewClaudeCLIFromEnvReadsBothTokens(t *testing.T) {
 }
 
 // TC-065-04: NewClaudeCLIFromSecretSource delegates to SecretSource (not direct os.Getenv)
+// fakeLocalSecretSource is a test double for local entries (SecretRef == "").
+// ProviderToken returns empty strings — local entries have no cloud auth.
+type fakeLocalSecretSource struct{}
+
+func (f *fakeLocalSecretSource) ProviderToken() (string, string)              { return "", "" }
+func (f *fakeLocalSecretSource) PublisherTokens() (string, string)            { return "", "" }
+func (f *fakeLocalSecretSource) NamedProviderToken(_ string) (string, error)  { return "", secrets.ErrSecretNotFound }
+
+// Compile-time assertion: fakeLocalSecretSource satisfies secrets.SecretSource.
+var _ secrets.SecretSource = (*fakeLocalSecretSource)(nil)
+
+// TC-091-03a: claudeEnv with baseURL set injects ANTHROPIC_BASE_URL and omits cloud auth.
+// This is the primary env-contract assertion: directly tests the env-building function.
+func TestClaudeEnv_LocalMode_SetsBaseURLAndOmitsCloudAuth(t *testing.T) {
+	const proxyURL = "http://localhost:8080"
+	baseEnv := []string{
+		"PATH=/usr/bin",
+		ClaudeCLIAuthEnv + "=old-api-key",  // must be stripped
+		ClaudeCLIOAuthEnv + "=old-oauth",   // must be stripped
+	}
+
+	env := claudeEnv(baseEnv, "", "", proxyURL, "/tmp/home")
+
+	// Assert ANTHROPIC_BASE_URL IS present with the proxy URL.
+	var foundBaseURL bool
+	var baseURLValue string
+	for _, e := range env {
+		if strings.HasPrefix(e, ClaudeCLIBaseURLEnv+"=") {
+			foundBaseURL = true
+			baseURLValue = strings.TrimPrefix(e, ClaudeCLIBaseURLEnv+"=")
+		}
+	}
+	if !foundBaseURL {
+		t.Fatalf("%s not found in env; env = %v", ClaudeCLIBaseURLEnv, env)
+	}
+	if baseURLValue != proxyURL {
+		t.Fatalf("%s = %q, want %q", ClaudeCLIBaseURLEnv, baseURLValue, proxyURL)
+	}
+
+	// Assert cloud auth env vars are ABSENT (no-cloud-auth invariant).
+	for _, e := range env {
+		if strings.HasPrefix(e, ClaudeCLIAuthEnv+"=") {
+			t.Fatalf("cloud auth %s must be absent in local mode; got: %s", ClaudeCLIAuthEnv, e)
+		}
+		if strings.HasPrefix(e, ClaudeCLIOAuthEnv+"=") {
+			t.Fatalf("cloud auth %s must be absent in local mode; got: %s", ClaudeCLIOAuthEnv, e)
+		}
+	}
+}
+
+// TC-091-03: ClaudeCLI from local entry sets ANTHROPIC_BASE_URL in subprocess env;
+// no cloud auth (ANTHROPIC_API_KEY / CLAUDE_CODE_OAUTH_TOKEN) is injected.
+//
+// Design note on capturing cmd.Env:
+// RunContext calls cmdFactory to get a *exec.Cmd, then OVERRIDES cmd.Env with
+// claudeEnv(...). Because capture.set() stores a pointer to the same cmd, the
+// captured cmd's Env after Run() returns reflects the OVERRIDDEN (claudeEnv) value —
+// which is exactly what we want to assert against. The subprocess itself runs with
+// that env (no GO_WANT_HELPER_PROCESS), so we use "/bin/true" (exit 0, instant) and
+// write the branch file synchronously in the factory before returning the cmd.
+func TestClaudeCLI_LocalEntry_SetsBaseURLAndNoCloudAuth(t *testing.T) {
+	const proxyURL = "http://localhost:8080"
+	const modelID = "qwen2.5-coder-7b-instruct"
+	const expectedBranch = "task/091-local-test-branch"
+
+	entry := registry.RegistryEntry{
+		ID:        "local-qwen",
+		Harness:   registry.HarnessClaudeCLI,
+		ModelID:   modelID,
+		Endpoint:  proxyURL,
+		SecretRef: "", // no cloud auth
+	}
+
+	worktree := t.TempDir()
+	src := &fakeLocalSecretSource{}
+	capture := &capturedCmd{}
+
+	cli := NewClaudeCLIFromEntry(entry, src, worktree)
+	cli.cmdFactory = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		// Extract the branch file path from the prompt arg ("-p <prompt>").
+		// The prompt contains "write only the produced branch name to this file:\n<path>".
+		// Write the branch file synchronously here so RunContext can read it after the
+		// subprocess exits. The subprocess itself is "/bin/true" (exits 0 instantly).
+		if len(args) >= 2 && args[0] == "-p" {
+			prompt := args[1]
+			const marker = "write only the produced branch name to this file:\n"
+			if idx := strings.Index(prompt, marker); idx >= 0 {
+				path := strings.TrimSpace(prompt[idx+len(marker):])
+				_ = os.WriteFile(path, []byte(expectedBranch+"\n"), 0o600)
+			}
+		}
+		// Use /bin/true: exits 0 instantly, does not read env, does not produce output.
+		// RunContext will override cmd.Env after this factory returns — the captured cmd
+		// pointer lets us read that overridden env in our assertions below.
+		cmd := exec.CommandContext(ctx, "/bin/true")
+		capture.set(cmd)
+		return cmd
+	}
+
+	task := supervisor.Task{ID: "091", Repo: "agent-builder", Spec: "docs/tasks/backlog/091-local-entry-translation-proxy.md"}
+
+	result, err := cli.Run(task)
+	if err != nil {
+		t.Fatalf("Run() returned unexpected error: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("result.OK = false, want true")
+	}
+	if result.Branch != expectedBranch {
+		t.Fatalf("result.Branch = %q, want %q", result.Branch, expectedBranch)
+	}
+
+	// Assert cmd.Env (as set by claudeEnv after factory returned) contains ANTHROPIC_BASE_URL.
+	cmd := capture.get()
+	if cmd == nil {
+		t.Fatal("subprocess command was not captured")
+	}
+
+	var foundBaseURL bool
+	var baseURLValue string
+	for _, e := range cmd.Env {
+		if strings.HasPrefix(e, ClaudeCLIBaseURLEnv+"=") {
+			foundBaseURL = true
+			baseURLValue = strings.TrimPrefix(e, ClaudeCLIBaseURLEnv+"=")
+		}
+	}
+	if !foundBaseURL {
+		t.Fatalf("%s not found in subprocess env; env was: %v", ClaudeCLIBaseURLEnv, cmd.Env)
+	}
+	if baseURLValue != proxyURL {
+		t.Fatalf("%s = %q, want %q", ClaudeCLIBaseURLEnv, baseURLValue, proxyURL)
+	}
+
+	// Assert ANTHROPIC_API_KEY and CLAUDE_CODE_OAUTH_TOKEN are ABSENT (no-cloud-auth invariant).
+	for _, e := range cmd.Env {
+		if strings.HasPrefix(e, ClaudeCLIAuthEnv+"=") {
+			t.Fatalf("cloud auth env %s must not be present for local entry; got: %s", ClaudeCLIAuthEnv, e)
+		}
+		if strings.HasPrefix(e, ClaudeCLIOAuthEnv+"=") {
+			t.Fatalf("cloud auth env %s must not be present for local entry; got: %s", ClaudeCLIOAuthEnv, e)
+		}
+	}
+}
+
+// TC-091-05: NewClaudeCLIFromEntry compiles; existing call sites unchanged.
+func TestClaudeCLIFromEntry_CompilationAndBackwardCompat(t *testing.T) {
+	// TC-091-05: NewClaudeCLIFromEntry accepts a RegistryEntry and SecretSource.
+	// This compile-time test confirms the signature is correct.
+	entry := registry.RegistryEntry{
+		ID:        "local-qwen",
+		Harness:   registry.HarnessClaudeCLI,
+		ModelID:   "qwen2.5-coder-7b-instruct",
+		Endpoint:  "http://localhost:8080",
+		SecretRef: "",
+	}
+	src := &fakeLocalSecretSource{}
+	cli := NewClaudeCLIFromEntry(entry, src, "/tmp/worktree")
+	if cli == nil {
+		t.Fatal("NewClaudeCLIFromEntry() returned nil")
+	}
+
+	// TC-091-05: existing NewClaudeCLI still compiles (backward compat).
+	config := ClaudeCLIConfig{
+		CLIPath:    "claude",
+		Worktree:   "/tmp/work",
+		OAuthToken: "oauth-token-123",
+	}
+	cli2 := NewClaudeCLI(config)
+	if cli2 == nil {
+		t.Fatal("NewClaudeCLI() returned nil (backward compat check)")
+	}
+
+	// TC-091-05: local entry has baseURL set from Endpoint; cloud entry has no baseURL.
+	if cli.baseURL != "http://localhost:8080" {
+		t.Errorf("local entry baseURL = %q, want %q", cli.baseURL, "http://localhost:8080")
+	}
+	if cli2.baseURL != "" {
+		t.Errorf("cloud entry baseURL = %q, want empty", cli2.baseURL)
+	}
+}
+
 func TestNewClaudeCLIFromSecretSourceDelegatesToSecretSource(t *testing.T) {
 	tests := []struct {
 		name           string
