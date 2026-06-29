@@ -262,7 +262,8 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		resultCache = envelope.NewReplayCache(0)
 	}
 
-	// 4. Planner (default StructuredPlanner; "llm" reserved for task 100).
+	// 4. Planner: default StructuredPlanner; AGENT_BUILDER_PLANNER=llm selects the
+	//    LLMPlanner (ollama-native single-shot; cloud harnesses fail closed).
 	planner := ov.planner
 	if planner == nil {
 		p, err := plannerFromEnv()
