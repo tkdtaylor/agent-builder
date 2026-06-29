@@ -138,7 +138,7 @@ func TestTC080_01_WellFormedEnvelopeDecrypted(t *testing.T) {
 	})
 
 	// Call Next()
-	task, ok, err := adapter.Next()
+	msg, ok, err := adapter.Next()
 
 	// Debug: print logs if test fails
 	if !ok {
@@ -152,14 +152,17 @@ func TestTC080_01_WellFormedEnvelopeDecrypted(t *testing.T) {
 		t.Fatalf("adapter.Next() returned ok=false, expected true")
 	}
 
-	// TC-080-01: Check the task.Spec matches the plaintext (Spec field is populated, not Goal)
-	if task.Spec != string(plaintext) {
-		t.Errorf("task.Spec = %q, want %q", task.Spec, string(plaintext))
+	// TC-080-01: Check the message kind is MsgNewGoal and Goal.Spec matches the plaintext.
+	if msg.Kind != supervisor.MsgNewGoal {
+		t.Errorf("msg.Kind = %v, want MsgNewGoal", msg.Kind)
+	}
+	if msg.Goal.Spec != string(plaintext) {
+		t.Errorf("msg.Goal.Spec = %q, want %q", msg.Goal.Spec, string(plaintext))
 	}
 
-	// Check that the ID is set
-	if task.ID == "" {
-		t.Errorf("task.ID is empty, expected non-empty")
+	// Check that the GoalID is set
+	if msg.GoalID == "" {
+		t.Errorf("msg.GoalID is empty, expected non-empty")
 	}
 
 	// Verify armor was called
@@ -305,7 +308,7 @@ func TestTC080_02_UnknownEdKeyRejectedBeforeArmor(t *testing.T) {
 	})
 
 	// Call Next()
-	task, ok, err := adapter.Next()
+	msg, ok, err := adapter.Next()
 	if err != nil {
 		t.Fatalf("adapter.Next() returned error: %v", err)
 	}
@@ -314,8 +317,8 @@ func TestTC080_02_UnknownEdKeyRejectedBeforeArmor(t *testing.T) {
 	if ok {
 		t.Errorf("adapter.Next() returned ok=true, expected false (goal should not be delivered)")
 	}
-	if task.Spec != "" {
-		t.Errorf("task.Spec = %q, expected empty", task.Spec)
+	if msg.Goal.Spec != "" {
+		t.Errorf("msg.Goal.Spec = %q, expected empty", msg.Goal.Spec)
 	}
 
 	// TC-080-02: armor.Guard should NOT have been invoked
@@ -462,19 +465,19 @@ func TestTC080_03_ReplayedNonceRejected(t *testing.T) {
 	})
 
 	// First Next() call
-	task1, ok1, err1 := adapter.Next()
+	msg1, ok1, err1 := adapter.Next()
 	if err1 != nil {
 		t.Fatalf("first Next() returned error: %v", err1)
 	}
 	if !ok1 {
 		t.Fatalf("first Next() returned ok=false, expected true")
 	}
-	if task1.Spec != string(plaintext) {
-		t.Errorf("first task.Spec = %q, want %q", task1.Spec, string(plaintext))
+	if msg1.Goal.Spec != string(plaintext) {
+		t.Errorf("first msg.Goal.Spec = %q, want %q", msg1.Goal.Spec, string(plaintext))
 	}
 
 	// Second Next() call (same envelope, should be rejected as replay)
-	task2, ok2, err2 := adapter.Next()
+	msg2, ok2, err2 := adapter.Next()
 	if err2 != nil {
 		t.Fatalf("second Next() returned error: %v", err2)
 	}
@@ -483,8 +486,8 @@ func TestTC080_03_ReplayedNonceRejected(t *testing.T) {
 	if ok2 {
 		t.Errorf("second Next() returned ok=true, expected false (replayed message should be rejected)")
 	}
-	if task2.Spec != "" {
-		t.Errorf("second task.Spec = %q, expected empty", task2.Spec)
+	if msg2.Goal.Spec != "" {
+		t.Errorf("second msg.Goal.Spec = %q, expected empty", msg2.Goal.Spec)
 	}
 
 	// TC-080-03c: Audit events should include a replay rejection with reason
@@ -630,7 +633,7 @@ func TestTC080_04_ArmorBlocksPromptInjection(t *testing.T) {
 	})
 
 	// Call Next()
-	task, ok, err := adapter.Next()
+	msg, ok, err := adapter.Next()
 	if err != nil {
 		t.Fatalf("adapter.Next() returned error: %v", err)
 	}
@@ -639,8 +642,8 @@ func TestTC080_04_ArmorBlocksPromptInjection(t *testing.T) {
 	if ok {
 		t.Errorf("adapter.Next() returned ok=true, expected false (blocked by armor)")
 	}
-	if task.Spec != "" {
-		t.Errorf("task.Spec = %q, expected empty", task.Spec)
+	if msg.Goal.Spec != "" {
+		t.Errorf("msg.Goal.Spec = %q, expected empty", msg.Goal.Spec)
 	}
 
 	// TC-080-04: armor.Guard should have been invoked exactly once
@@ -866,8 +869,9 @@ func (g *blockingGuard) DecideContent(ctx context.Context, candidate ingestion.C
 	}, nil
 }
 
-// Compile-time assertion for TC-080-05
-var _ supervisor.GoalSource = (*telegram.Adapter)(nil)
+// Compile-time assertion for TC-080-05: Adapter now satisfies MessageSource (task 117).
+// TC-117-01 compile-time assertion (supersedes TC-080-05 GoalSource assertion).
+var _ supervisor.MessageSource = (*telegram.Adapter)(nil)
 
 // Helper to parse string to int64 (simulating fmt.Sscanf)
 func sscanf(str string, format string, args ...interface{}) (int, error) {
@@ -1032,15 +1036,15 @@ func TestTC097_01b_OverlengthMessageSkipped(t *testing.T) {
 	})
 
 	// Call Next() — should skip the oversized message and return the valid one
-	task, ok, err := adapter.Next()
+	msg, ok, err := adapter.Next()
 	if err != nil {
 		t.Fatalf("adapter.Next() returned error: %v", err)
 	}
 	if !ok {
 		t.Errorf("expected ok=true (valid message should be delivered), got false")
 	}
-	if task.Spec != string(plaintext) {
-		t.Errorf("task.Spec = %q, want %q (plaintext was %q)", task.Spec, string(plaintext), "OK")
+	if msg.Goal.Spec != string(plaintext) {
+		t.Errorf("msg.Goal.Spec = %q, want %q (plaintext was %q)", msg.Goal.Spec, string(plaintext), "OK")
 	}
 
 	// Verify armor was called exactly once (not for the oversized message)
@@ -1157,15 +1161,15 @@ func TestTC097_01c_NormalMessagePasses(t *testing.T) {
 		MaxMessageBytes:   64 * 1024,
 	})
 
-	task, ok, err := adapter.Next()
+	msg, ok, err := adapter.Next()
 	if err != nil {
 		t.Fatalf("adapter.Next() returned error: %v", err)
 	}
 	if !ok {
 		t.Errorf("expected ok=true, got false")
 	}
-	if task.Spec != string(plaintext) {
-		t.Errorf("task.Spec = %q, want %q", task.Spec, string(plaintext))
+	if msg.Goal.Spec != string(plaintext) {
+		t.Errorf("msg.Goal.Spec = %q, want %q", msg.Goal.Spec, string(plaintext))
 	}
 
 	// No rejection events
@@ -1283,7 +1287,7 @@ func TestTC097_02a_GuardTimeoutDropsGoal(t *testing.T) {
 
 	// Measure time
 	start := time.Now()
-	task, ok, err := adapter.Next()
+	msg, ok, err := adapter.Next()
 	elapsed := time.Since(start)
 
 	if err != nil {
@@ -1294,8 +1298,8 @@ func TestTC097_02a_GuardTimeoutDropsGoal(t *testing.T) {
 	if ok {
 		t.Errorf("expected ok=false (goal dropped on guard timeout), got true")
 	}
-	if task.Spec != "" {
-		t.Errorf("task.Spec = %q, expected empty", task.Spec)
+	if msg.Goal.Spec != "" {
+		t.Errorf("msg.Goal.Spec = %q, expected empty", msg.Goal.Spec)
 	}
 
 	// TC-097-02a: Should return within timeout + margin
@@ -1411,7 +1415,7 @@ func TestTC097_02b_FastGuardNoTimeout(t *testing.T) {
 		GuardTimeout:      500 * time.Millisecond,
 	})
 
-	task, ok, err := adapter.Next()
+	msg, ok, err := adapter.Next()
 	if err != nil {
 		t.Fatalf("adapter.Next() returned error: %v", err)
 	}
@@ -1420,8 +1424,8 @@ func TestTC097_02b_FastGuardNoTimeout(t *testing.T) {
 	if !ok {
 		t.Errorf("expected ok=true, got false")
 	}
-	if task.Spec != string(plaintext) {
-		t.Errorf("task.Spec = %q, want %q", task.Spec, string(plaintext))
+	if msg.Goal.Spec != string(plaintext) {
+		t.Errorf("msg.Goal.Spec = %q, want %q", msg.Goal.Spec, string(plaintext))
 	}
 
 	// TC-097-02b: No timeout-related audit events
