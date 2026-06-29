@@ -23,9 +23,21 @@ func FormatFailure(outcome Outcome) string {
 		return formatExecutorError(outcome)
 	case FailureExecutorIncomplete:
 		return formatExecutorIncomplete(outcome)
+	case FailureBlockedAction:
+		return formatBlockedAction(outcome)
 	default:
 		return "Unknown failure reason"
 	}
+}
+
+func formatBlockedAction(outcome Outcome) string {
+	if outcome.Failure.Blocked == nil {
+		return "Your previous attempt was blocked: a necessary action was denied by policy.\nReplan within what is permitted, or this will escalate to a human."
+	}
+	return fmt.Sprintf(
+		"Your previous attempt was blocked: a necessary action was denied by policy.\n\n%s\n\nReplan within what is permitted; the denied action is not yours to grant — only a replan or an independent human grant can change authorization.",
+		outcome.Failure.Blocked.String(),
+	)
 }
 
 func formatGateFailure(outcome Outcome) string {

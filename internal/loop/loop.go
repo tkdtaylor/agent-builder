@@ -61,6 +61,12 @@ const (
 type Failure struct {
 	Reason FailureReason
 	Err    error
+	// Blocked carries the denied resource/action + reason when Reason ==
+	// FailureBlockedAction (ADR 055 seam 4, task 121). It is nil for every other
+	// FailureReason. A blocked-action failure is distinct from FailureGate and
+	// FailureExecutorError: it routes to bounded reevaluation + independent human
+	// escalation, never to a self-grant.
+	Blocked *BlockedAction
 }
 
 // Outcome is the observable result of one loop cycle.

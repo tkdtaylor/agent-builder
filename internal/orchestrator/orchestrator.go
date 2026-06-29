@@ -38,6 +38,7 @@ import (
 	"sync"
 
 	"github.com/tkdtaylor/agent-builder/internal/audit"
+	"github.com/tkdtaylor/agent-builder/internal/loop"
 	"github.com/tkdtaylor/agent-builder/internal/policy"
 	"github.com/tkdtaylor/agent-builder/internal/recipe"
 	"github.com/tkdtaylor/agent-builder/internal/runtime"
@@ -135,6 +136,12 @@ type SubGoalOutcome struct {
 	Recipe  string // the recipe used
 	Success bool   // whether the worker dispatch succeeded
 	Detail  string // branch/PR on success, failure reason on failure (short)
+	// Blocked is non-nil when this sub-goal failed because a NECESSARY action was
+	// denied by policy (ADR 055 seam 4, task 121) — a blocked action, distinct from a
+	// dispatch error or a gate failure. It carries the denied resource/action + reason
+	// so the orchestrate feedback path can route it to bounded reevaluation and then
+	// to an independent human escalation. nil for success and for non-policy failures.
+	Blocked *loop.BlockedAction
 }
 
 // PlanResult is the aggregated typed outcome of a dispatched plan (ADR 046 §2).
@@ -725,6 +732,17 @@ func (o *Orchestrator) dispatchOne(ctx context.Context, plan Plan, sub SubGoal) 
 	if decision != policy.DecisionAllow {
 		outcome.Success = false
 		outcome.Detail = denyReason
+		// Classify the denial of a NECESSARY action as a typed blocked action (ADR 055
+		// seam 4, REQ-121-01): a distinct failure kind carrying the denied
+		// resource/action + reason, so the orchestrate feedback path routes it to
+		// bounded reevaluation + independent human escalation, never to a self-grant.
+		// A blank-detail deny still records the denial (Detail is set above); the
+		// blocked action is attached only when the classifier accepts the reason.
+		blocked := classifyBlockedSpawn(sub, denyReason)
+		if !blocked.IsZero() {
+			b := blocked
+			outcome.Blocked = &b
+		}
 		if err := o.reporter.Report(ctx, fmt.Sprintf("Worker spawn denied: recipe %s — %s", sub.RecipeName, denyReason)); err != nil {
 			// A reporter error on a denial is not a security-relevant halt; record it
 			// in the outcome detail and continue (best-effort reporting). Returning it

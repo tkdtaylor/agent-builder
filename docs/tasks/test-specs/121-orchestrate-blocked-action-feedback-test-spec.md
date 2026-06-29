@@ -8,9 +8,16 @@
 
 | Req ID     | Test cases        | Covered? |
 |------------|-------------------|----------|
-| REQ-121-01 | TC-001            | ⏳ |
-| REQ-121-02 | TC-002, TC-003    | ⏳ |
-| REQ-121-03 | TC-004            | ⏳ |
+| REQ-121-01 | TC-001            | ✅ |
+| REQ-121-02 | TC-002, TC-003    | ✅ |
+| REQ-121-03 | TC-004            | ✅ |
+
+## Test locations
+
+- **TC-001** (typed BlockedAction kind + populated reason/resource): `tests/loop/blocked_action_test.go` — `TestBlockedActionClassifiedAsDistinctFailureKind`, `TestBlockedActionEmptyDenialIsRejected`, `TestBlockedActionFormatsAsDistinctFeedback`. Live producer: `internal/orchestrator/blocked_action_test.go` — `TestDispatchOneProducesBlockedActionOnSpawnDeny`.
+- **TC-002** (exactly N reevaluations precede escalation): `tests/loop/blocked_action_test.go` — `TestReevaluationPerformsExactlyNReplansBeforeEscalation` (N=1,3), `TestReevaluationResolvesWhenReplanRoutesAround`, `TestReevaluationZeroBoundEscalatesImmediately`, `TestReevaluationNegativeBoundIsExplicitError`. Live consumer: `internal/orchestrator/blocked_action_test.go` — `TestReevaluateBlockedSpawnEscalatesWhenStillNeeded`.
+- **TC-003** (escalation carries needs-human + denied action + reason): `tests/loop/blocked_action_test.go` — `TestEscalationCarriesDeniedActionAndReason`.
+- **TC-004** (never self-grants — applied allow set == re-derived `AllowedResources`, never ∪ denied): `tests/loop/blocked_action_test.go` — `TestReevaluationNeverUnionsDeniedResourceIntoAllowSet`, `TestReevaluationEscalatesRatherThanGrantsWhenStillNeeded`. Live consumer: `internal/orchestrator/blocked_action_test.go` — `TestReevaluateBlockedSpawnResolvesWhenReplanRoutesAround`.
 
 ## Unit under test
 
