@@ -365,7 +365,9 @@ func (s *Supervisor) Run(ctx context.Context) (err error) {
 //
 // It returns triggerErr joined with any kill error and any loop error, so a
 // partial-teardown failure (a non-nil kill error) is surfaced to the cancel
-// handler as a leak rather than swallowed.
+// handler as a leak rather than swallowed. Kill errors are wrapped with explicit
+// "leaked box" language so the operator sees unambiguous leak-requiring-attention
+// messaging in the rendered outcome (REQ-116-05).
 func (s *Supervisor) killAndJoin(handle BoxHandle, triggerErr error, loopResult <-chan loopRunResult) error {
 	killErr := s.box.Kill(handle)
 	// Join the loop goroutine unconditionally — on EVERY path, including a kill
@@ -374,7 +376,13 @@ func (s *Supervisor) killAndJoin(handle BoxHandle, triggerErr error, loopResult 
 	loop := <-loopResult
 	out := triggerErr
 	if killErr != nil {
-		out = errors.Join(out, fmt.Errorf("supervisor: kill box: %w", killErr))
+		// Wrap the kill error with explicit "leaked box" language so the operator sees
+		// this is a security-relevant leak requiring immediate attention (the box holds
+		// an executor token and was not confirmed torn down). Use %w to maintain the
+		// error chain so existing tests that check errors.Is(err, originalKillErr) still work.
+		leakErr := fmt.Errorf("supervisor: box %q (worktree %s) leaked — operator attention required: %w",
+			handle.ID, handle.Worktree, killErr)
+		out = errors.Join(out, leakErr)
 	}
 	if loop.err != nil {
 		out = errors.Join(out, loop.err)

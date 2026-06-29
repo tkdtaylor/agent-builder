@@ -6,6 +6,8 @@ package orchestrator_test
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator"
@@ -84,5 +86,73 @@ func TestTC116_03_ConsumePlanOnCancelRemovesPlan(t *testing.T) {
 	// Consuming a goal with no plan reports had=false (idempotent).
 	if had, _ := o.ConsumePlanOnCancel("G"); had {
 		t.Fatal("second ConsumePlanOnCancel(G) reported had=true, want false")
+	}
+}
+
+// TC-116-05 (integration) — when a sub-goal's dispatch returns a "leaked box"
+// error (from supervisor.killAndJoin when box.Kill fails on cancellation), the
+// outcome is marked Failed and the Detail contains the box ID + "leaked" +
+// "operator attention required" language. The rendered PlanResult shows this
+// leak-requiring-attention to the operator (not silent).
+func TestTC116_05_LeakErrorSurfacesinOutcomeRendering(t *testing.T) {
+	rep := &fakeReporter{}
+	// Use DecisionAllow so Handle can dispatch immediately (no require_approval pause).
+	pol := &fakePolicy{decision: policy.DecisionAllow}
+
+	// A dispatch function that simulates the kill error from supervisor.killAndJoin
+	// when box.Kill fails on cancellation.
+	dispatchWithKillErr := func(ctx context.Context, sub orchestrator.SubGoal, _ runtime.Config) error {
+		// Mimic the supervisor's killAndJoin error format when box.Kill fails
+		// (with box ID and "leaked" language).
+		return fmt.Errorf("context canceled: box box-116-kill-fail (worktree /work) leaked — operator attention required: kill failed: connection timeout")
+	}
+
+	o := orchestrator.New(
+		orchestrator.NewStructuredPlanner(knownRecipes...),
+		pol, rep, runtime.Config{},
+		orchestrator.WithDispatchFunc(dispatchWithKillErr),
+	)
+
+	// Request a goal. With DecisionAllow, Handle calls dispatchPlan immediately.
+	// The dispatched sub-goal's dispatch function returns the kill error, which
+	// becomes the outcome.Detail.
+	result, err := o.Handle(context.Background(), supervisor.Task{
+		ID:   "goal-116",
+		Spec: "coding-agent: build X",
+	})
+	if err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
+
+	// Verify the outcome is marked Failed (not Success).
+	if len(result.Outcomes) == 0 {
+		t.Fatal("no outcomes in result")
+	}
+	oc := result.Outcomes[0]
+	if oc.Success {
+		t.Fatalf("TC-116-05: outcome Success = true, want false (kill error must mark failed)")
+	}
+
+	// Verify the outcome.Detail contains the box ID and leak-requiring-attention language.
+	if !strings.Contains(oc.Detail, "box-116-kill-fail") {
+		t.Fatalf("TC-116-05: outcome.Detail missing box ID: %q", oc.Detail)
+	}
+	if !strings.Contains(oc.Detail, "leaked") {
+		t.Fatalf("TC-116-05: outcome.Detail missing 'leaked' language: %q", oc.Detail)
+	}
+	if !strings.Contains(oc.Detail, "operator attention required") {
+		t.Fatalf("TC-116-05: outcome.Detail missing 'operator attention required': %q", oc.Detail)
+	}
+
+	// Verify the rendered PlanResult (operator-visible output) contains the leak.
+	rendered := orchestrator.RenderPlanResult(result)
+	if !strings.Contains(rendered, "[FAIL]") {
+		t.Fatalf("TC-116-05: rendered result missing [FAIL] marker: %s", rendered)
+	}
+	if !strings.Contains(rendered, "box-116-kill-fail") {
+		t.Fatalf("TC-116-05: rendered result missing box ID: %s", rendered)
+	}
+	if !strings.Contains(rendered, "leaked") {
+		t.Fatalf("TC-116-05: rendered result missing 'leaked': %s", rendered)
 	}
 }

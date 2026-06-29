@@ -465,8 +465,10 @@ type MessageSource interface {
   radius). The handler then sets the goal `Cancelled`, consumes its plan from the
   `PlanStore` under the same delete path `Resume` uses (so a racing approval cannot
   double-dispatch), and the fleet-wide worker permit is released on the dispatch return
-  path (no leak). Partial-teardown failures are surfaced in the goal report (not
-  swallowed); the wall-clock timeout remains the backstop.
+  path (no leak). Partial-teardown failures (a worker whose `box.Kill` errors) are
+  surfaced in the sub-goal outcome with the leaked box ID and "operator attention
+  required" language so the operator sees the unambiguous leak (not swallowed); the
+  wall-clock timeout remains the backstop.
 - **Stability:** governed by ADR 054 §2 and tasks 113–116. The status/info handler
   bodies land in tasks 114/115; the cancel-teardown body is task 116.
 
