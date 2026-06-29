@@ -85,9 +85,13 @@ const (
 //   - AGENT_BUILDER_TELEGRAM_CHAT_ID     — Telegram chat ID the ReplyAdapter sends to
 //
 // Inbound (envelope-verify+armor+kind-derivation) and outbound (ReplyAdapter sealing)
-// use the same key material already present in the adapter. The armor guard is
-// constructed from the existing denyAllContentGuard stub when no armor binary is
-// configured (consistent with the existing no-armor fallback on the run path).
+// use the same key material already present in the adapter. This is the FIRST live
+// inbound wiring of the Telegram adapter; when no armor binary is configured the
+// content guard defaults to a fail-open allowAllContentGuard (the load-bearing trust
+// gate on this path is the envelope Ed25519-verify + X25519-decrypt + replay-cache
+// pipeline, which is always enforced — armor is an additional injection filter over
+// already-authenticated operator plaintext). Operators SHOULD wire a real armor guard
+// here before production; see the operator follow-up note on this seam.
 const (
 	EnvTelegramBotToken   = "AGENT_BUILDER_TELEGRAM_BOT_TOKEN"
 	EnvTelegramBaseURL    = "AGENT_BUILDER_TELEGRAM_BASE_URL"
@@ -926,11 +930,15 @@ func assembleTelegramInbound(getenv func(string) string, sink audit.Sink, logger
 	var opXPub [32]byte
 	copy(opXPub[:], opX25519PubBytes)
 
-	// Armor content guard: use the allow-all stub when no armor binary is configured.
-	// This is consistent with the existing run-path no-armor fallback and keeps the
-	// security pipeline intact — the envelope-verify pipeline is the load-bearing gate;
-	// armor is an optional additional filter.
-	// NOTE: operators SHOULD configure a real armor guard for production use.
+	// Armor content guard: default to fail-open allow-all when no armor binary is
+	// configured. This is a NEW fail-open default introduced with the first live
+	// Telegram inbound wiring (there was no prior no-armor fallback on the run path).
+	// The load-bearing trust gate on this path is the envelope-verify pipeline
+	// (Ed25519 verify + X25519 decrypt + replay-cache), which is always enforced;
+	// armor is an additional injection filter over already-authenticated operator
+	// plaintext, so fail-open here degrades that extra filter, not authentication.
+	// NOTE: operators SHOULD wire a real armor guard (see executorharness's
+	// NewArmorGuarded binding) before production use of AGENT_BUILDER_INBOUND=telegram.
 	var guard telegram.ContentGuard = allowAllContentGuard{}
 
 	adapter := telegram.NewAdapter(telegram.Config{
