@@ -1,0 +1,236 @@
+package orchestrator
+
+import (
+	"sync"
+	"time"
+)
+
+// GoalState is a goal's lifecycle state in the live status registry (ADR 054 §3).
+// The states this task drives are Queued/Planning/AwaitingApproval/Dispatching/
+// Done/Failed. Cancelled is reserved for the cancellation task (116) — it is
+// defined here so the enum is stable, but this task never transitions a goal into
+// it.
+type GoalState int
+
+const (
+	// StateQueued — the goal is admitted-pending: registered in the registry but
+	// parked behind the goal-admission cap (AGENT_BUILDER_MAX_GOALS) until a slot
+	// frees. It has not yet entered Planning.
+	StateQueued GoalState = iota
+	// StatePlanning — the goal actor is decomposing the goal via Planner.Plan and
+	// running the spawn-plan gate.
+	StatePlanning
+	// StateAwaitingApproval — the plan requires human approval; it sits in the
+	// PlanStore awaiting Resume (driven by task 115's approval path, reserved here).
+	StateAwaitingApproval
+	// StateDispatching — the plan was allowed and its sub-goal workers are being
+	// dispatched (the per-sub-goal goroutines in dispatchPlan are live).
+	StateDispatching
+	// StateDone — the goal reached a terminal success/aggregated outcome.
+	StateDone
+	// StateFailed — the goal terminated with an error (planning error, deny-audit
+	// halt, or a dispatch-level failure that errored Handle).
+	StateFailed
+	// StateCancelled — reserved for task 116; never set by this task.
+	StateCancelled
+)
+
+// String renders a GoalState as its lowercase lifecycle name for status reports
+// and test assertions.
+func (s GoalState) String() string {
+	switch s {
+	case StateQueued:
+		return "queued"
+	case StatePlanning:
+		return "planning"
+	case StateAwaitingApproval:
+		return "awaiting-approval"
+	case StateDispatching:
+		return "dispatching"
+	case StateDone:
+		return "done"
+	case StateFailed:
+		return "failed"
+	case StateCancelled:
+		return "cancelled"
+	default:
+		return "unknown"
+	}
+}
+
+// IsTerminal reports whether the state is a terminal lifecycle state (Done,
+// Failed, or Cancelled) — used by the goal-admission cap to know when a goal's
+// slot has freed and by status renders to distinguish live from finished goals.
+func (s GoalState) IsTerminal() bool {
+	return s == StateDone || s == StateFailed || s == StateCancelled
+}
+
+// SubGoalProgress is the per-sub-goal projection within a GoalStatus: the recipe
+// it runs and whether the worker is running/done/failed. Written from inside the
+// task-086 dispatch goroutines (the same place outcomes are written).
+type SubGoalProgress struct {
+	Name   string // the sub-goal task ID
+	Recipe string // the recipe the sub-goal dispatches
+	State  string // "running" | "done" | "failed"
+}
+
+// GoalStatus is one goal's live lifecycle snapshot. It is a PROJECTION for
+// observability (ADR 054 §3) — never the source of truth for control flow (the
+// PlanStore is). The mailbox / CancelFunc / pending-info fields that tasks
+// 113/115/116 add are intentionally NOT present yet; this struct is the seam they
+// extend, and the registry's locking discipline is what makes that extension safe.
+type GoalStatus struct {
+	GoalID    string
+	State     GoalState
+	SubGoals  []SubGoalProgress
+	UpdatedAt time.Time
+}
+
+// StatusRegistry is the goalID-keyed, mutex-guarded live status registry (ADR 054
+// §3). It mirrors MemoryPlanStore's locking discipline. It is a projection: a
+// registry write NEVER gates control flow, so the orchestrator core treats a nil
+// registry as a no-op (the goal still completes). All mutating methods are no-ops
+// on a nil *StatusRegistry so call sites need no nil-guard.
+//
+// nowFn is the clock seam (defaults to time.Now); tests may override it but the
+// default keeps UpdatedAt monotonic-enough for an operator snapshot.
+type StatusRegistry struct {
+	mu    sync.Mutex
+	goals map[string]*GoalStatus
+	nowFn func() time.Time
+}
+
+// NewStatusRegistry constructs an empty registry using time.Now as the clock.
+func NewStatusRegistry() *StatusRegistry {
+	return &StatusRegistry{
+		goals: make(map[string]*GoalStatus),
+		nowFn: time.Now,
+	}
+}
+
+func (r *StatusRegistry) now() time.Time {
+	if r.nowFn != nil {
+		return r.nowFn()
+	}
+	return time.Now()
+}
+
+// Register inserts a goal at the given initial state (typically StateQueued at
+// admission). It overwrites any prior entry for the same goalID. A nil registry is
+// a no-op.
+func (r *StatusRegistry) Register(goalID string, state GoalState) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.goals[goalID] = &GoalStatus{
+		GoalID:    goalID,
+		State:     state,
+		UpdatedAt: r.now(),
+	}
+}
+
+// SetState transitions a goal's lifecycle state. If the goal is not registered it
+// is created at this state (so an actor that bypassed Register — e.g. a direct
+// Handle call in a unit test — still projects). A nil registry is a no-op.
+func (r *StatusRegistry) SetState(goalID string, state GoalState) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g, ok := r.goals[goalID]
+	if !ok {
+		g = &GoalStatus{GoalID: goalID}
+		r.goals[goalID] = g
+	}
+	g.State = state
+	g.UpdatedAt = r.now()
+}
+
+// SetSubGoal records (or updates) the progress of one sub-goal within a goal.
+// Matching is by sub-goal Name; a new name appends, an existing name updates its
+// State. A nil registry is a no-op. If the goal is not registered it is created so
+// the sub-goal projection is never silently dropped.
+func (r *StatusRegistry) SetSubGoal(goalID string, progress SubGoalProgress) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g, ok := r.goals[goalID]
+	if !ok {
+		g = &GoalStatus{GoalID: goalID}
+		r.goals[goalID] = g
+	}
+	for i := range g.SubGoals {
+		if g.SubGoals[i].Name == progress.Name {
+			g.SubGoals[i] = progress
+			g.UpdatedAt = r.now()
+			return
+		}
+	}
+	g.SubGoals = append(g.SubGoals, progress)
+	g.UpdatedAt = r.now()
+}
+
+// Get returns a deep copy of the goal's status and whether it was found. It
+// returns a copy (not the stored pointer) so a status read never races the actor
+// mutating the same struct — this is the read path a status query (task 114) and
+// the control loop's admission check use. A nil registry returns (zero, false).
+func (r *StatusRegistry) Get(goalID string) (GoalStatus, bool) {
+	if r == nil {
+		return GoalStatus{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g, ok := r.goals[goalID]
+	if !ok {
+		return GoalStatus{}, false
+	}
+	return cloneStatus(g), true
+}
+
+// Snapshot returns a deep copy of every goal status, for a fleet-status read. A
+// nil registry returns an empty slice.
+func (r *StatusRegistry) Snapshot() []GoalStatus {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]GoalStatus, 0, len(r.goals))
+	for _, g := range r.goals {
+		out = append(out, cloneStatus(g))
+	}
+	return out
+}
+
+// LiveNonQueuedCount returns the number of goals in a non-Queued, non-terminal
+// state ({Planning, AwaitingApproval, Dispatching}). It is the load-bearing
+// observability check behind TC-112-04: under MAX_GOALS=1, this count must never
+// exceed 1. A nil registry returns 0.
+func (r *StatusRegistry) LiveNonQueuedCount() int {
+	if r == nil {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	n := 0
+	for _, g := range r.goals {
+		if g.State != StateQueued && !g.State.IsTerminal() {
+			n++
+		}
+	}
+	return n
+}
+
+func cloneStatus(g *GoalStatus) GoalStatus {
+	cp := *g
+	if len(g.SubGoals) > 0 {
+		cp.SubGoals = make([]SubGoalProgress, len(g.SubGoals))
+		copy(cp.SubGoals, g.SubGoals)
+	}
+	return cp
+}

@@ -370,7 +370,7 @@ func TestAssembleInjectedCacheIsReusedAcrossDispatches(t *testing.T) {
 	}
 	defer cleanup()
 
-	if err := runGoalIntakeLoop(context.Background(), oc); err != nil {
+	if err := runControlLoop(context.Background(), oc); err != nil {
 		t.Fatalf("goal-intake loop: %v", err)
 	}
 	if spy.count() != 2 {
@@ -409,7 +409,7 @@ func TestPolicyAllowDispatchesBoth(t *testing.T) {
 	pol := &perActionPolicy{spawnPlan: policy.DecisionAllow, spawnWorker: map[string]policy.Decision{}}
 	oc := assembleForPolicyTest(t, pol, spy, sink, &stubGoalSource{goals: []supervisor.Task{twoSubGoalGoal()}})
 
-	if err := runGoalIntakeLoop(context.Background(), oc); err != nil {
+	if err := runControlLoop(context.Background(), oc); err != nil {
 		t.Fatalf("loop: %v", err)
 	}
 	if spy.count() != 2 {
@@ -533,7 +533,7 @@ func TestFleetAuditChainSingleSinkOrderedEvents(t *testing.T) {
 	}
 	defer cleanup()
 
-	if err := runGoalIntakeLoop(context.Background(), oc); err != nil {
+	if err := runControlLoop(context.Background(), oc); err != nil {
 		t.Fatalf("loop: %v", err)
 	}
 

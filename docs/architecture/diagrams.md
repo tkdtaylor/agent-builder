@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-28 (task 099 — orchestrate subcommand: the Tier-1 orchestrator is now on the live binary path; `cmd/agent-builder` → `cli orchestrate` → assemble → `Orchestrator.Handle`/`Resume`)
+**Last updated:** 2026-06-29 (task 112 — async control-loop core: the orchestrate entry point is now a **non-blocking control loop** spawning **one goal-actor goroutine per goal**, bounded by `AGENT_BUILDER_MAX_GOALS` (admission) + `AGENT_BUILDER_MAX_WORKERS` (fleet-wide worker semaphore inside per-sub-goal dispatch), with a mutex-guarded **status registry** projection — replacing the serial `runGoalIntakeLoop`)
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -295,17 +295,28 @@ sequenceDiagram
     participant Main as cmd/agent-builder
     participant CLI as cli orchestrate (assembleOrchestrate)
     participant Worker as worker.LoadSigningKey
+    participant Ctrl as runControlLoop (non-blocking, sole GoalSource reader)
+    participant Reg as StatusRegistry (mutex-guarded projection)
+    participant Goal as goal-actor goroutine (one per goal)
     participant Orch as Orchestrator.Handle / Resume
 
     Main->>CLI: Main(Args{"orchestrate"})
     CLI->>Worker: LoadSigningKey() — 083 SEC-003 fail-closed
     Note over CLI,Worker: BEFORE goal intake — missing AGENT_BUILDER_WORKER_SIGNING_KEY exits non-zero (ErrMissingSigningKey)
     Worker-->>CLI: Ed25519 signing key (or fatal startup error)
-    CLI->>CLI: NewPlanStoreFromEnv, ONE ReplayCache per direction (083 SEC-001), StructuredPlanner, ONE shared audit.Sink, PolicyClient
-    CLI->>Orch: goal-intake loop — Handle(goal), Resume(approval)
+    CLI->>CLI: NewPlanStoreFromEnv, ONE ReplayCache per direction (083 SEC-001), StructuredPlanner, ONE shared audit.Sink, PolicyClient, StatusRegistry, worker Semaphore(MAX_WORKERS)
+    CLI->>Ctrl: runControlLoop(oc) — admission cap = MAX_GOALS
+    loop until GoalSource exhausted (ok=false)
+        Ctrl->>Reg: Register(goalID, Queued) — register-then-start
+        Ctrl->>Goal: go actor(goal) — intake decoupled from processing (next goal read immediately)
+        Goal->>Goal: acquire admission slot (park Queued while fleet at MAX_GOALS)
+        Goal->>Orch: Handle(goal) — owns this goalID's lifecycle
+        Note over Goal,Orch: Handle transitions Reg Planning→(AwaitingApproval or Dispatching)→Done/Failed, and the worker semaphore is acquired INSIDE per-sub-goal dispatch (fleet-wide cap)
+    end
+    Ctrl->>Ctrl: WaitGroup.Wait — join all actors, then return
 ```
 
-The assembled `Handle`/`Resume` then drives the Tier-1 flow below:
+Each goal-actor's `Handle`/`Resume` then drives the Tier-1 flow below (M actors run it concurrently, sharing the one audit chain, PlanStore, registry, and worker semaphore):
 
 ```mermaid
 sequenceDiagram
@@ -383,6 +394,23 @@ ADR 042) — one goroutine per sub-goal, all started before any completes, best-
 partial failure (a worker failure never halts siblings), outcomes aggregated into a
 pre-sized slice by index (deterministic order), and the shared audit chain + `PlanStore`
 serialized so `go test -race` is clean.
+
+**Async control plane (task 112 / ADR 054 §1/§3).** Above this per-goal flow, the
+`orchestrate` entry point runs a **non-blocking control loop** that is the sole reader
+of the `GoalSource` and spawns **one goal-actor goroutine per goal**, so M goals run the
+flow above concurrently. Two caps compose: `AGENT_BUILDER_MAX_GOALS` is a goal-admission
+cap enforced at the loop (excess goals park `Queued` until a live goal terminates), and
+`AGENT_BUILDER_MAX_WORKERS` is the **fleet-wide** worker semaphore acquired **inside** the
+per-sub-goal dispatch goroutine (`Acquire(1)`→dispatch→deferred `Release(1)`), so total
+live workers across all goals never exceeds the bound and no permit leaks on the error
+path. The goal-actor projects lifecycle transitions into a goalID-keyed, mutex-guarded
+**status registry** (`Queued`→`Planning`→[`AwaitingApproval`]→`Dispatching`→`Done`/`Failed`,
+plus per-sub-goal `running`/`done`/`failed`); the registry is a **projection for
+observability only**, never the source of control-flow truth (the `PlanStore` is), so a
+registry write failure never halts a goal. All user-visible output flows through the one
+mutex-guarded Reporter, keeping stdout race-free; the audit chain stays `verify`-clean
+across M goals × N workers on the single mutex-guarded `Append`. The typed message
+protocol, status query, apply-info, and cancellation are deferred to tasks 113–116.
 
 ---
 
