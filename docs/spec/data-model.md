@@ -481,6 +481,23 @@ Reevaluations     int                           how many replans were attempted 
 - **Lifecycle:** `ReevaluationPolicy.ReevaluateBlocked` replans up to `MaxReevaluations`; on exhaustion-with-still-blocked it writes `needs-human` once and returns an `Escalation`.
 - **Relationships:** the never-self-grant invariant is structural — the applied `AllowedResources` is exactly the replanner's re-derived `Plan.AllowedResources`; there is no field or code path that unions the previous set with the denied resource.
 
+#### Value: `orchestrator.SubGoalOutcome` (ADR 055 seam 4, task 123)
+
+```
+field                    type                        notes
+────────────────────────────────────────────────────────────
+SubGoal                  string                      the sub-goal spec text (Task.Spec)
+Recipe                   string                      the recipe used for dispatch
+Success                  bool                        whether the worker dispatch succeeded
+Detail                   string                      branch/PR on success, failure reason on failure
+Blocked                  *loop.BlockedAction         non-nil ONLY when dispatch failed due to a policy deny on a NECESSARY sub-goal (task 121)
+ReevaluationOutcome      loop.ReevaluationOutcome    the bounded-reevaluation result on a blocked outcome (task 123); zero-valued when Blocked == nil
+```
+
+- **Identity:** the typed outcome of dispatching one sub-goal from a plan.
+- **Lifecycle:** produced by `orchestrator.dispatchOne` and aggregated by `orchestrator.dispatchPlan`; carried in a `PlanResult` and rendered to the operator.
+- **Relationships:** `Blocked` is non-nil only when `Success == false` and the failure is specifically a policy denial on a necessary action. `ReevaluationOutcome` is populated post-join by `dispatchPlan` when `Blocked != nil` and a `StatusWriter` is configured, folding the result of bounded reevaluation into the outcome. The never-self-grant invariant is preserved end-to-end: `ReevaluationOutcome.AllowedResources` is exactly the re-derived plan's set, never unioning the previous plan's allow set with the denied resource.
+
 ### State: Ingestion Boundary
 
 - **Shape:** `internal/ingestion` owns immutable-by-convention value types for web-content candidates, tool-call candidates, guard decisions, and broker reviews. Constructors copy mutable bytes/JSON before returning candidates.

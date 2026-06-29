@@ -18,6 +18,7 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/channel/worker"
 	"github.com/tkdtaylor/agent-builder/internal/envelope"
 	"github.com/tkdtaylor/agent-builder/internal/executor"
+	"github.com/tkdtaylor/agent-builder/internal/loop"
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator"
 	llmplanner "github.com/tkdtaylor/agent-builder/internal/orchestrator/planner"
 	"github.com/tkdtaylor/agent-builder/internal/policy"
@@ -25,6 +26,7 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/router"
 	runtimewiring "github.com/tkdtaylor/agent-builder/internal/runtime"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
+	"github.com/tkdtaylor/agent-builder/internal/tasksource"
 
 	// Registration side-effect: registers "docs-fix" so recipe.SelectRecipe resolves
 	// it on the dispatch path. "coding-agent" is registered transitively via runtime.
@@ -1083,6 +1085,55 @@ func TestAssembleOrchestrateKeygenFailurePropagates(t *testing.T) {
 	// 4. The goal-intake loop was never entered — the recording source was never read.
 	if rec.called {
 		t.Error("goal source was read; assembleOrchestrate must fail before the intake loop on keygen failure")
+	}
+}
+
+// TestAssembleOrchestrateWiresStatusWriter is TC-005-CLI: assembleOrchestrate
+// constructs a non-nil *tasksource.StatusWriter from baseConfig.TaskRoot when
+// ov.statusWriter is nil, proving the orchestrate path supplies the blocked-action
+// reevaluation seam (task 123, ADR 055 seam 4). The test seam onStatusWriter
+// captures the constructed writer so we can assert it is non-nil and is the
+// right concrete type.
+func TestAssembleOrchestrateWiresStatusWriter(t *testing.T) {
+	// Set up a temporary task root so the status writer has a valid directory.
+	tmpRoot := t.TempDir()
+	t.Setenv("AGENT_BUILDER_TASK_ROOT", tmpRoot)
+	t.Setenv("AGENT_BUILDER_MAX_ATTEMPTS", "1")
+	setBaseConfigEnv(t)
+
+	var capturedWriter loop.StatusWriter
+	oc, cleanup, err := assembleOrchestrate(
+		Config{Stdout: discard(), Stderr: discard()},
+		assembleOverrides{
+			signingKey:     testSigningKey(t),
+			source:         &recordingGoalSource{},
+			onStatusWriter: func(w loop.StatusWriter) { capturedWriter = w },
+		},
+	)
+	t.Cleanup(cleanup)
+
+	// TC-005-CLI assertions:
+
+	// 1. assembleOrchestrate succeeds (no error).
+	if err != nil {
+		t.Fatalf("assembleOrchestrate returned error: %v", err)
+	}
+
+	// 2. The orchestrator was constructed (oc.orch is non-nil).
+	if oc.orch == nil {
+		t.Fatal("orchestrateConfig.orch is nil")
+	}
+
+	// 3. The onStatusWriter seam captured a non-nil StatusWriter.
+	if capturedWriter == nil {
+		t.Fatal("onStatusWriter seam captured nil StatusWriter; assembleOrchestrate did not construct or wire the status writer")
+	}
+
+	// 4. The captured writer is a *tasksource.StatusWriter (the concrete type
+	// constructed from baseConfig.TaskRoot).
+	_, ok := capturedWriter.(*tasksource.StatusWriter)
+	if !ok {
+		t.Fatalf("captured StatusWriter is type %T, want *tasksource.StatusWriter", capturedWriter)
 	}
 }
 

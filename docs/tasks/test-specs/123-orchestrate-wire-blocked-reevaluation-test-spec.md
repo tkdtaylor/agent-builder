@@ -147,9 +147,12 @@ tasksource.DefaultTaskDirs...)` on the orchestrate path; the returned
   live). The `memWriter.writes` assertion in TC-001 is the load-bearing evidence.
 - [ ] `SubGoalOutcome` struct carries a `ReevaluationOutcome loop.ReevaluationOutcome`
   field; the struct change is reflected in `docs/spec/data-model.md` in the same commit.
-- [ ] `docs/spec/configuration.md` documents `AGENT_BUILDER_MAX_REEVALUATIONS` (the
-  new env var that sets the reevaluation bound on the orchestrate path, defaulting to
-  `AGENT_BUILDER_MAX_ATTEMPTS`).
+- [ ] `docs/spec/configuration.md` documents that `AGENT_BUILDER_MAX_ATTEMPTS` applies
+  to both run-path gate-failure retry attempts and orchestrate-path bounded reevaluation
+  (the reevaluation bound reuses this env var when `WithReevaluationBound` is unset,
+  defaulting to `baseConfig.MaxAttempts` on the orchestrate path). No new env var
+  `AGENT_BUILDER_MAX_REEVALUATIONS` is introduced (semantics are identical — "how many
+  times before escalating to a human").
 
 ## Test framework notes
 

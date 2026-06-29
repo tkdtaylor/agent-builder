@@ -21,6 +21,7 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/envelope"
 	"github.com/tkdtaylor/agent-builder/internal/executor"
 	"github.com/tkdtaylor/agent-builder/internal/ingestion"
+	"github.com/tkdtaylor/agent-builder/internal/loop"
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator"
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator/planner"
 	"github.com/tkdtaylor/agent-builder/internal/policy"
@@ -28,6 +29,7 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/router"
 	runtimewiring "github.com/tkdtaylor/agent-builder/internal/runtime"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
+	"github.com/tkdtaylor/agent-builder/internal/tasksource"
 )
 
 // EnvPlanner selects the Planner the orchestrate subcommand assembles. Live
@@ -225,6 +227,10 @@ type assembleOverrides struct {
 	// one assembleOrchestrate sizes from maxWorkers — lets a test hold the SAME
 	// semaphore instance to assert "no permit leak after drain" (TC-112-07).
 	workerSem *orchestrator.Semaphore
+	// statusWriter, when non-nil, is used as the task status writer for blocked-action
+	// reevaluation (task 123, ADR 055 seam 4). When nil, assembleOrchestrate constructs
+	// one from baseConfig.TaskRoot. Tests may inject a spy to assert escalation writes.
+	statusWriter loop.StatusWriter
 	// onPlanner, when non-nil, is invoked with the exact Planner value that
 	// assembleOrchestrate hands to orchestrator.New — the producer→consumer link a
 	// test needs to assert that the env-selected planner (e.g. *llmplanner.LLMPlanner
@@ -232,6 +238,13 @@ type assembleOverrides struct {
 	// and reaches the orchestrator (TC-110-05). Production passes assembleOverrides{}
 	// so this is nil on the live path.
 	onPlanner func(orchestrator.Planner)
+	// onStatusWriter, when non-nil, is invoked with the exact StatusWriter value that
+	// assembleOrchestrate constructs and hands to orchestrator.New — the producer→consumer
+	// link a test needs to assert that the status writer (e.g. *tasksource.StatusWriter
+	// constructed from baseConfig.TaskRoot) actually survives the control-plane assembly
+	// and reaches the orchestrator (TC-123 / task 123, ADR 055 seam 4). Production passes
+	// assembleOverrides{} so this is nil on the live path.
+	onStatusWriter func(loop.StatusWriter)
 }
 
 // runOrchestrate is the CLI dispatch for the orchestrate subcommand. It parses
@@ -433,6 +446,23 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		ov.onPlanner(planner)
 	}
 
+	// 10b. Status writer for blocked-action reevaluation escalation (ADR 055 seam 4,
+	//      task 123). The orchestrate path must CONSTRUCT a status writer (it does not
+	//      already have one — run.go is the only existing construction site). The writer
+	//      roots at baseConfig.TaskRoot and scans DefaultTaskDirs; it satisfies the
+	//      loop.StatusWriter interface. A nil writer is a no-op on the live path (the
+	//      reevaluation still runs but escalation writes are skipped).
+	statusWriter := ov.statusWriter
+	if statusWriter == nil && baseConfig.TaskRoot != "" {
+		statusWriter = tasksource.NewStatusWriter(baseConfig.TaskRoot, tasksource.DefaultTaskDirs...)
+	}
+
+	// Test seam (TC-123 / task 123): observe the exact StatusWriter the assembly feeds into
+	// orchestrator.New, proving the constructed status writer survives the control loop.
+	if ov.onStatusWriter != nil {
+		ov.onStatusWriter(statusWriter)
+	}
+
 	orch := orchestrator.New(
 		planner, pol, reporter, baseConfig,
 		orchestrator.WithPlanStore(store),
@@ -440,6 +470,7 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		orchestrator.WithDispatchFunc(dispatch),
 		orchestrator.WithStatusRegistry(registry),
 		orchestrator.WithWorkerSemaphore(workerSem),
+		orchestrator.WithStatusWriter(statusWriter),
 	)
 
 	// Inbound message seam (ADR 054 §2). Precedence: an explicit typed MessageSource
