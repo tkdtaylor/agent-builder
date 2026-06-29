@@ -483,6 +483,15 @@ func runControlLoop(ctx context.Context, oc orchestrateConfig) error {
 		mailboxes = newCommandMailboxes()
 	}
 
+	// shutdown signals goal actors to stop draining their command mailbox once the
+	// source is exhausted. It is a DRAIN-ONLY signal, distinct from the dispatch
+	// context: an actor LINGERING at an AwaitingApproval checkpoint (kept alive to
+	// drain info — apply-info-at-checkpoint, task 115) stops on this close, while an
+	// in-flight DISPATCH is NOT cancelled by it (the held worker finishes as-is —
+	// cancellation/teardown is task 116). No approval/cancel channel is wired in this
+	// task; live approval delivery is L6/operator.
+	shutdown := make(chan struct{})
+
 	var wg sync.WaitGroup
 	var srcErr error
 
@@ -505,7 +514,7 @@ func runControlLoop(ctx context.Context, oc orchestrateConfig) error {
 
 		switch msg.Kind {
 		case supervisor.MsgNewGoal:
-			oc.routeNewGoal(ctx, msg.Goal, mailboxes, admit, &wg)
+			oc.routeNewGoal(ctx, msg.Goal, mailboxes, admit, &wg, shutdown)
 		case supervisor.MsgStatus:
 			oc.routeStatus(ctx, msg.GoalID)
 		case supervisor.MsgInfo, supervisor.MsgCancel:
@@ -515,6 +524,10 @@ func runControlLoop(ctx context.Context, oc orchestrateConfig) error {
 		}
 	}
 
+	// Source exhausted (or hard error): signal lingering AwaitingApproval actors to
+	// stop draining, then join. An in-flight dispatch is NOT interrupted — it finishes
+	// as-is (task 116 owns teardown).
+	close(shutdown)
 	wg.Wait()
 	return srcErr
 }
@@ -523,7 +536,7 @@ func runControlLoop(ctx context.Context, oc orchestrateConfig) error {
 // Queued, then spawn the goal actor (register-then-start ordering — ADR 054 §6 race
 // surface (b): the mailbox and registry entry exist before the actor starts, so an
 // info/cancel arriving at actor startup is delivered, not lost).
-func (oc orchestrateConfig) routeNewGoal(ctx context.Context, goal supervisor.Task, mailboxes *commandMailboxes, admit chan struct{}, wg *sync.WaitGroup) {
+func (oc orchestrateConfig) routeNewGoal(ctx context.Context, goal supervisor.Task, mailboxes *commandMailboxes, admit chan struct{}, wg *sync.WaitGroup, shutdown <-chan struct{}) {
 	// Mailbox BEFORE registration/start: a cancel/info for this goal that arrives
 	// while the actor is still booting must find a mailbox.
 	mailboxes.Create(goal.ID)
@@ -532,30 +545,10 @@ func (oc orchestrateConfig) routeNewGoal(ctx context.Context, goal supervisor.Ta
 	// admission check) never sees a goal that has been accepted but not yet projected.
 	oc.registry.Register(goal.ID, orchestrator.StateQueued)
 
-	wg.Add(1)
-	go func(goal supervisor.Task) {
-		defer wg.Done()
-		// Acquire a goal-admission slot. While the fleet is at maxGoals live goals this
-		// blocks — the goal stays Queued in the registry (Handle has not run, so no
-		// Planning transition). When a slot frees, the actor proceeds and Handle
-		// transitions Queued → Planning → … itself.
-		select {
-		case admit <- struct{}{}:
-		case <-ctx.Done():
-			oc.registry.SetState(goal.ID, orchestrator.StateFailed)
-			return
-		}
-		defer func() { <-admit }()
-
-		// The actor owns the goal's lifecycle via Handle. A goal-level error never
-		// halts the fleet (best-effort across goals — ADR 054 §1): the registry already
-		// recorded StateFailed inside Handle, and the orchestrator's Reporter (the
-		// single serialized stdout owner) emits the per-goal summary / denial. The
-		// control loop does NOT write stdout itself.
-		if _, err := oc.orch.Handle(ctx, goal); err != nil {
-			_ = err // recorded in the registry as StateFailed; surfaced via status (task 114)
-		}
-	}(goal)
+	// The goal actor (task 115) owns the goal's lifecycle: it acquires the admission
+	// slot, runs Handle, and concurrently drains the command mailbox at checkpoint
+	// boundaries (apply-info-at-checkpoint). It does its own wg.Add(1)/Done.
+	oc.runGoalActor(ctx, goal, mailboxes, admit, wg, shutdown)
 }
 
 // routeStatus dispatches a MsgStatus to the status handler (task 114's body). An
