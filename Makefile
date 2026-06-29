@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation fitness-no-self-repo-sink check l6-preflight l6-probe
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation fitness-no-self-repo-sink fitness-llm-planner-no-executor check l6-preflight l6-probe
 
 lint:
 	golangci-lint run
@@ -10,7 +10,7 @@ test:
 	go test ./...
 
 # Fitness functions — see docs/spec/fitness-functions.md
-fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation fitness-no-self-repo-sink
+fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation fitness-no-self-repo-sink fitness-llm-planner-no-executor
 	@echo "All fitness checks passed."
 
 fitness-no-docker:
@@ -134,6 +134,22 @@ fitness-orchestrator-no-executor:
 		exit 1; \
 	fi; \
 	echo "PASS fitness-orchestrator-no-executor: internal/orchestrator has no direct import of internal/executor."
+
+# fitness-llm-planner-no-executor covers test-spec TC-100-04/TC-100-05 (F-014, ADR
+# 046 §6): internal/orchestrator/planner (the LLM-backed Planner concrete) must have
+# NO DIRECT import of internal/executor. The planner reaches a model THROUGH the
+# router/registry path (internal/router, which itself imports internal/executor) —
+# that transitive path is the blessed routing path. So, exactly like F-010, this
+# asserts DIRECT imports only (go list -f '{{.Imports}}'), NOT the transitive graph.
+fitness-llm-planner-no-executor:
+	@imports=$$(go list -f '{{ join .Imports "\n" }}' ./internal/orchestrator/planner) || exit $$?; \
+	forbidden=$$(printf '%s\n' "$$imports" | grep '/internal/executor\(/\|$$\)' || true); \
+	if [ -n "$$forbidden" ]; then \
+		echo "FAIL F-014: internal/orchestrator/planner DIRECTLY imports internal/executor:"; \
+		printf '%s\n' "$$forbidden"; \
+		exit 1; \
+	fi; \
+	echo "PASS F-014: internal/orchestrator/planner has no direct import of internal/executor."
 
 # fitness-no-srt covers test-spec TC-036-04: the default run pipeline must not
 # transitively import internal/sandbox/sandboxruntime.
