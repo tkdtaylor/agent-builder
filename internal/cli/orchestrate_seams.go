@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/tkdtaylor/agent-builder/internal/audit"
 	"github.com/tkdtaylor/agent-builder/internal/channel/worker"
@@ -111,16 +112,26 @@ func newTransportDispatch(signingKey ed25519.PrivateKey, workItemCache, resultCa
 // logReporter is the fallback outbound Reporter: it writes the rendered text to the
 // given writer (task 098 wires a real outbound channel; this is the no-channel
 // fallback so the orchestrator's approval/result reports are never silently dropped).
-type logReporter struct{ w io.Writer }
+//
+// Concurrency (ADR 054 §1, task 112): the async control plane shares ONE Reporter
+// across all concurrent goal actors — each actor's dispatchPlan calls Report. A
+// plain io.Writer is not safe for concurrent writes, so Report serializes on a
+// mutex. The writer is shared, but each Report is one atomic line.
+type logReporter struct {
+	mu *sync.Mutex
+	w  io.Writer
+}
 
 func newLogReporter(w io.Writer) supervisor.Reporter {
 	if w == nil {
 		w = io.Discard
 	}
-	return logReporter{w: w}
+	return logReporter{mu: &sync.Mutex{}, w: w}
 }
 
 func (r logReporter) Report(_ context.Context, text string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	_, err := fmt.Fprintln(r.w, text)
 	return err
 }

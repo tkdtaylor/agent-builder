@@ -185,6 +185,19 @@ type Orchestrator struct {
 	// under (task 085 / ADR 050 §3): exec-sandbox profile, rootless, read-only
 	// rootfs, resource-limited, default-deny egress — the same profile as a worker.
 	containment Containment
+	// registry is the live status registry projection (ADR 054 §3, task 112). The
+	// goal actor transitions its goalID's state at each lifecycle edge; sub-goal
+	// progress is written from inside dispatchPlan's per-sub-goal goroutines. It is
+	// a PROJECTION ONLY — a nil registry is a no-op and a registry write NEVER gates
+	// control flow (the PlanStore is the source of truth). Set via WithStatusRegistry.
+	registry *StatusRegistry
+	// workerSem is the fleet-wide worker semaphore (ADR 054 §1, task 112). When
+	// non-nil, each per-sub-goal goroutine in dispatchPlan acquires one permit before
+	// o.dispatch and releases it (deferred) after, so the TOTAL live workers across
+	// all concurrent goals never exceeds the bound. nil disables the cap (the
+	// pre-112 unbounded behaviour, used by single-goal unit tests). Set via
+	// WithWorkerSemaphore.
+	workerSem *Semaphore
 }
 
 // Option configures an Orchestrator.
@@ -220,6 +233,24 @@ func WithPlanner(p Planner) Option {
 	}
 }
 
+// WithStatusRegistry sets the live status registry the orchestrator projects
+// lifecycle transitions into (ADR 054 §3). When unset the registry is nil and all
+// projection writes are no-ops — the goal still completes (the registry never
+// gates control flow). The control loop assembles ONE registry shared across all
+// goal actors.
+func WithStatusRegistry(r *StatusRegistry) Option {
+	return func(o *Orchestrator) { o.registry = r }
+}
+
+// WithWorkerSemaphore sets the fleet-wide worker semaphore acquired inside
+// dispatchPlan's per-sub-goal goroutine (ADR 054 §1). When unset (nil) dispatch is
+// unbounded — the pre-112 behaviour single-goal tests rely on. The control loop
+// assembles ONE semaphore sized to AGENT_BUILDER_MAX_WORKERS and shares it across
+// all goal actors so the bound is fleet-wide, not per-goal.
+func WithWorkerSemaphore(s *Semaphore) Option {
+	return func(o *Orchestrator) { o.workerSem = s }
+}
+
 // New constructs an Orchestrator. planner, pol, and reporter are required.
 func New(planner Planner, pol PolicyClient, reporter supervisor.Reporter, base runtime.Config, opts ...Option) *Orchestrator {
 	o := &Orchestrator{
@@ -253,16 +284,23 @@ func (o *Orchestrator) Handle(ctx context.Context, goal supervisor.Task) (PlanRe
 	// Fleet-audit (task 085 / ADR 050 §4): record goal intake on the shared chain.
 	o.emitFleetEvent(audit.AuditEvent{Action: audit.ActionGoalIntake, TaskID: goal.ID, RunID: goal.ID})
 
+	// Registry projection (ADR 054 §3): the actor owns its goalID's state. Intake →
+	// Planning. A nil registry is a no-op; this never gates control flow.
+	o.registry.SetState(goal.ID, StatePlanning)
+
 	plan, err := o.planner.Plan(goal)
 	if err != nil {
+		o.registry.SetState(goal.ID, StateFailed)
 		return PlanResult{}, fmt.Errorf("orchestrator: plan goal %q: %w", goal.ID, err)
 	}
 	if len(plan.SubGoals) == 0 {
+		o.registry.SetState(goal.ID, StateFailed)
 		return PlanResult{}, fmt.Errorf("orchestrator: empty plan for goal %q", goal.ID)
 	}
 
 	decision, err := o.decideSpawn(plan)
 	if err != nil {
+		o.registry.SetState(goal.ID, StateFailed)
 		return PlanResult{}, err
 	}
 
@@ -281,17 +319,22 @@ func (o *Orchestrator) Handle(ctx context.Context, goal supervisor.Task) (PlanRe
 		// TryPut so write-gate rejections surface as errors (REQ-084-01 / ADR 049 §2).
 		if ta, ok := o.store.(TamperAwarePlanStore); ok {
 			if err := ta.TryPut(plan); err != nil {
+				o.registry.SetState(plan.GoalID, StateFailed)
 				return PlanResult{}, fmt.Errorf("orchestrator: memory-guard write-gate rejected plan for goal %q: %w", plan.GoalID, err)
 			}
 		} else {
 			o.store.Put(plan)
 		}
+		// Registry projection: the plan is paused awaiting approval (ADR 054 §3). The
+		// Resume path (driven by task 115) continues from here.
+		o.registry.SetState(plan.GoalID, StateAwaitingApproval)
 		if err := o.reporter.Report(ctx, renderApprovalRequest(plan)); err != nil {
 			return PlanResult{}, fmt.Errorf("orchestrator: report approval request: %w", err)
 		}
 		return PlanResult{Goal: plan.Goal}, nil
 	default:
 		// deny and any fail-closed deny.
+		o.registry.SetState(plan.GoalID, StateFailed)
 		if err := o.reporter.Report(ctx, fmt.Sprintf("Plan denied for goal: %s", plan.Goal)); err != nil {
 			return PlanResult{}, fmt.Errorf("orchestrator: report denial: %w", err)
 		}
@@ -392,6 +435,9 @@ func (o *Orchestrator) dispatchPlan(ctx context.Context, plan Plan) (PlanResult,
 		Goal:     plan.Goal,
 		Outcomes: make([]SubGoalOutcome, n),
 	}
+	// Registry projection (ADR 054 §3): the plan was allowed → Dispatching. A nil
+	// registry is a no-op; this never gates control flow.
+	o.registry.SetState(plan.GoalID, StateDispatching)
 	// denyAuditErrs[i] holds a non-nil error only if sub-goal i's deny-event audit
 	// append failed (SEC-003). Each goroutine writes its own index → no shared-write
 	// race; we scan it after the join.
@@ -414,6 +460,7 @@ func (o *Orchestrator) dispatchPlan(ctx context.Context, plan Plan) (PlanResult,
 	// returned so the caller sees what ran before the halt.
 	for _, err := range denyAuditErrs {
 		if err != nil {
+			o.registry.SetState(plan.GoalID, StateFailed)
 			return result, fmt.Errorf("orchestrator: audit spawn-decided deny: %w", err)
 		}
 	}
@@ -422,6 +469,11 @@ func (o *Orchestrator) dispatchPlan(ctx context.Context, plan Plan) (PlanResult,
 	// runs after the join, so completion is the LAST orchestrator event on the chain
 	// (TC-085-03 / TC-086-05 assert completion is last).
 	o.emitFleetEvent(audit.AuditEvent{Action: audit.ActionCompletion, TaskID: plan.GoalID, RunID: plan.GoalID})
+
+	// Registry projection: terminal Done. (Per-sub-goal failures are best-effort and
+	// recorded in SubGoals[i]; an aggregate that reached this point is a completed
+	// dispatch, not a goal-level failure — only a hard halt above is Failed.)
+	o.registry.SetState(plan.GoalID, StateDone)
 
 	if err := o.reporter.Report(ctx, RenderPlanResult(result)); err != nil {
 		return result, fmt.Errorf("orchestrator: report plan result: %w", err)
@@ -486,14 +538,48 @@ func (o *Orchestrator) dispatchOne(ctx context.Context, plan Plan, sub SubGoal) 
 		return outcome, nil
 	}
 
-	if err := o.dispatch(ctx, sub, o.baseConfig); err != nil {
+	// Fleet-wide worker semaphore (ADR 054 §1, task 112): acquire ONE permit before
+	// the worker dispatch and release it (deferred) after, so total live workers
+	// across ALL concurrent goals never exceeds AGENT_BUILDER_MAX_WORKERS. The
+	// acquire/release wraps ONLY o.dispatch — the recipe check and gate above are
+	// cheap and not the bound. Release is deferred inside this block so the permit
+	// is returned on every path (success, dispatch error, or panic), never leaked
+	// (REQ-112-07). A nil semaphore disables the cap (pre-112 unbounded dispatch).
+	//
+	// Registry projection: the sub-goal moves running → done/failed (ADR 054 §3),
+	// written here from inside the task-086 dispatch goroutine — the same place the
+	// outcome is produced.
+	o.registry.SetSubGoal(plan.GoalID, SubGoalProgress{Name: sub.Task.ID, Recipe: sub.RecipeName, State: "running"})
+
+	dispatchErr := o.dispatchWithSemaphore(ctx, sub)
+	if dispatchErr != nil {
 		outcome.Success = false
-		outcome.Detail = err.Error()
+		outcome.Detail = dispatchErr.Error()
+		o.registry.SetSubGoal(plan.GoalID, SubGoalProgress{Name: sub.Task.ID, Recipe: sub.RecipeName, State: "failed"})
 	} else {
 		outcome.Success = true
 		outcome.Detail = "dispatched"
+		o.registry.SetSubGoal(plan.GoalID, SubGoalProgress{Name: sub.Task.ID, Recipe: sub.RecipeName, State: "done"})
 	}
 	return outcome, nil
+}
+
+// dispatchWithSemaphore acquires one fleet-wide worker permit (when a semaphore is
+// configured), runs o.dispatch, and releases the permit on EVERY return path via
+// defer (REQ-112-07: permits balanced, no leak even on the dispatch-error path).
+// When no semaphore is configured it dispatches directly (pre-112 unbounded). The
+// acquire is the only blocking step: a saturated fleet parks this goroutine here
+// (its goal stays Dispatching) until a permit frees, which is exactly the
+// total-live-workers cap. An acquire failure (ctx cancelled) is returned as the
+// dispatch error so the sub-goal is recorded failed rather than silently skipped.
+func (o *Orchestrator) dispatchWithSemaphore(ctx context.Context, sub SubGoal) error {
+	if o.workerSem != nil {
+		if err := o.workerSem.Acquire(ctx); err != nil {
+			return fmt.Errorf("orchestrator: acquire worker permit for %q: %w", sub.Task.ID, err)
+		}
+		defer o.workerSem.Release()
+	}
+	return o.dispatch(ctx, sub, o.baseConfig)
 }
 
 // decideSpawnWorker issues the per-sub-goal spawn-worker policy decision (task 085
