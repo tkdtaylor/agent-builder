@@ -548,3 +548,84 @@ func TestBuildExecutorForEntryUnknownHarness(t *testing.T) {
 		t.Errorf("error message should mention unknown harness or bogus-harness: %v", err)
 	}
 }
+
+// TestConfigFromEnvAllowsGeminiSubscriptionEntryWithoutCloudKey tests that a Gemini
+// subscription entry (empty SecretRef) is accepted without cloud credentials.
+// TC-132-05, REQ-132-04
+func TestConfigFromEnvAllowsGeminiSubscriptionEntryWithoutCloudKey(t *testing.T) {
+	// Use t.Setenv to set real environment variables.
+	t.Setenv("AGENT_BUILDER_TASK_ROOT", "/tmp/tasks")
+	t.Setenv("AGENT_BUILDER_WORKTREE", "/tmp/work")
+	t.Setenv("AGENT_BUILDER_EXEC_BOX_LAUNCHER", "containment/execution-box/run.sh")
+	t.Setenv("AGENT_BUILDER_RUN_TIMEOUT", "5m")
+	t.Setenv("AGENT_BUILDER_MAX_ATTEMPTS", "2")
+	t.Setenv("AGENT_BUILDER_PUBLISH_REMOTE", "origin")
+	// Gemini subscription entry (empty SecretRef, no API key required)
+	t.Setenv("AGENT_BUILDER_REGISTRY_GEMINI_ENABLED", "true")
+	t.Setenv("AGENT_BUILDER_REGISTRY_GEMINI_ENDPOINT", "https://gemini.google.com") // Required by loader, unused in subscription mode
+	t.Setenv("AGENT_BUILDER_REGISTRY_GEMINI_MODEL", "gemini-2.0-flash")
+	t.Setenv("AGENT_BUILDER_REGISTRY_GEMINI_CAPABILITY_TIER", "2")
+	t.Setenv("AGENT_BUILDER_REGISTRY_GEMINI_COST_WEIGHT", "2")
+	t.Setenv("AGENT_BUILDER_REGISTRY_GEMINI_SECRET_REF", "") // Empty: subscription mode
+	// NO cloud credentials in environment
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+	t.Setenv("GEMINI_API_KEY", "")
+
+	getenv := func(key string) string {
+		// Delegate to actual environment (which we've set up with t.Setenv above).
+		val, _ := os.LookupEnv(key)
+		return val
+	}
+
+	config, err := ConfigFromEnv(getenv)
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() for Gemini subscription entry failed: %v", err)
+	}
+
+	// Verify that config was successfully created
+	if config.Worktree != "/tmp/work" {
+		t.Fatalf("Worktree = %q, want %q", config.Worktree, "/tmp/work")
+	}
+
+	// Now test buildExecutorForEntry for the Gemini subscription entry
+	entries, err := registry.LoadFromEnv()
+	if err != nil {
+		t.Fatalf("registry.LoadFromEnv() failed: %v", err)
+	}
+
+	var geminiEntry *registry.RegistryEntry
+	for i := range entries {
+		if entries[i].ID == "gemini" {
+			geminiEntry = &entries[i]
+			break
+		}
+	}
+
+	if geminiEntry == nil {
+		t.Fatal("Gemini entry not found in registry")
+	}
+
+	if geminiEntry.SecretRef != "" {
+		t.Fatalf("Gemini subscription entry SecretRef = %q, want empty", geminiEntry.SecretRef)
+	}
+
+	// TC-132-05: buildExecutorForEntry should return a *executor.GeminiCLI for this entry.
+	exec, err := buildExecutorForEntry(*geminiEntry, config)
+	if err != nil {
+		t.Fatalf("buildExecutorForEntry() for Gemini subscription entry failed: %v", err)
+	}
+
+	if exec == nil {
+		t.Fatal("buildExecutorForEntry() returned nil executor")
+	}
+
+	geminiCLI, ok := exec.(*executor.GeminiCLI)
+	if !ok {
+		t.Fatalf("buildExecutorForEntry() returned %T, want *executor.GeminiCLI", exec)
+	}
+
+	if geminiCLI == nil {
+		t.Fatal("GeminiCLI is nil")
+	}
+}

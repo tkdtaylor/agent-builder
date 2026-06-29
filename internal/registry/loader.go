@@ -23,15 +23,16 @@ import (
 //	Ollama (local model) → LiteLLM or claude-code-router (translation proxy) → Claude CLI (ANTHROPIC_BASE_URL)
 const TranslationProxySeam = "litellm/claude-code-router"
 
-// localHarnessEntries lists entry IDs that use the local/translation-proxy pattern:
-// Harness = HarnessClaudeCLI, SecretRef = "" (no cloud auth), Budget.Limit = 0 (unlimited).
-// These entries set ANTHROPIC_BASE_URL to their Endpoint at dispatch time instead of
-// injecting a cloud auth token.
-// Also includes "local-ollama", which uses HarnessOllamaNative and is natively local.
+// localHarnessEntries lists entry IDs that can have empty SecretRef (local authentication):
+// - "local-qwen", "local", "local-ollama": use the translation-proxy pattern (Harness = HarnessClaudeCLI or HarnessOllamaNative, SecretRef = "", Budget.Limit = 0).
+//   These entries set ANTHROPIC_BASE_URL (or use native local inference) instead of injecting cloud auth.
+// - "gemini": uses Gemini subscription/OAuth login (Harness = HarnessGeminiCLI, SecretRef = "").
+//   The gemini CLI uses its own cached OAuth login (~/.gemini) and does not require an API key injected.
 var localHarnessEntries = map[string]struct{}{
 	"local-qwen":   {},
 	"local":        {},
 	"local-ollama": {},
+	"gemini":       {},
 }
 
 // LoadFromEnv reads well-known env-var prefixes and constructs enabled entries.

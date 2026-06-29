@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** agent-builder
-**Last updated:** 2026-06-29 (task 117 — AGENT_BUILDER_INBOUND=telegram and AGENT_BUILDER_TELEGRAM_* vars added; Telegram inbound+outbound now selectable at runtime)
+**Last updated:** 2026-06-29 (task 132 — Gemini subscription/OAuth auth mode added; entry can authenticate via cached `gemini` CLI login instead of API key)
 
 Every knob the system exposes — env vars, config files, runtime parameters, deployment settings. Each entry is a public contract: changes to defaults or accepted values are observable.
 
@@ -168,7 +168,7 @@ The executor registry is configured via well-known env-var prefixes per entry ID
 |----------|------|---------|------------|--------|
 | `AGENT_BUILDER_REGISTRY_<ID>_ENABLED` | enum: `true`, `false` | (not set = disabled) | no | When `true`, the entry is loaded and registered into the catalog; when `false` or unset, the entry is skipped. |
 | `AGENT_BUILDER_REGISTRY_<ID>_ENDPOINT` | URL string | none | yes (if enabled) | Base URL the harness points at (cloud API, or a local model translation proxy). Blank values fail with a descriptive error. |
-| `AGENT_BUILDER_REGISTRY_<ID>_SECRET_REF` | string | none | yes for cloud entries; **optional (empty) for local entries** | Vault secret name to resolve at dispatch time (never the secret itself). For cloud entries, blank values fail with a descriptive error. For local entries (`local-qwen`, `local`), the field is intentionally empty — no cloud auth is needed; the harness injects `ANTHROPIC_AUTH_TOKEN=<placeholder>` and `ANTHROPIC_BASE_URL=<endpoint>` to point the CLI at the translation proxy instead. |
+| `AGENT_BUILDER_REGISTRY_<ID>_SECRET_REF` | string | none | yes for cloud entries; **optional (empty) for local entries** | Vault secret name to resolve at dispatch time (never the secret itself). For cloud entries, blank values fail with a descriptive error. For local entries (`local-qwen`, `local`, `gemini`), the field is intentionally empty — no cloud API key is needed. Local entries use their own authentication patterns: Claude/Qwen entries inject `ANTHROPIC_AUTH_TOKEN=<placeholder>` and `ANTHROPIC_BASE_URL=<endpoint>` to point to the translation proxy; Gemini subscription entries rely on the `gemini` CLI's cached OAuth login (`~/.gemini`) and require no injected env vars. |
 | `AGENT_BUILDER_REGISTRY_<ID>_MODEL` | string | none | yes (if enabled) | Model identifier (e.g., `claude-opus-4-5`, `qwen-7b`). Blank values fail with a descriptive error. |
 | `AGENT_BUILDER_REGISTRY_<ID>_CAPABILITY_TIER` | non-negative integer | none | yes (if enabled) | Ordered capability ranking (higher = stronger). Non-integer values fail with a descriptive error. |
 | `AGENT_BUILDER_REGISTRY_<ID>_COST_WEIGHT` | non-negative integer | none | yes (if enabled) | Relative cost per dispatch (lower = cheaper). Non-integer values fail with a descriptive error. |
@@ -216,9 +216,23 @@ AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_COST_WEIGHT=1
 # Budget is not set — local entries are unlimited (Budget.Limit == 0)
 ```
 
+**Example configuration for `gemini` (subscription/OAuth mode):**
+```
+AGENT_BUILDER_REGISTRY_GEMINI_ENABLED=true
+AGENT_BUILDER_REGISTRY_GEMINI_ENDPOINT=https://gemini.google.com
+AGENT_BUILDER_REGISTRY_GEMINI_MODEL=gemini-2.0-flash
+AGENT_BUILDER_REGISTRY_GEMINI_CAPABILITY_TIER=2
+AGENT_BUILDER_REGISTRY_GEMINI_COST_WEIGHT=2
+# SECRET_REF is not set — subscription mode uses cached OAuth login from `gemini` CLI
+# Budget is not set — subscription entries are unlimited (Budget.Limit == 0)
+```
+The `gemini` CLI must be installed and logged in via `gemini auth login` (or `gemini setup-token` for headless authentication) on the operator's system. Credentials are cached in `~/.gemini` and do not need to be injected by the executor.
+
 **Note:** The native Ollama executor (`ollama-native` harness) requires the model to return structured `tool_calls` via Ollama's `/api/chat` endpoint. As of Ollama 0.17.7, `qwen3:8b` returns parseable `tool_calls`. Other models (e.g., `qwen2.5-coder:7b`) may emit bare JSON without the `<tool_call>` wrapper, preventing tool execution. Consult the Ollama model library documentation for confirmed `tool_calls` support.
 
 When ALL enabled registry entries are local (all have empty `SECRET_REF`), the operator does NOT need to export `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` in the host environment — `agent-builder run` will start without requiring cloud credentials. The executor injects the fixed placeholder `executor.LocalProxyAuthPlaceholder` (value: `"local-proxy-no-auth"`) as `ANTHROPIC_AUTH_TOKEN` in the subprocess to satisfy the Claude Code CLI's auth check; the translation proxy ignores the token value. (`ANTHROPIC_AUTH_TOKEN` is required rather than `ANTHROPIC_API_KEY` because the current Claude Code CLI validates `ANTHROPIC_API_KEY` as a real Anthropic credential and rejects a placeholder with `Not logged in`, while `ANTHROPIC_AUTH_TOKEN` is the gateway bearer-token var passed through to `ANTHROPIC_BASE_URL`.) The translation proxy (LiteLLM, claude-code-router) converts Anthropic API requests to the local inference server's OpenAI API. See `registry.TranslationProxySeam` for the named seam constant.
+
+For Gemini subscription entries, the `gemini` CLI uses its own authentication (cached OAuth login) and does not require any token injection from the executor.
 
 **Router quota defaults (not configurable via env vars):**
 - `router.DefaultCooldown = 5m` — the fallback window applied by `OnRateLimit` when no `Retry-After` header is present. Overridable per-router via `NewWithClock(catalog, clock, cooldown)` in code (tests use small cooldowns; production uses the constant). No env-var override is exposed; the cooldown is a per-deployment code constant.

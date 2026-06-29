@@ -74,10 +74,16 @@ func (g *GeminiCLI) run(ctx context.Context, task supervisor.Task) (supervisor.R
 		return supervisor.Result{}, ErrGeminiBlankWorktree
 	}
 
-	// Resolve the auth token at dispatch time — never cache it on the struct.
-	apiKey, err := g.secretSource.NamedProviderToken(g.entry.SecretRef)
-	if err != nil {
-		return supervisor.Result{}, fmt.Errorf("%w: SecretRef=%q: %w", ErrGeminiSecretNotFound, g.entry.SecretRef, err)
+	var apiKey string
+	// Branch on SecretRef early: empty means subscription/OAuth mode; non-empty means API-key mode.
+	// For API-key mode, resolve the auth token BEFORE creating the subprocess command.
+	if g.entry.SecretRef != "" {
+		// API-key mode: resolve the auth token at dispatch time — never cache it on the struct.
+		var err error
+		apiKey, err = g.secretSource.NamedProviderToken(g.entry.SecretRef)
+		if err != nil {
+			return supervisor.Result{}, fmt.Errorf("%w: SecretRef=%q: %w", ErrGeminiSecretNotFound, g.entry.SecretRef, err)
+		}
 	}
 
 	prompt := buildGeminiPrompt(task, g.worktree)
@@ -92,13 +98,22 @@ func (g *GeminiCLI) run(ctx context.Context, task supervisor.Task) (supervisor.R
 
 	cmd := g.cmdFactory(ctx, "gemini", args...)
 	cmd.Dir = g.worktree
+
 	// Use the cmd's existing Env if the factory already set one (e.g. in tests);
-	// otherwise start from the process environment. Then inject the API key.
+	// otherwise start from the process environment.
 	base := cmd.Env
 	if base == nil {
 		base = os.Environ()
 	}
-	cmd.Env = geminiEnv(base, g.entry.ModelID, apiKey)
+
+	// Configure the environment based on auth mode.
+	if g.entry.SecretRef == "" {
+		// Subscription mode: use cached OAuth login, no API key injection.
+		cmd.Env = geminiSubscriptionEnv(base, g.entry.ModelID)
+	} else {
+		// API-key mode: inject the resolved token.
+		cmd.Env = geminiEnv(base, g.entry.ModelID, apiKey)
+	}
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
@@ -158,6 +173,22 @@ func geminiEnv(base []string, modelID, apiKey string) []string {
 		GeminiAPIKeyEnv+"="+apiKey,
 		"GEMINI_MODEL="+modelID,
 	)
+	return env
+}
+
+// geminiSubscriptionEnv constructs the subprocess environment for subscription/OAuth mode.
+// It takes the base environment, strips any pre-existing GEMINI_API_KEY (to force OAuth),
+// sets GEMINI_MODEL, and preserves HOME and other env vars so the gemini CLI uses its
+// cached OAuth login (~/.gemini).
+func geminiSubscriptionEnv(base []string, modelID string) []string {
+	env := make([]string, 0, len(base)+1)
+	for _, entry := range base {
+		if strings.HasPrefix(entry, GeminiAPIKeyEnv+"=") {
+			continue // strip pre-existing key — force OAuth
+		}
+		env = append(env, entry)
+	}
+	env = append(env, "GEMINI_MODEL="+modelID)
 	return env
 }
 

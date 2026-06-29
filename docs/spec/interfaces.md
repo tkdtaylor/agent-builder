@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** agent-builder
-**Last updated:** 2026-06-29 (task 119 — ADR 055 seam 2: DispatchedTask goal-source seam + runWorker spy seam; blank-task hard error)
+**Last updated:** 2026-06-29 (task 132 — GeminiCLI executor expanded: subscription/OAuth mode (empty SecretRef) alongside API-key mode (non-empty SecretRef))
 
 The system's contact surface — everything that calls into the system, everything the system calls out to, and the public boundaries within the system. Each interface is a stable contract: changes here are breaking changes.
 
@@ -202,7 +202,8 @@ func (g *GeminiCLI) Run(task supervisor.Task) (supervisor.Result, error)
 
 - **Outbound call:** `gemini --model <model-id> <prompt>` with `cmd.Dir` set to the configured worktree.
 - **Branch contract:** the prompt instructs the CLI to write `BRANCH: <branch-name>` as the last output line. The executor extracts the branch name by scanning stdout in reverse for the `BRANCH:` prefix.
-- **Auth contract:** the API key is resolved at dispatch time via `secretSource.NamedProviderToken(entry.SecretRef)`. The resolved key is injected as `GEMINI_API_KEY` into the subprocess env; `ErrSecretNotFound` fails the run before subprocess start. The key is redacted from subprocess failure output. It is never stored on the struct beyond the `Run` call.
+- **Auth contract (API-key mode):** when `entry.SecretRef != ""`, the API key is resolved at dispatch time via `secretSource.NamedProviderToken(entry.SecretRef)`. The resolved key is injected as `GEMINI_API_KEY` into the subprocess env; `ErrSecretNotFound` fails the run before subprocess start. The key is redacted from subprocess failure output. It is never stored on the struct beyond the `Run` call.
+- **Auth contract (subscription/OAuth mode):** when `entry.SecretRef == ""`, the executor does NOT call `NamedProviderToken` and does NOT inject `GEMINI_API_KEY`. Instead, `GEMINI_MODEL` is set and any pre-existing `GEMINI_API_KEY` is stripped from the subprocess environment (force OAuth). `HOME` and other environment variables are preserved so the `gemini` CLI uses its cached OAuth login from `~/.gemini`. The executor accepts entries with empty `SecretRef` and does not error on missing secrets in this mode.
 - **Supervisor isolation:** `internal/executor` imports `internal/supervisor` (for types); `internal/supervisor` never imports `internal/executor` (F-003 invariant, enforced by `make fitness-supervisor-isolation`).
 
 ### Interface: `executor.Completer` (non-agentic single-shot)
