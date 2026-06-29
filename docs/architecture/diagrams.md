@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-29 (task 116 — cancellation + worker teardown: `runtime.Run`/`Supervisor.Run` now take a leading `context.Context`; the run-loop `select` gains a `case <-ctx.Done():` arm beside the wall-clock arm reusing the SAME `box.Kill`/`Teardown` path; a per-goal `context.WithCancel` is derived at `routeNewGoal` and its `CancelFunc` registered, so a `cancel <goalID>` tears down only that goal's in-flight workers, sets `Cancelled`, consumes its plan, and releases its worker permit — building on task 113's inbound message protocol and task 112's async control-loop core)
+**Last updated:** 2026-06-29 (task 117 — Telegram wired as optional inbound channel: `telegram.Adapter` now satisfies `supervisor.MessageSource` (derives `MessageKind`/`GoalID` at adapter edge after envelope-verify+armor); `telegram.ReplyAdapter` wired as outbound `Reporter`; both selected by `AGENT_BUILDER_INBOUND=telegram` in `assembleOrchestrate`; env/stdin remains the default. The control-plane diagram updated to show the Telegram inbound path alongside the default env/stdin path.)
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -433,6 +433,8 @@ observability only**, never the source of control-flow truth (the `PlanStore` is
 registry write failure never halts a goal. All user-visible output flows through the one
 mutex-guarded Reporter, keeping stdout race-free; the audit chain stays `verify`-clean
 across M goals × N workers on the single mutex-guarded `Append`.
+
+**Telegram inbound channel (task 117 / ADR 054 §2).** When `AGENT_BUILDER_INBOUND=telegram`, `assembleOrchestrate` wires `*telegram.Adapter` as the `MessageSource` and `*telegram.ReplyAdapter` as the `Reporter`. `telegram.Adapter` performs the full envelope-verify (Ed25519) + AEAD-decrypt (X25519) + armor pipeline on each Telegram `getUpdates` poll before any kind derivation; `MessageKind`/`GoalID` are derived at the adapter edge from verified plaintext + reply-to identity (never from unverified text). A `new-goal` gets a fresh `tg-<chatID>-<msgID>` goalID (stored in the adapter's `goalIDCache`); a `status`/`info`/`cancel` reply-to message threads the original goalID from the cache so concurrent goals track independently. The env/stdin `MessageSource` remains the default (`AGENT_BUILDER_INBOUND` unset or `env`).
 
 **Cancellation teardown (task 116 / ADR 054 §5).** Each goal runs under a per-goal
 `context.WithCancel` derived at `routeNewGoal`; its `CancelFunc` lives in the registry.

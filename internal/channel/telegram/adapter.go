@@ -1,6 +1,10 @@
-// Package telegram implements a secure goal-source channel via the Telegram Bot API.
+// Package telegram implements a secure inbound channel via the Telegram Bot API.
 // It polls getUpdates, applies envelope verification (Ed25519) and decryption (X25519+AEAD),
-// routes the plaintext through armor.Guard, and delivers validated goals over supervisor.GoalSource.
+// routes the plaintext through armor.Guard, and delivers typed supervisor.Messages
+// (new-goal / status / info / cancel) over supervisor.MessageSource.
+//
+// Kind/GoalID derivation happens at the adapter edge — after envelope-verify + armor — on
+// already-trusted plaintext. The control plane only ever sees Message.GoalID (ADR 054 §2).
 package telegram
 
 import (
@@ -14,6 +18,8 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/tkdtaylor/agent-builder/internal/audit"
@@ -22,9 +28,18 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
 
-// Adapter is a Telegram bot adapter that implements supervisor.GoalSource.
+// Adapter is a Telegram bot adapter that implements supervisor.MessageSource.
 // It polls the Telegram Bot API, verifies and decrypts envelopes, routes plaintext
-// through armor.Guard, and delivers validated goals.
+// through armor.Guard, derives the message kind and goalID at the adapter edge, and
+// delivers typed supervisor.Messages (new-goal/status/info/cancel) to the control plane.
+//
+// Per-message goal IDs are derived from the Telegram chat/message identity (ADR 054 §2):
+//   - A new-goal gets a fresh goalID from its chat+message ID ("tg-<chatID>-<msgID>").
+//   - A status/info/cancel reply-to threads the EXISTING goalID stored in the adapter's
+//     internalIDCache, keyed by the original message ID.
+//
+// Security invariant: kind derivation runs ONLY on verified, armor-passed plaintext.
+// The envelope-verify + armor pipeline is unchanged (tasks 080/097/098).
 type Adapter struct {
 	botToken          string
 	baseURL           string
@@ -40,6 +55,13 @@ type Adapter struct {
 	maxBodyBytes      int64
 	maxMessageBytes   int64
 	guardTimeout      time.Duration
+
+	// goalIDCache maps a Telegram message ID (the original new-goal message ID as
+	// a string) to the derived goalID. Used to thread reply-to commands to the
+	// correct goal actor. Guarded by mu (ADR 054 §2: the control loop is the single
+	// Next() caller — the mutex is defensive for the reply-to lookup path).
+	mu          sync.Mutex
+	goalIDCache map[string]string
 }
 
 // ContentGuard is a narrow interface for armor guard decision-making.
@@ -105,17 +127,20 @@ func NewAdapter(config Config) *Adapter {
 		maxBodyBytes:      config.MaxBodyBytes,
 		maxMessageBytes:   config.MaxMessageBytes,
 		guardTimeout:      config.GuardTimeout,
+		goalIDCache:       make(map[string]string),
 	}
 }
 
-// Next implements supervisor.GoalSource.Next.
-// It polls getUpdates, processes each update through the envelope → armor → goal pipeline,
-// and returns the next valid goal. Offset is advanced on every update (even rejected ones).
-func (a *Adapter) Next() (supervisor.Task, bool, error) {
+// Next implements supervisor.MessageSource.Next.
+// It polls getUpdates, processes each update through the envelope → armor pipeline,
+// derives the MessageKind and GoalID at the adapter edge from the plaintext and
+// reply-to context, and returns the next typed supervisor.Message.
+// Offset is advanced on every update (even rejected ones).
+func (a *Adapter) Next() (supervisor.Message, bool, error) {
 	updates, err := a.getUpdates()
 	if err != nil {
 		a.logger.Error("getUpdates failed", "error", err)
-		return supervisor.Task{}, false, err
+		return supervisor.Message{}, false, err
 	}
 
 	a.logger.Debug("received updates", "count", len(updates))
@@ -149,6 +174,7 @@ func (a *Adapter) Next() (supervisor.Task, bool, error) {
 
 		// Verify signature, replay cache, and decrypt all at once.
 		// VerifyAndOpen enforces the mandatory ordering: verify → check replay → open.
+		// SECURITY: kind derivation runs ONLY on plaintext that passes this step.
 		plaintext, err := envelope.VerifyAndOpen(
 			env,
 			a.trustedSigningKey,
@@ -213,19 +239,106 @@ func (a *Adapter) Next() (supervisor.Task, bool, error) {
 			continue
 		}
 
-		// Goal is valid. Return it.
-		task := supervisor.Task{
-			ID:   fmt.Sprintf("%d", update.UpdateID),
-			Repo: "",
-			Spec: string(plaintext), // Map plaintext to Spec field
-		}
-		a.logger.Debug("goal delivered", "task_id", task.ID)
-		return task, true, nil
+		// SECURITY: plaintext has passed envelope-verify + armor. Now derive kind/GoalID
+		// at the adapter edge from the trusted plaintext and message identity.
+		msg := a.deriveMessage(update, plaintext)
+		a.logger.Debug("message derived", "kind", msg.Kind, "goal_id", msg.GoalID)
+		return msg, true, nil
 	}
 
-	// No valid goal from this batch.
-	a.logger.Debug("no valid goal from updates")
-	return supervisor.Task{}, false, nil
+	// No valid message from this batch.
+	a.logger.Debug("no valid message from updates")
+	return supervisor.Message{}, false, nil
+}
+
+// deriveMessage maps a verified, armor-passed Telegram update to a typed supervisor.Message
+// at the adapter edge (ADR 054 §2). Kind/GoalID derivation happens here — the control
+// plane only ever sees Message.GoalID.
+//
+// Derivation rules (applied to the trusted plaintext):
+//   - "status" (bare or with goalID text) → MsgStatus; reply-to threads the goalID.
+//   - "info <text...>" → MsgInfo; reply-to is required for the goalID (bare → empty GoalID).
+//   - "cancel" → MsgCancel; reply-to threads the goalID.
+//   - Anything else (including multi-word goals, code specs, etc.) → MsgNewGoal with a
+//     fresh goalID derived from "tg-<chatID>-<msgID>", stored in goalIDCache for future
+//     reply-to threading.
+//
+// The goalIDCache maps the Telegram message ID (string) to the GoalID, enabling reply-to
+// commands to thread the correct goal without the control plane ever touching Telegram IDs.
+func (a *Adapter) deriveMessage(update Update, plaintext []byte) supervisor.Message {
+	text := string(plaintext)
+	msgID := strconv.FormatInt(update.Message.MessageID, 10)
+
+	// Derive the chatID from the nested Chat object (Telegram API shape).
+	chatID := ""
+	if update.Message.Chat != nil {
+		chatID = strconv.FormatInt(update.Message.Chat.ID, 10)
+	}
+
+	// Determine the reply-to goalID (threaded from a prior new-goal message).
+	replyToGoalID := ""
+	if update.Message.ReplyToMessage != nil {
+		replyMsgID := strconv.FormatInt(update.Message.ReplyToMessage.MessageID, 10)
+		a.mu.Lock()
+		replyToGoalID = a.goalIDCache[replyMsgID]
+		a.mu.Unlock()
+	}
+
+	// Parse command verb (first word) from plaintext.
+	verb, rest := splitVerb(text)
+
+	switch verb {
+	case "status":
+		// "status" → MsgStatus; reply-to threads goalID (bare "status" → fleet, GoalID="").
+		goalID := replyToGoalID
+		if goalID == "" && rest != "" {
+			// "status <goalID>" text form (env/stdin grammar compat, no reply-to)
+			goalID = rest
+		}
+		return supervisor.Message{Kind: supervisor.MsgStatus, GoalID: goalID}
+
+	case "info":
+		// "info <text...>" → MsgInfo; reply-to provides the goalID.
+		return supervisor.Message{Kind: supervisor.MsgInfo, GoalID: replyToGoalID, Text: rest}
+
+	case "cancel":
+		// "cancel" → MsgCancel; reply-to provides the goalID.
+		return supervisor.Message{Kind: supervisor.MsgCancel, GoalID: replyToGoalID}
+
+	default:
+		// Any other plaintext (including multi-word goals) → MsgNewGoal.
+		// Derive a fresh goalID from the chat+message identity (no collision across
+		// concurrent goals from different chats or messages in the same chat).
+		goalID := fmt.Sprintf("tg-%s-%s", chatID, msgID)
+
+		// Cache the message ID → goalID mapping so future reply-to commands can thread it.
+		a.mu.Lock()
+		a.goalIDCache[msgID] = goalID
+		a.mu.Unlock()
+
+		return supervisor.Message{
+			Kind:   supervisor.MsgNewGoal,
+			GoalID: goalID,
+			Goal:   supervisor.Task{ID: goalID, Spec: text},
+		}
+	}
+}
+
+// splitVerb splits a command string into its first word (verb) and the remainder.
+// The remainder is trimmed of leading whitespace. If the text is a single word,
+// rest is empty. This is used to distinguish command verbs (status/info/cancel) from
+// bare goal text.
+func splitVerb(text string) (verb, rest string) {
+	// Find the first whitespace boundary.
+	for i, r := range text {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			verb = text[:i]
+			rest = strings.TrimLeft(text[i+1:], " \t\n\r")
+			return verb, rest
+		}
+	}
+	// No whitespace found — the entire text is the verb.
+	return text, ""
 }
 
 // GetUpdatesResponse is the Telegram Bot API response shape for getUpdates.
@@ -243,7 +356,15 @@ type Update struct {
 
 // Message is a Telegram message.
 type Message struct {
-	Text string `json:"text"`
+	MessageID      int64    `json:"message_id"`
+	Text           string   `json:"text"`
+	Chat           *Chat    `json:"chat,omitempty"`
+	ReplyToMessage *Message `json:"reply_to_message,omitempty"`
+}
+
+// Chat is a Telegram chat (minimal — only the ID is used for goal ID derivation).
+type Chat struct {
+	ID int64 `json:"id"`
 }
 
 // getUpdates polls the Telegram Bot API.

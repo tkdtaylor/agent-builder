@@ -13,10 +13,14 @@ import (
 	"strings"
 	"sync"
 
+	"encoding/hex"
+
 	"github.com/tkdtaylor/agent-builder/internal/audit"
+	"github.com/tkdtaylor/agent-builder/internal/channel/telegram"
 	"github.com/tkdtaylor/agent-builder/internal/channel/worker"
 	"github.com/tkdtaylor/agent-builder/internal/envelope"
 	"github.com/tkdtaylor/agent-builder/internal/executor"
+	"github.com/tkdtaylor/agent-builder/internal/ingestion"
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator"
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator/planner"
 	"github.com/tkdtaylor/agent-builder/internal/policy"
@@ -39,6 +43,20 @@ const (
 	plannerLLM        = "llm"
 )
 
+// EnvInbound selects the inbound channel for the orchestrate subcommand (ADR 054 §2,
+// task 117). Unset or "env" selects the default env/stdin line-oriented MessageSource
+// (the local-test default). "telegram" selects the Telegram bot channel adapter
+// (telegram.Adapter), which derives kind/GoalID at the adapter edge from verified
+// plaintext + reply-to threading. Any other value is a fail-fast configuration error
+// (ExitUsage). Telegram requires the full set of AGENT_BUILDER_TELEGRAM_* env vars;
+// missing required vars fail-fast at assembly time before the goal-intake loop runs.
+const EnvInbound = "AGENT_BUILDER_INBOUND"
+
+const (
+	inboundEnv      = "env"
+	inboundTelegram = "telegram"
+)
+
 // EnvMaxWorkers / EnvMaxGoals are the two async-control-plane concurrency bounds
 // (ADR 054 §1, task 112). MAX_WORKERS is the load-bearing fleet-wide cap on total
 // live sub-goal workers (sandbox/box pressure); MAX_GOALS is the looser
@@ -55,6 +73,45 @@ const (
 	defaultMaxWorkers = 4
 	defaultMaxGoals   = 8
 )
+
+// Telegram inbound channel env vars (task 117, ADR 054 §2). All are required when
+// AGENT_BUILDER_INBOUND=telegram; missing any is a fail-fast assembly error.
+//
+//   - AGENT_BUILDER_TELEGRAM_BOT_TOKEN   — Telegram Bot API token (secret; never logged)
+//   - AGENT_BUILDER_TELEGRAM_BASE_URL    — Bot API base URL (default: https://api.telegram.org)
+//   - AGENT_BUILDER_TELEGRAM_SIGNING_KEY — operator Ed25519 public key (hex-encoded 32 bytes)
+//   - AGENT_BUILDER_TELEGRAM_X25519_PUB  — operator X25519 public key (hex-encoded 32 bytes)
+//   - AGENT_BUILDER_TELEGRAM_ORCH_PRIV   — orchestrator X25519 private key (hex-encoded 32 bytes; secret; never logged)
+//   - AGENT_BUILDER_TELEGRAM_CHAT_ID     — Telegram chat ID the ReplyAdapter sends to
+//
+// Inbound (envelope-verify+armor+kind-derivation) and outbound (ReplyAdapter sealing)
+// use the same key material already present in the adapter. This is the FIRST live
+// inbound wiring of the Telegram adapter; when no armor binary is configured the
+// content guard defaults to a fail-open allowAllContentGuard (the load-bearing trust
+// gate on this path is the envelope Ed25519-verify + X25519-decrypt + replay-cache
+// pipeline, which is always enforced — armor is an additional injection filter over
+// already-authenticated operator plaintext). Operators SHOULD wire a real armor guard
+// here before production; see the operator follow-up note on this seam.
+const (
+	EnvTelegramBotToken   = "AGENT_BUILDER_TELEGRAM_BOT_TOKEN"
+	EnvTelegramBaseURL    = "AGENT_BUILDER_TELEGRAM_BASE_URL"
+	EnvTelegramSigningKey = "AGENT_BUILDER_TELEGRAM_SIGNING_KEY"
+	EnvTelegramX25519Pub  = "AGENT_BUILDER_TELEGRAM_X25519_PUB"
+	EnvTelegramOrchPriv   = "AGENT_BUILDER_TELEGRAM_ORCH_PRIV"
+	EnvTelegramChatID     = "AGENT_BUILDER_TELEGRAM_CHAT_ID"
+
+	// EnvTelegramOrchEdPriv is the orchestrator's Ed25519 private key (hex-encoded 64
+	// bytes) used by ReplyAdapter to sign outbound envelopes. Required for outbound replies.
+	EnvTelegramOrchEdPriv = "AGENT_BUILDER_TELEGRAM_ORCH_ED_PRIV"
+	// EnvTelegramOpX25519Pub is the operator's X25519 public key (hex-encoded 32 bytes)
+	// used by ReplyAdapter to seal outbound envelopes for the operator. Required for
+	// outbound replies.
+	EnvTelegramOpX25519Pub = "AGENT_BUILDER_TELEGRAM_OP_X25519_PUB"
+)
+
+// defaultTelegramBaseURL is the Telegram Bot API base URL used when
+// AGENT_BUILDER_TELEGRAM_BASE_URL is unset.
+const defaultTelegramBaseURL = "https://api.telegram.org"
 
 // errUsageConfig is the sentinel that marks assembly errors caused by a bad
 // AGENT_BUILDER_PLANNER value (or any other env-config mistake detected at
@@ -377,7 +434,7 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 
 	// Inbound message seam (ADR 054 §2). Precedence: an explicit typed MessageSource
 	// override → a goal-only GoalSource override adapted to messages → the live
-	// env/stdin line-oriented MessageSource.
+	// channel selected by AGENT_BUILDER_INBOUND (telegram or env/stdin default).
 	source := ov.messageSource
 	switch {
 	case source != nil:
@@ -385,7 +442,17 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 	case ov.source != nil:
 		source = goalSourceAsMessages(ov.source)
 	default:
-		source = newEnvMessageSource(os.Getenv, config.Stdin)
+		inboundSrc, inboundReporter, err := inboundFromEnv(os.Getenv, config.Stdin, auditSink, logger)
+		if err != nil {
+			cleanup()
+			return orchestrateConfig{}, noop, fmt.Errorf("orchestrate: inbound channel: %w", err)
+		}
+		source = inboundSrc
+		// When Telegram is selected, override the reporter with the Telegram ReplyAdapter
+		// so acks/status/results flow back over the encrypted channel (ADR 054 §2).
+		if inboundReporter != nil && ov.reporter == nil {
+			reporter = inboundReporter
+		}
 	}
 
 	// Status handler (task 114): wire the live registry-read + Reporter-answer
@@ -752,6 +819,167 @@ func (denyAllPolicy) Decide(policy.DecideRequest) (policy.DecideResponse, error)
 	return policy.DecideResponse{Decision: policy.DecisionDeny}, nil
 }
 
+// inboundFromEnv constructs the inbound MessageSource and optional outbound Reporter
+// from environment configuration. The returned reporter is non-nil only when
+// AGENT_BUILDER_INBOUND=telegram — callers replace the default log reporter with it
+// so acks/status/results flow over the encrypted Telegram channel (ADR 054 §2).
+//
+// When AGENT_BUILDER_INBOUND is unset or "env", the env/stdin line-oriented source
+// is returned with a nil reporter (the caller keeps its log-reporter default).
+//
+// When AGENT_BUILDER_INBOUND=telegram, a telegram.Adapter (MessageSource) and
+// telegram.ReplyAdapter (Reporter) are built from the AGENT_BUILDER_TELEGRAM_*
+// env vars. Missing required vars are a fail-fast assembly error.
+func inboundFromEnv(getenv func(string) string, stdin io.Reader, sink audit.Sink, logger *slog.Logger) (supervisor.MessageSource, supervisor.Reporter, error) {
+	choice := strings.TrimSpace(getenv(EnvInbound))
+	switch choice {
+	case "", inboundEnv:
+		return newEnvMessageSource(getenv, stdin), nil, nil
+
+	case inboundTelegram:
+		src, rep, err := assembleTelegramInbound(getenv, sink, logger)
+		if err != nil {
+			return nil, nil, err
+		}
+		return src, rep, nil
+
+	default:
+		return nil, nil, fmt.Errorf("%w: %s=%q is not a known inbound channel (want %q or %q)",
+			errUsageConfig, EnvInbound, choice, inboundEnv, inboundTelegram)
+	}
+}
+
+// assembleTelegramInbound constructs the telegram.Adapter (inbound MessageSource)
+// and telegram.ReplyAdapter (outbound Reporter) from AGENT_BUILDER_TELEGRAM_* env vars.
+// All required vars must be set; absence is a fail-fast assembly error (never a
+// nil-adapter panic at first Next() call).
+//
+// Key material is decoded from hex but never logged (consistent with the existing
+// telegram adapter and worker transport).
+func assembleTelegramInbound(getenv func(string) string, sink audit.Sink, logger *slog.Logger) (*telegram.Adapter, *telegram.ReplyAdapter, error) {
+	botToken := strings.TrimSpace(getenv(EnvTelegramBotToken))
+	if botToken == "" {
+		return nil, nil, fmt.Errorf("orchestrate: %s is required when %s=telegram", EnvTelegramBotToken, EnvInbound)
+	}
+
+	baseURL := strings.TrimSpace(getenv(EnvTelegramBaseURL))
+	if baseURL == "" {
+		baseURL = defaultTelegramBaseURL
+	}
+
+	chatID := strings.TrimSpace(getenv(EnvTelegramChatID))
+	if chatID == "" {
+		return nil, nil, fmt.Errorf("orchestrate: %s is required when %s=telegram", EnvTelegramChatID, EnvInbound)
+	}
+
+	// Operator Ed25519 signing key (32 bytes public key, hex-encoded).
+	signingKeyHex := strings.TrimSpace(getenv(EnvTelegramSigningKey))
+	if signingKeyHex == "" {
+		return nil, nil, fmt.Errorf("orchestrate: %s is required when %s=telegram", EnvTelegramSigningKey, EnvInbound)
+	}
+	signingKeyBytes, err := hex.DecodeString(signingKeyHex)
+	if err != nil || len(signingKeyBytes) != ed25519.PublicKeySize {
+		return nil, nil, fmt.Errorf("orchestrate: %s must be a %d-byte hex-encoded Ed25519 public key", EnvTelegramSigningKey, ed25519.PublicKeySize)
+	}
+	trustedSigningKey := ed25519.PublicKey(signingKeyBytes)
+
+	// Operator X25519 public key (32 bytes, hex-encoded) — inbound sender.
+	x25519PubHex := strings.TrimSpace(getenv(EnvTelegramX25519Pub))
+	if x25519PubHex == "" {
+		return nil, nil, fmt.Errorf("orchestrate: %s is required when %s=telegram", EnvTelegramX25519Pub, EnvInbound)
+	}
+	x25519PubBytes, err := hex.DecodeString(x25519PubHex)
+	if err != nil || len(x25519PubBytes) != 32 {
+		return nil, nil, fmt.Errorf("orchestrate: %s must be a 32-byte hex-encoded X25519 public key", EnvTelegramX25519Pub)
+	}
+	var trustedX25519Pub [32]byte
+	copy(trustedX25519Pub[:], x25519PubBytes)
+
+	// Orchestrator X25519 private key (32 bytes, hex-encoded) — inbound recipient.
+	orchPrivHex := strings.TrimSpace(getenv(EnvTelegramOrchPriv))
+	if orchPrivHex == "" {
+		return nil, nil, fmt.Errorf("orchestrate: %s is required when %s=telegram", EnvTelegramOrchPriv, EnvInbound)
+	}
+	orchPrivBytes, err := hex.DecodeString(orchPrivHex)
+	if err != nil || len(orchPrivBytes) != 32 {
+		return nil, nil, fmt.Errorf("orchestrate: %s must be a 32-byte hex-encoded X25519 private key", EnvTelegramOrchPriv)
+	}
+	var orchXPriv [32]byte
+	copy(orchXPriv[:], orchPrivBytes)
+
+	// Orchestrator Ed25519 private key (64 bytes, hex-encoded) — outbound signer.
+	orchEdPrivHex := strings.TrimSpace(getenv(EnvTelegramOrchEdPriv))
+	if orchEdPrivHex == "" {
+		return nil, nil, fmt.Errorf("orchestrate: %s is required when %s=telegram", EnvTelegramOrchEdPriv, EnvInbound)
+	}
+	orchEdPrivBytes, err := hex.DecodeString(orchEdPrivHex)
+	if err != nil || len(orchEdPrivBytes) != ed25519.PrivateKeySize {
+		return nil, nil, fmt.Errorf("orchestrate: %s must be a %d-byte hex-encoded Ed25519 private key", EnvTelegramOrchEdPriv, ed25519.PrivateKeySize)
+	}
+	orchEdPriv := ed25519.PrivateKey(orchEdPrivBytes)
+
+	// Operator X25519 public key for outbound sealing (32 bytes, hex-encoded).
+	opX25519PubHex := strings.TrimSpace(getenv(EnvTelegramOpX25519Pub))
+	if opX25519PubHex == "" {
+		return nil, nil, fmt.Errorf("orchestrate: %s is required when %s=telegram", EnvTelegramOpX25519Pub, EnvInbound)
+	}
+	opX25519PubBytes, err := hex.DecodeString(opX25519PubHex)
+	if err != nil || len(opX25519PubBytes) != 32 {
+		return nil, nil, fmt.Errorf("orchestrate: %s must be a 32-byte hex-encoded X25519 public key", EnvTelegramOpX25519Pub)
+	}
+	var opXPub [32]byte
+	copy(opXPub[:], opX25519PubBytes)
+
+	// Armor content guard: default to fail-open allow-all when no armor binary is
+	// configured. This is a NEW fail-open default introduced with the first live
+	// Telegram inbound wiring (there was no prior no-armor fallback on the run path).
+	// The load-bearing trust gate on this path is the envelope-verify pipeline
+	// (Ed25519 verify + X25519 decrypt + replay-cache), which is always enforced;
+	// armor is an additional injection filter over already-authenticated operator
+	// plaintext, so fail-open here degrades that extra filter, not authentication.
+	// NOTE: operators SHOULD wire a real armor guard (see executorharness's
+	// NewArmorGuarded binding) before production use of AGENT_BUILDER_INBOUND=telegram.
+	var guard telegram.ContentGuard = allowAllContentGuard{}
+
+	adapter := telegram.NewAdapter(telegram.Config{
+		BotToken:          botToken,
+		BaseURL:           baseURL,
+		TrustedSigningKey: trustedSigningKey,
+		TrustedX25519Pub:  trustedX25519Pub,
+		OrchestratorPriv:  orchXPriv,
+		ContentGuard:      guard,
+		AuditSink:         sink,
+		Logger:            logger,
+	})
+
+	replyAdapter := telegram.NewReplyAdapter(telegram.ReplyConfig{
+		BotToken:   botToken,
+		BaseURL:    baseURL,
+		ChatID:     chatID,
+		OrchEdPriv: orchEdPriv,
+		OrchXPriv:  orchXPriv,
+		OpXPub:     opXPub,
+		Logger:     logger,
+	})
+
+	return adapter, replyAdapter, nil
+}
+
+// allowAllContentGuard is the fail-open content guard used when AGENT_BUILDER_INBOUND=telegram
+// but no armor binary is configured. It always ALLOWS content through — the
+// envelope-verify pipeline (Ed25519+X25519+AEAD) is the load-bearing gate; armor is
+// an optional additional filter. Operators SHOULD configure a real armor guard for
+// production use. This guard satisfies telegram.ContentGuard without importing armor.
+type allowAllContentGuard struct{}
+
+func (allowAllContentGuard) DecideContent(_ context.Context, candidate ingestion.ContentCandidate) (ingestion.Decision, error) {
+	return ingestion.Decision{
+		CandidateID: candidate.ID,
+		Kind:        ingestion.CandidateKindContent,
+		Outcome:     ingestion.DecisionAllow,
+	}, nil
+}
+
 func orchestrateUsage(w io.Writer) {
 	write(w, `Usage: agent-builder orchestrate
 
@@ -763,10 +991,21 @@ Required environment:
   AGENT_BUILDER_WORKER_SIGNING_KEY   orchestrator Ed25519 signing key (fail-closed at startup)
 
 Optional environment:
+  AGENT_BUILDER_INBOUND              "" or "env" (default) | "telegram" (Telegram bot channel)
   AGENT_BUILDER_PLANNER              "structured" (default) | "llm" (ollama-native; cloud harnesses fail closed)
   AGENT_BUILDER_MEMORY_GUARD_BIN     memory-guard binary (else in-memory PlanStore + warning)
   AGENT_BUILDER_POLICY_BIN           policy-engine binary (else all spawns denied)
   AGENT_BUILDER_AUDIT_RECORD         audit chain logfile (shared orchestrator+worker sink)
   AGENT_BUILDER_AUDIT_BIN            audit-trail binary
+
+When AGENT_BUILDER_INBOUND=telegram, these are also required:
+  AGENT_BUILDER_TELEGRAM_BOT_TOKEN   Telegram Bot API token
+  AGENT_BUILDER_TELEGRAM_BASE_URL    Bot API base URL (default: https://api.telegram.org)
+  AGENT_BUILDER_TELEGRAM_SIGNING_KEY operator Ed25519 public key (hex 32 bytes)
+  AGENT_BUILDER_TELEGRAM_X25519_PUB  operator X25519 public key (hex 32 bytes)
+  AGENT_BUILDER_TELEGRAM_ORCH_PRIV   orchestrator X25519 private key (hex 32 bytes)
+  AGENT_BUILDER_TELEGRAM_ORCH_ED_PRIV orchestrator Ed25519 private key (hex 64 bytes)
+  AGENT_BUILDER_TELEGRAM_OP_X25519_PUB operator X25519 public key for outbound (hex 32 bytes)
+  AGENT_BUILDER_TELEGRAM_CHAT_ID     Telegram chat ID for outbound replies
 `)
 }
