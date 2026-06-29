@@ -205,6 +205,35 @@ func (g *GeminiCLI) Run(task supervisor.Task) (supervisor.Result, error)
 - **Auth contract:** the API key is resolved at dispatch time via `secretSource.NamedProviderToken(entry.SecretRef)`. The resolved key is injected as `GEMINI_API_KEY` into the subprocess env; `ErrSecretNotFound` fails the run before subprocess start. The key is redacted from subprocess failure output. It is never stored on the struct beyond the `Run` call.
 - **Supervisor isolation:** `internal/executor` imports `internal/supervisor` (for types); `internal/supervisor` never imports `internal/executor` (F-003 invariant, enforced by `make fitness-supervisor-isolation`).
 
+### Interface: `executor.Completer` (non-agentic single-shot)
+
+The non-agentic counterpart to `supervisor.Executor.Run` (ADR 053 §1). Sends ONE
+prompt to the model behind a registry entry and returns the raw text. No worktree,
+no tools, no verification gate, no branch. Used by the `LLMPlanner`'s `Invoker` seam
+(task 100) to decompose a goal without spinning a full agentic box.
+
+```go
+// ErrSingleShotUnsupported is the typed sentinel for harnesses that do not yet
+// support non-agentic single-shot completion. Matchable with errors.Is.
+var ErrSingleShotUnsupported = errors.New("single-shot completion not yet supported")
+
+type Completer interface {
+    Complete(ctx context.Context, entry registry.RegistryEntry, prompt string) (string, error)
+}
+
+func CompleterForEntry(entry registry.RegistryEntry) (Completer, error)
+```
+
+- **Implementors:** `*ollamaCompleter` (ollama-native; wraps `ollamaclient.Chat`).
+- **Consumers:** `internal/cli` task-110 wiring (closure adapts `CompleterForEntry` → `orchestrator/planner.Invoker`).
+- **Dispatch contract (`CompleterForEntry`):**
+  - `HarnessOllamaNative` → ollama-native completer; blank `Endpoint` or `ModelID` returns an error.
+  - `HarnessClaudeCLI` / `HarnessCodexCLI` / `HarnessGeminiCLI` / unknown harness → `nil, fmt.Errorf("harness %q … not yet supported: %w", ErrSingleShotUnsupported)` (fail-closed; never silently wrong — ADR 053 §2).
+- **Request shape (ollama-native):** exactly one `{Role: "user", Content: prompt}` message, `Tools: nil`, `Stream: false`. No tool-call loop; a single `Chat` round-trip.
+- **Context threading:** the caller's `context.Context` is passed into `Chat`; a hung local model cannot wedge the caller.
+- **Error contract:** `Chatter` errors and context cancellation are propagated wrapped; the returned string is empty on any error path.
+- **Boundary invariant:** `Completer` lives in `internal/executor`; `internal/orchestrator` and `internal/orchestrator/planner` never import it directly (F-010 / F-014 unchanged).
+
 ### Executor Registry Interface
 
 ```go
