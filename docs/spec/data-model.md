@@ -427,13 +427,58 @@ Trace       []loop.State      observed state sequence for this cycle
 ```
 field       type                 notes
 ────────────────────────────────────────────────────────────
-Reason      FailureReason        executor-error, executor-incomplete, or gate-fail
+Reason      FailureReason        executor-error, executor-incomplete, gate-fail, or blocked-action
 Err         error                optional executor error preserved for the policy consumer
+Blocked     *BlockedAction       non-nil ONLY when Reason == blocked-action (ADR 055 seam 4, task 121); names the denied resource/action + reason
 ```
 
 - **Identity:** meaningful only when `Outcome.Kind == OutcomeFail`.
 - **Lifecycle:** produced by the loop when attempt or verify does not complete successfully.
 - **Relationships:** retry and escalation policy is intentionally absent; the escalation policy consumer decides next action.
+
+#### Value: `loop.BlockedAction` (ADR 055 seam 4, task 121)
+
+```
+field       type     notes
+────────────────────────────────────────────────────────────
+Resource    string   the denied policy resource ID (e.g. the recipe name)
+Action      string   the denied policy action (e.g. "spawn-worker")
+Reason      string   the human-readable deny reason
+```
+
+- **Identity:** describes one policy denial of a NECESSARY action; carried by a `loop.Failure` with `Reason == FailureBlockedAction` and by `orchestrator.SubGoalOutcome.Blocked`.
+- **Lifecycle:** produced at the orchestrator's spawn-worker gate (`classifyBlockedSpawn` / `loop.ClassifyBlockedAction`) on a non-allow decision for a needed sub-goal; consumed by `loop.ReevaluationPolicy`.
+- **Relationships:** carries NO allow set and grants nothing — it only describes the denial. A blocked action with an empty Resource AND Action AND Reason is rejected (`ErrEmptyBlockedAction`).
+
+#### Value: `loop.Reevaluation` / `loop.ReevaluationOutcome` / `loop.Escalation` (ADR 055 seam 4, task 121)
+
+```
+Reevaluation:
+field             type       notes
+────────────────────────────────────────────────────────────
+AllowedResources  []string   the FRESH re-derived plan's allow set (Plan.AllowedResources)
+StillBlocked      bool       whether the re-derived plan STILL needs the denied resource
+
+ReevaluationOutcome:
+field             type                          notes
+────────────────────────────────────────────────────────────
+Kind              ReevaluationOutcomeKind       "resolved" (replan routed around) or "escalated" (bound exhausted)
+Reevaluations     int                           number of replans performed (0..MaxReevaluations)
+AllowedResources  []string                      the allow set APPLIED for the last attempt — always the re-derived set, NEVER previous ∪ denied
+Escalation        Escalation                    populated only when Kind == escalated
+StatusWrite       tasksource.StatusWriteResult  the needs-human write (only on escalation)
+
+Escalation:
+field             type                          notes
+────────────────────────────────────────────────────────────
+Status            tasksource.WritableStatus     always needs-human for a blocked-action escalation
+Blocked           BlockedAction                 the denied action + reason surfaced to the human
+Reevaluations     int                           how many replans were attempted before escalating
+```
+
+- **Identity:** the bounded-reevaluation result for one blocked action.
+- **Lifecycle:** `ReevaluationPolicy.ReevaluateBlocked` replans up to `MaxReevaluations`; on exhaustion-with-still-blocked it writes `needs-human` once and returns an `Escalation`.
+- **Relationships:** the never-self-grant invariant is structural — the applied `AllowedResources` is exactly the replanner's re-derived `Plan.AllowedResources`; there is no field or code path that unions the previous set with the denied resource.
 
 ### State: Ingestion Boundary
 

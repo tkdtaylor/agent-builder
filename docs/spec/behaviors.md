@@ -290,6 +290,16 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 
 ---
 
+### B-033: a policy denial of a necessary action is a typed blocked action routed to bounded reevaluation, then to an independent human grant — never a self-grant
+
+- **Trigger:** the orchestrator's per-sub-goal spawn-worker gate (`decideSpawnWorker`) returns a non-allow decision for a sub-goal the plan needed — a policy (or `require_approval`) denial of a NECESSARY action (ADR 055 seam 4, task 121).
+- **Response:** `dispatchOne` records the denied sub-goal outcome AND attaches a typed `loop.BlockedAction` (`SubGoalOutcome.Blocked`) carrying the denied resource (the recipe name), the denied action (`spawn-worker`), and the deny reason. This is a failure kind **distinct** from a gate failure (`loop.FailureGate`) or an executor error (`loop.FailureExecutorError`): `loop.ClassifyBlockedAction` produces `loop.Failure{Reason: loop.FailureBlockedAction, Blocked: …}`. The orchestrator's `ReevaluateBlockedSpawn` then routes the blocked action through `loop.ReevaluationPolicy`: it **replans** up to `MaxReevaluations` times — each replan re-runs the planner on the original goal and re-derives the plan's allow set (`Plan.AllowedResources`, task 118). If a re-derived plan no longer needs the denied resource the cycle **resolves** without escalation; if the bound is exhausted with the action still needed, the policy **escalates** by writing `needs-human` through the constrained status-writer seam and returns an `Escalation` payload naming the denied action + reason.
+- **Side effects:** on escalation, exactly one `needs-human` status write for the blocked task. The `Escalation.Reason()` text names the denied resource, action, and deny reason so a human (not the agent) can decide whether to widen authorization independently. No allow set is ever widened from within the worker/executor.
+- **Failure modes:** `MaxReevaluations == 0` escalates immediately with no replan (mirrors `RetryPolicy` `MaxAttempts == 0`); a negative bound is `ErrNegativeMaxReevaluations`; a blocked action with no resource/action/reason is `ErrEmptyBlockedAction` (an empty "something was denied" signal never escalates). **The never-self-grant invariant is structural:** the allow set applied on a retry is EXACTLY the freshly re-derived `Plan.AllowedResources` returned by the replanner — `loop.ReevaluateBlocked` exposes no parameter and contains no code path that unions the previous allow set with the denied resource. The denied resource can re-appear on a retry ONLY if the new plan independently re-derived it, in which case the path leads to human escalation, never to the policy granting it on its own authority.
+- **References:** ADR 055 seam 4; task 121; `docs/tasks/test-specs/121-orchestrate-blocked-action-feedback-test-spec.md`.
+
+---
+
 ## Edge cases and error behaviors
 
 ### B-003: Native tool absence fails loudly
