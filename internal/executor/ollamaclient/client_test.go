@@ -321,3 +321,42 @@ func contains(s, substr string) bool {
 	}
 	return false
 }
+
+// TestTC10601_ObjectArgsDecode (REQ-106-01) verifies the client decodes Ollama's
+// native object-form tool-call arguments and that the captured json.RawMessage
+// unmarshals to the exact field values (not merely non-empty).
+func TestTC10601_ObjectArgsDecode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Ollama native /api/chat returns arguments as a JSON OBJECT, not a string.
+		_, _ = w.Write([]byte(`{"message":{"role":"assistant","tool_calls":[` +
+			`{"function":{"name":"write_file","arguments":{"path":"product.go","content":"package mathx"}}}]}}`))
+	}))
+	defer srv.Close()
+
+	c, err := NewClient(srv.URL)
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	resp, err := c.Chat(context.Background(), ChatRequest{Model: "m"})
+	if err != nil {
+		t.Fatalf("Chat returned error on object-form arguments: %v", err)
+	}
+	if len(resp.Message.ToolCalls) != 1 {
+		t.Fatalf("tool_calls = %d, want 1", len(resp.Message.ToolCalls))
+	}
+	fn := resp.Message.ToolCalls[0].Function
+	if fn.Name != "write_file" {
+		t.Fatalf("Name = %q, want write_file", fn.Name)
+	}
+	// Decoded-value assertion (not raw-string): unmarshal the RawMessage to a map.
+	var args map[string]string
+	if err := json.Unmarshal(fn.Arguments, &args); err != nil {
+		t.Fatalf("arguments not valid object JSON: %v (raw=%s)", err, fn.Arguments)
+	}
+	if args["path"] != "product.go" {
+		t.Errorf("args[path] = %q, want product.go", args["path"])
+	}
+	if args["content"] != "package mathx" {
+		t.Errorf("args[content] = %q, want \"package mathx\"", args["content"])
+	}
+}

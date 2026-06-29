@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/tkdtaylor/agent-builder/internal/executor/ollamaclient"
+	"github.com/tkdtaylor/agent-builder/internal/executor/ollamatoolset"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
 
@@ -493,4 +494,53 @@ func TestTC10306_FitnessCheckSupervisorIsolation(t *testing.T) {
 	// the supervisor package importing executor packages.
 	// The actual fitness check is run via make fitness-supervisor-isolation.
 	t.Log("Fitness check: supervisor isolation is preserved (verified via make fitness-supervisor-isolation)")
+}
+
+// TestTC10602_LoopForwardsObjectArgsToRealToolSet (REQ-106-02) drives the loop with
+// the REAL ollamatoolset.ToolSet over a git worktree: an object-form write_file tool
+// call must produce the file with exact content, then finish_branch + terminate yields
+// Result{Branch, OK}. Proves string(json.RawMessage) is forwarded to Dispatch correctly.
+func TestTC10602_LoopForwardsObjectArgsToRealToolSet(t *testing.T) {
+	tmpDir := t.TempDir()
+	initGitRepo(t, tmpDir)
+
+	toolset, err := ollamatoolset.NewToolSet(tmpDir)
+	if err != nil {
+		t.Fatalf("NewToolSet: %v", err)
+	}
+
+	chatter := &stubChatter{responses: []ollamaclient.ChatResponse{
+		{Message: ollamaclient.Message{Role: "assistant", ToolCalls: []ollamaclient.ToolCall{
+			{Function: ollamaclient.ToolCallFunction{Name: "write_file", Arguments: json.RawMessage(`{"path":"out.txt","content":"DONE"}`)}},
+		}}},
+		{Message: ollamaclient.Message{Role: "assistant", ToolCalls: []ollamaclient.ToolCall{
+			{Function: ollamaclient.ToolCallFunction{Name: "finish_branch", Arguments: json.RawMessage(`{"branch":"task/106-test"}`)}},
+		}}},
+		{Message: ollamaclient.Message{Role: "assistant", Content: "done"}},
+	}}
+
+	exec, err := newOllamaNativeWithChatter(OllamaNativeConfig{Endpoint: "http://x", Model: "m", Worktree: tmpDir}, chatter, toolset)
+	if err != nil {
+		t.Fatalf("newOllamaNativeWithChatter: %v", err)
+	}
+	result, err := exec.Run(supervisor.Task{ID: "106", Repo: "r", Spec: "s"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The object-form write_file args were forwarded to the real toolset → file written.
+	got, err := os.ReadFile(filepath.Join(tmpDir, "out.txt"))
+	if err != nil {
+		t.Fatalf("out.txt not written: %v", err)
+	}
+	if string(got) != "DONE" {
+		t.Errorf("out.txt content = %q, want DONE", string(got))
+	}
+	if result.Branch != "task/106-test" || !result.OK {
+		t.Errorf("Result = %+v, want {Branch:task/106-test OK:true}", result)
+	}
+	// And the work is committed on the produced branch.
+	if c := gitShow(t, tmpDir, "task/106-test", "out.txt"); c != "DONE" {
+		t.Errorf("committed out.txt on branch = %q, want DONE", c)
+	}
 }
