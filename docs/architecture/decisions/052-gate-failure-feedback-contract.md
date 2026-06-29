@@ -123,6 +123,13 @@ task.PriorFailure = loop.FormatFailure(outcome)
 before constructing the `singleTaskSource{task: task}` for the next `cycle` (i.e. `New(...)`
 call). The updated `task` is used for ALL subsequent attempts within the same `RunOnce` call.
 
+Because `RunOnce` reuses one local `task` variable, the mutated `PriorFailure` also appears in
+the subsequently-constructed `EscalationRequest.Task` and in the terminal `RetryOutcome.Task`
+returned on escalation. This is a benign side effect — the escalation hook selects only an
+executor (it does not read `PriorFailure`), and no `RetryOutcome.Task` consumer reads the
+field (publish/audit paths use `Task.ID`/`Task.Repo` only). Tests must not assert
+`RetryOutcome.Task.PriorFailure == ""` on the escalated path.
+
 ### 6. Which harnesses consume the field
 
 All four prompt builders must include the feedback section when `task.PriorFailure != ""`:
