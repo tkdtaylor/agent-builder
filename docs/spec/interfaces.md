@@ -24,6 +24,7 @@ agent-builder <subcommand> [flags] [args]
 
 Subcommands:
   run                   dispatch one supervisor loop
+  orchestrate           drive the Tier-1 orchestrator: goal-intake -> plan -> N workers
   version               print the agent-builder version
   verify <repo>         run the verification gate against a repo
   verify-checkpoint     verify a signed checkpoint against an Ed25519 public key
@@ -32,6 +33,7 @@ Subcommands:
 | Subcommand / flag | Type | Default | Effect |
 |-------------------|------|---------|--------|
 | `run` | subcommand | — | Builds the configured Phase 0 runtime pipeline from environment configuration, selects at most one ready task, dispatches it through the supervisor, and returns `0` when the run completes or idles. Returns `1` when configuration, containment, Executor, Gate, or loop execution fails. |
+| `orchestrate` | subcommand | — | Drives the Tier-1 orchestrator (ADR 042/046/048/049/050). Assembles the orchestrator stack from environment — `NewPlanStoreFromEnv` (memory-guard-backed or in-memory + warning), the worker envelope transport with **one shared `ReplayCache` per direction** (083 SEC-001), the `StructuredPlanner` (or `AGENT_BUILDER_PLANNER=llm`, pending task 100), the policy client, and **one shared `audit.Sink`** between orchestrator and dispatched workers (ADR 050 §4) — then reads goals from the inbound source and drives `Handle`/`Resume`. **Fail-closed at startup (083 SEC-003):** a missing/unreadable `AGENT_BUILDER_WORKER_SIGNING_KEY` exits non-zero with an error satisfying `errors.Is(err, worker.ErrMissingSigningKey)` **before any goal is read**. Returns `0` on a clean run, `1` on assembly or handling failure, `2` on usage error. |
 | `version` | subcommand | — | Prints `agent-builder <version>` to stdout and exits `0`. |
 | `verify <repo>` | subcommand + path argument | — | Constructs the production verification Gate and runs it against the target repo path. Prints each Gate step result and exits `0` only when every blocking step passes. Exits `1` when any Gate step fails. |
 | `verify-checkpoint` | subcommand | — | Verifies a signed checkpoint JSON file against an Ed25519 public key by delegating to `audit-trail checkpoint verify`. Exits `0` when valid, `1` when invalid, `2` on usage error or binary resolution failure. Writes JSON `{"valid":bool,"message":string}` to stdout. |

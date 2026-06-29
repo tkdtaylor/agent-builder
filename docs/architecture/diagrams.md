@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-28 (task 086 — concurrent multi-worker dispatch: one goroutine per sub-goal, best-effort partial failure, race-safe shared audit chain + PlanStore)
+**Last updated:** 2026-06-28 (task 099 — orchestrate subcommand: the Tier-1 orchestrator is now on the live binary path; `cmd/agent-builder` → `cli orchestrate` → assemble → `Orchestrator.Handle`/`Resume`)
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -284,6 +284,28 @@ Tier-1 (`internal/orchestrator`, ADR 042/046). The orchestrator sits **above** t
 Section-4 worker flow: each sub-goal it approves is dispatched by invoking
 `runtime.Run` (the entire Section-4 sequence) once. The orchestrator authors no code
 and reaches the executor only transitively through that dispatch.
+
+**Live binary entry point (task 099).** The orchestrator is reachable from the CLI
+via `agent-builder orchestrate`. The subcommand's assembler (`internal/cli`) is the
+live wiring that brings this flow onto the binary path:
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Main as cmd/agent-builder
+    participant CLI as cli orchestrate (assembleOrchestrate)
+    participant Worker as worker.LoadSigningKey
+    participant Orch as Orchestrator.Handle / Resume
+
+    Main->>CLI: Main(Args{"orchestrate"})
+    CLI->>Worker: LoadSigningKey() — 083 SEC-003 fail-closed
+    Note over CLI,Worker: BEFORE goal intake — missing AGENT_BUILDER_WORKER_SIGNING_KEY exits non-zero (ErrMissingSigningKey)
+    Worker-->>CLI: Ed25519 signing key (or fatal startup error)
+    CLI->>CLI: NewPlanStoreFromEnv, ONE ReplayCache per direction (083 SEC-001), StructuredPlanner, ONE shared audit.Sink, PolicyClient
+    CLI->>Orch: goal-intake loop — Handle(goal), Resume(approval)
+```
+
+The assembled `Handle`/`Resume` then drives the Tier-1 flow below:
 
 ```mermaid
 sequenceDiagram

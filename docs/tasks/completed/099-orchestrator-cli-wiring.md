@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-28
-**Status:** backlog
+**Status:** completed (🟡 — code merged on task branch; awaiting spec-verifier + security-auditor APPROVE and L5/L6 evidence before ✅)
 
 ## Goal
 
@@ -95,14 +95,14 @@ on `run`.
 
 ## Acceptance criteria
 
-- [ ] [REQ-099-01] TC-099-01: `cli.Main(Args{"orchestrate", "-h"})` → ExitOK + non-empty usage
-- [ ] [REQ-099-02] TC-099-02: `NewPlanStoreFromEnv` with MEMORY_GUARD_BIN unset → MemoryPlanStore + warning; set → MemoryGuardPlanStore; existing e2e pass
-- [ ] [REQ-099-03] TC-099-03: shared ReplayCache rejects replayed nonce on the wired path; no fresh cache per dispatch
-- [ ] [REQ-099-04] TC-099-04: all three policy decision paths (allow/deny/require_approval/error) produce correct orchestrator behaviour on the assembled path
-- [ ] [REQ-099-05] TC-099-05: L2 FakeSink has ≥9 events in correct order; L5 `audit-trail verify` → valid=true when binary present
-- [ ] [REQ-099-06] TC-099-06: missing AGENT_BUILDER_WORKER_SIGNING_KEY → non-zero exit with named error before goal intake, both L2 and L5 subprocess
-- [ ] [REQ-099-07] TC-099-07: `docs/spec/configuration.md` and `docs/spec/interfaces.md` contain the expected strings for the `orchestrate` subcommand
-- [ ] [REQ-099-08] TC-099-08: `docs/architecture/diagrams.md` updated date is current and contains "orchestrate" or "Orchestrator" in the live flow section
+- [x] [REQ-099-01] TC-099-01: `cli.Main(Args{"orchestrate", "-h"})` → ExitOK + non-empty usage
+- [x] [REQ-099-02] TC-099-02: `NewPlanStoreFromEnv` with MEMORY_GUARD_BIN unset → MemoryPlanStore + warning; set → MemoryGuardPlanStore; existing e2e pass
+- [x] [REQ-099-03] TC-099-03: shared ReplayCache rejects replayed nonce on the wired path; no fresh cache per dispatch
+- [x] [REQ-099-04] TC-099-04: all three policy decision paths (allow/deny/require_approval/error) produce correct orchestrator behaviour on the assembled path
+- [x] [REQ-099-05] TC-099-05: L2 FakeSink has ≥9 events in correct order; L5 `audit-trail verify` → valid=true when binary present (L5 skips when binary absent)
+- [x] [REQ-099-06] TC-099-06: missing AGENT_BUILDER_WORKER_SIGNING_KEY → non-zero exit with named error before goal intake, both L2 and L5 subprocess
+- [x] [REQ-099-07] TC-099-07: `docs/spec/configuration.md` and `docs/spec/interfaces.md` contain the expected strings for the `orchestrate` subcommand
+- [x] [REQ-099-08] TC-099-08: `docs/architecture/diagrams.md` updated date is current and contains "orchestrate" or "Orchestrator" in the live flow section
 
 ## Verification plan
 
