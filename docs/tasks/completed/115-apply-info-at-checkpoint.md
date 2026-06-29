@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-28
-**Status:** backlog
+**Status:** completed (🟡 code merged; spec-verifier + L5/L6 pending)
 
 ## Goal
 

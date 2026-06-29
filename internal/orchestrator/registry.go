@@ -84,6 +84,13 @@ type GoalStatus struct {
 	State     GoalState
 	SubGoals  []SubGoalProgress
 	UpdatedAt time.Time
+	// PendingInfo is the per-goal pending-info queue (ADR 054 §4, task 115). An
+	// `info` message for this goalID appends its text here synchronously; the queue
+	// is read (and drained) ONLY at a checkpoint boundary by the goal actor — never
+	// inside a dispatch goroutine. This is the structural guarantee that an info
+	// message touches no running worker (queue-don't-interrupt). It is part of the
+	// GoalStatus projection for observability; control flow never gates on it.
+	PendingInfo []string
 }
 
 // StatusRegistry is the goalID-keyed, mutex-guarded live status registry (ADR 054
@@ -226,11 +233,76 @@ func (r *StatusRegistry) LiveNonQueuedCount() int {
 	return n
 }
 
+// EnqueueInfo appends one info text to a goal's pending-info queue (ADR 054 §4,
+// task 115). This is the ONLY state an `info` message writes synchronously — it
+// touches no running worker. If the goal is not registered it is created so an info
+// that races actor startup is never silently dropped. A nil registry is a no-op.
+//
+// The text is recorded verbatim; deduplication is intentionally NOT applied — two
+// identical info messages are two distinct operator intents and both surface at the
+// next checkpoint.
+func (r *StatusRegistry) EnqueueInfo(goalID, text string) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g, ok := r.goals[goalID]
+	if !ok {
+		g = &GoalStatus{GoalID: goalID}
+		r.goals[goalID] = g
+	}
+	g.PendingInfo = append(g.PendingInfo, text)
+	g.UpdatedAt = r.now()
+}
+
+// PendingInfo returns a copy of a goal's current pending-info queue WITHOUT
+// draining it (the read the approval-solicitation surfacing uses — TC-115-02). A
+// nil registry or unknown goal returns nil.
+func (r *StatusRegistry) PendingInfo(goalID string) []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g, ok := r.goals[goalID]
+	if !ok || len(g.PendingInfo) == 0 {
+		return nil
+	}
+	out := make([]string, len(g.PendingInfo))
+	copy(out, g.PendingInfo)
+	return out
+}
+
+// DrainInfo returns a goal's pending-info queue AND clears it atomically (the read
+// the fold path uses at a checkpoint — TC-115-03: after folding, the queue is
+// empty so a subsequent checkpoint does not double-apply the same info). A nil
+// registry or unknown/empty goal returns nil and leaves the queue untouched.
+func (r *StatusRegistry) DrainInfo(goalID string) []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	g, ok := r.goals[goalID]
+	if !ok || len(g.PendingInfo) == 0 {
+		return nil
+	}
+	out := g.PendingInfo
+	g.PendingInfo = nil
+	g.UpdatedAt = r.now()
+	return out
+}
+
 func cloneStatus(g *GoalStatus) GoalStatus {
 	cp := *g
 	if len(g.SubGoals) > 0 {
 		cp.SubGoals = make([]SubGoalProgress, len(g.SubGoals))
 		copy(cp.SubGoals, g.SubGoals)
+	}
+	if len(g.PendingInfo) > 0 {
+		cp.PendingInfo = make([]string, len(g.PendingInfo))
+		copy(cp.PendingInfo, g.PendingInfo)
 	}
 	return cp
 }

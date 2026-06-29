@@ -588,6 +588,10 @@ func (o *Orchestrator) Handle(ctx context.Context, goal supervisor.Task) (PlanRe
 func (o *Orchestrator) Resume(ctx context.Context, approval Approval) (PlanResult, error)
 func (o *Orchestrator) HasPendingPlan(goalID string) bool
 func (o *Orchestrator) Containment() Containment // task 085 — L2 containment posture
+// Apply-info-at-checkpoint (task 115 / ADR 054 §4):
+func (o *Orchestrator) SolicitApproval(ctx context.Context, goalID string) error
+func (o *Orchestrator) ResumeWithFold(ctx context.Context, approval Approval, goal supervisor.Task) (PlanResult, error)
+func FoldGoalText(original string, info []string) string
 
 // Self-containment posture (task 085 / ADR 050 §3): the L2-assertable evidence the
 // orchestrator runs under the SAME exec-sandbox profile as its workers.
@@ -618,6 +622,18 @@ type Containment struct {
   continues a held plan when an approval returns; it asserts the verified envelope
   roles (`From == "operator"`, `To == "orchestrator"`) before acting and consumes the
   held plan so a stale approval cannot be replayed.
+- **Apply-info-at-checkpoint (task 115 / ADR 054 §4 — see B-030):** new info on an
+  in-flight goal is queued in the `StatusRegistry`'s per-goal pending-info queue and
+  folded at the goal's next checkpoint. `SolicitApproval(goalID)` re-renders the
+  approval solicitation for a held plan **including** the queued info (read without
+  draining), so an info arriving while a goal is `AwaitingApproval` is surfaced to the
+  operator. `ResumeWithFold(approval, goal)` is the approve-fold variant of `Resume`:
+  it drains the queue, augments the goal text via `FoldGoalText` (original spec + an
+  "Additional information:" block), re-runs `planner.Plan`, **replaces** the stored
+  plan, and dispatches the re-planned plan. For a goal already past its approval gate
+  (`Dispatching`/terminal) the goal actor instead spawns an amendment sub-goal
+  `G/amend-N` through the normal `Handle` gate path — never mutating a running worker.
+  `FoldGoalText(original, nil)` is the identity (no-op fold).
 - **Dispatch (ADR 046 §5 / task 086 / ADR 042):** **concurrent**, one worker per
   sub-goal. `dispatchPlan` fans out one goroutine per approved sub-goal — **all start
   before any completes** — and joins them with a `sync.WaitGroup`. Per sub-goal the

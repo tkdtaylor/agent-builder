@@ -326,9 +326,14 @@ func (o *Orchestrator) Handle(ctx context.Context, goal supervisor.Task) (PlanRe
 			o.store.Put(plan)
 		}
 		// Registry projection: the plan is paused awaiting approval (ADR 054 §3). The
-		// Resume path (driven by task 115) continues from here.
+		// Resume / ResumeWithFold path (task 115) continues from here.
 		o.registry.SetState(plan.GoalID, StateAwaitingApproval)
-		if err := o.reporter.Report(ctx, renderApprovalRequest(plan)); err != nil {
+		// Surface any info already queued for this goal WITH the solicitation (ADR 054
+		// §4) — an info that arrived before the goal reached the pause is folded into
+		// the operator's view at the checkpoint. Info that arrives AFTER this pause is
+		// surfaced by the actor calling SolicitApproval again.
+		info := o.registry.PendingInfo(plan.GoalID)
+		if err := o.reporter.Report(ctx, renderApprovalRequestWithInfo(plan, info)); err != nil {
 			return PlanResult{}, fmt.Errorf("orchestrator: report approval request: %w", err)
 		}
 		return PlanResult{Goal: plan.Goal}, nil
@@ -381,6 +386,125 @@ func (o *Orchestrator) Resume(ctx context.Context, approval Approval) (PlanResul
 	}
 
 	return o.dispatchPlan(ctx, plan)
+}
+
+// ResumeWithFold continues a paused plan on approval, FOLDING any queued info for
+// the goal into the goal text and RE-PLANNING before dispatch (ADR 054 §4, task
+// 115 — the AwaitingApproval-checkpoint fold).
+//
+// It is the checkpoint-augment variant of Resume: the actor calls it instead of
+// Resume when the goal has pending info at the approval checkpoint. The original
+// goal is supplied by the caller (the goal actor holds it) so the augmented goal
+// text carries the original Spec AND Repo — preserving the self-repo bright line
+// across the re-plan.
+//
+//   - On a role mismatch / unknown goal / rejection it behaves exactly like Resume
+//     (dispatch nothing) — and on rejection it still DRAINS the queue so a rejected
+//     plan does not leave stale info to re-apply.
+//   - On approve: it drains the pending-info queue, augments the goal Spec with the
+//     drained info, re-runs planner.Plan on the augmented goal, REPLACES the stored
+//     plan with the re-planned one, and dispatches the re-planned plan. The queue is
+//     drained (empty) after this so a subsequent checkpoint does not double-apply.
+//
+// When the queue is empty this is equivalent to Resume (re-plan on the unchanged
+// goal text), so the actor may always route an approved goal through ResumeWithFold.
+func (o *Orchestrator) ResumeWithFold(ctx context.Context, approval Approval, goal supervisor.Task) (PlanResult, error) {
+	if approval.From != approvalFromRole || approval.To != approvalToRole {
+		return PlanResult{}, fmt.Errorf("orchestrator: approval role mismatch: from=%q to=%q (want from=%q to=%q)",
+			approval.From, approval.To, approvalFromRole, approvalToRole)
+	}
+
+	stored, ok := o.store.Get(approval.GoalID)
+	if !ok {
+		return PlanResult{}, fmt.Errorf("orchestrator: no pending plan for goal %q", approval.GoalID)
+	}
+
+	// Consume the stored plan regardless of decision (a stale approval cannot be
+	// replayed against the same goal ID) — same tamper-aware delete discipline as
+	// Resume.
+	if ta, ok := o.store.(TamperAwarePlanStore); ok {
+		if err := ta.TryDelete(approval.GoalID); err != nil {
+			o.emitTamperEvent(approval.GoalID)
+			return PlanResult{}, fmt.Errorf("orchestrator: tamper detected on delete-verify for goal %q: %w", approval.GoalID, err)
+		}
+	} else {
+		o.store.Delete(approval.GoalID)
+	}
+
+	// Drain the pending-info queue at this checkpoint. Draining on BOTH the approve
+	// and reject paths prevents stale info from re-applying to a later goal/plan.
+	info := o.registry.DrainInfo(approval.GoalID)
+
+	if !approval.Approved {
+		if err := o.reporter.Report(ctx, fmt.Sprintf("Plan rejected for goal: %s", stored.Goal)); err != nil {
+			return PlanResult{}, fmt.Errorf("orchestrator: report rejection: %w", err)
+		}
+		return PlanResult{Goal: stored.Goal}, nil
+	}
+
+	// Re-plan boundary (a checkpoint): fold the drained info into the goal text and
+	// re-run the planner. The augmented goal keeps the original ID and Repo so the
+	// re-planned sub-goals carry Task.Repo into the self-repo bright line unchanged.
+	augmented := goal
+	augmented.Spec = FoldGoalText(goal.Spec, info)
+
+	// Registry projection: back to Planning for the re-plan, then dispatchPlan moves
+	// it to Dispatching. A nil registry is a no-op.
+	o.registry.SetState(approval.GoalID, StatePlanning)
+
+	plan, err := o.planner.Plan(augmented)
+	if err != nil {
+		o.registry.SetState(approval.GoalID, StateFailed)
+		return PlanResult{}, fmt.Errorf("orchestrator: re-plan goal %q: %w", approval.GoalID, err)
+	}
+	if len(plan.SubGoals) == 0 {
+		o.registry.SetState(approval.GoalID, StateFailed)
+		return PlanResult{}, fmt.Errorf("orchestrator: empty re-plan for goal %q", approval.GoalID)
+	}
+
+	// Replace the stored plan with the re-planned one BEFORE dispatch. The store was
+	// already cleared above; Put writes the new plan so HasPendingPlan reflects the
+	// re-planned state if anything inspects it mid-dispatch.
+	o.store.Put(plan)
+
+	return o.dispatchPlan(ctx, plan)
+}
+
+// FoldGoalText augments a goal's text with queued info (ADR 054 §4, task 115). The
+// original text is preserved verbatim and each info line is appended under an
+// "Additional information:" header so the re-planned goal carries BOTH the original
+// intent and the operator's new info. Empty info returns the original text
+// unchanged (a no-op fold), so an approved goal with no pending info re-plans on the
+// same text.
+func FoldGoalText(original string, info []string) string {
+	if len(info) == 0 {
+		return original
+	}
+	var b strings.Builder
+	b.WriteString(original)
+	b.WriteString("\n\nAdditional information:")
+	for _, line := range info {
+		b.WriteString("\n- ")
+		b.WriteString(line)
+	}
+	return b.String()
+}
+
+// SolicitApproval re-renders and re-sends the approval solicitation for a goal
+// currently held in the PlanStore, INCLUDING any info queued in the registry's
+// pending-info queue (ADR 054 §4, task 115 — TC-115-02). The goal actor calls this
+// when an `info` message arrives while the goal is AwaitingApproval, so the
+// operator sees the amended context before approving. It reads the queue WITHOUT
+// draining it (the drain happens at the ResumeWithFold approve checkpoint), so the
+// info is still available to fold on approve. It is a no-op error if no plan is
+// pending for the goal.
+func (o *Orchestrator) SolicitApproval(ctx context.Context, goalID string) error {
+	plan, ok := o.store.Get(goalID)
+	if !ok {
+		return fmt.Errorf("orchestrator: no pending plan for goal %q", goalID)
+	}
+	info := o.registry.PendingInfo(goalID)
+	return o.reporter.Report(ctx, renderApprovalRequestWithInfo(plan, info))
 }
 
 // HasPendingPlan reports whether a plan for the given goal ID is held awaiting
@@ -695,15 +819,24 @@ func RenderPlanResult(result PlanResult) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// renderApprovalRequest renders the approval-solicitation message (ADR 046 §4).
-// It begins with "Approve?" and names each sub-goal's recipe and spec so the
-// operator can review the plan before approving.
-func renderApprovalRequest(plan Plan) string {
+// renderApprovalRequestWithInfo renders the approval solicitation (ADR 046 §4) and
+// appends any queued pending-info under a "Queued info (will be folded on approve):"
+// section (ADR 054 §4, task 115 — TC-115-02). It begins with "Approve?" and names
+// each sub-goal's recipe and spec so the operator can review the plan before
+// approving. Empty info renders exactly the base ADR-046 solicitation, so the
+// pre-115 single-plan path is unchanged.
+func renderApprovalRequestWithInfo(plan Plan, info []string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Approve? Plan for goal: %s\n", plan.Goal)
 	fmt.Fprintf(&b, "%d sub-goal(s):\n", len(plan.SubGoals))
 	for _, sub := range plan.SubGoals {
 		fmt.Fprintf(&b, "  - %s: %s\n", sub.RecipeName, sub.Task.Spec)
+	}
+	if len(info) > 0 {
+		b.WriteString("Queued info (will be folded on approve):\n")
+		for _, line := range info {
+			fmt.Fprintf(&b, "  * %s\n", line)
+		}
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
