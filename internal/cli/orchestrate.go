@@ -798,6 +798,14 @@ func auditSinkFromEnv() (audit.Sink, error) {
 // returns a stop func. When AGENT_BUILDER_POLICY_BIN is unset, a fail-closed
 // always-deny client is returned: the orchestrate path requires an explicit policy
 // engine to permit a spawn, mirroring the spawn-decided deny-on-error invariant.
+//
+// When a policy binary IS configured, a *planScopedPolicy is returned. It does NOT
+// start the daemon at assembly time (no plan exists yet): the daemon is launched —
+// with the plan-derived allow set (ADR 055 seam 1, task 122) — the first time the
+// orchestrator hands it an admitted plan via ConfigureForPlan. Until then every
+// Decide is fail-closed deny (no daemon, no allow). The optional deployment base
+// allow (AGENT_BUILDER_POLICY_ALLOW) intersects the plan-derived set so deployment
+// can only narrow, never widen, what a plan authorizes.
 func policyClientFromEnv(logger *slog.Logger) (orchestrator.PolicyClient, func(), error) {
 	binPath := strings.TrimSpace(os.Getenv(runtimewiring.EnvPolicyBin))
 	if binPath == "" {
@@ -811,12 +819,152 @@ func policyClientFromEnv(logger *slog.Logger) (orchestrator.PolicyClient, func()
 		socketPath = filepathJoinTemp(fmt.Sprintf("agent-builder-orchestrate-policy-%d.sock", os.Getpid()))
 	}
 
-	daemon := &policy.PolicyDaemon{BinPath: binPath, SocketPath: socketPath}
-	if err := daemon.Start(context.Background()); err != nil {
-		return nil, func() {}, fmt.Errorf("orchestrate: start policy daemon: %w", err)
+	psp := &planScopedPolicy{
+		binPath:    binPath,
+		socketPath: socketPath,
+		base:       parseAllowBase(os.Getenv(runtimewiring.EnvPolicyAllow)),
+		newDaemon:  startPolicyDaemon,
 	}
-	stop := func() { _ = daemon.Stop() }
-	return policy.NewClient(socketPath), stop, nil
+	return psp, psp.stop, nil
+}
+
+// parseAllowBase parses the comma-separated AGENT_BUILDER_POLICY_ALLOW deployment
+// base into a trimmed, empty-dropped slice. A whitespace-only or empty value yields
+// nil (no base → no narrowing).
+func parseAllowBase(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// effectiveAllow computes the policy-daemon allow set for a plan: the plan-derived
+// resources (Plan.AllowedResources) when the deployment base is empty/whitespace-only,
+// else the INTERSECTION of the plan-derived set with the base. The deployment base
+// can only NARROW — it never adds a resource the plan did not declare, and the plan
+// can never widen beyond the base. The result preserves the plan-derived ordering
+// (deterministic: goal ID first, then recipe names and task IDs in sub-goal order).
+//
+// Fail-closed corollary: a base disjoint from the plan yields an empty set, so the
+// daemon is launched with an empty --allow and denies every one of this plan's spawns.
+func effectiveAllow(plan orchestrator.Plan, base []string) []string {
+	derived := plan.AllowedResources()
+	if len(base) == 0 {
+		return derived
+	}
+	inBase := make(map[string]struct{}, len(base))
+	for _, b := range base {
+		inBase[b] = struct{}{}
+	}
+	out := make([]string, 0, len(derived))
+	for _, r := range derived {
+		if _, ok := inBase[r]; ok {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// daemonStarter launches a policy daemon configured with allow and returns a handle
+// exposing Stop. It is a seam so tests can record the --allow argv without execing a
+// real policy-engine binary. The production implementation is startPolicyDaemon.
+type daemonStarter func(binPath, socketPath string, allow []string) (policyDaemon, error)
+
+// policyDaemon is the narrow lifecycle handle planScopedPolicy needs (Stop only;
+// Start is performed by the daemonStarter). *policy.PolicyDaemon satisfies it.
+type policyDaemon interface {
+	Stop() error
+}
+
+// startPolicyDaemon is the production daemonStarter: it execs the policy-engine
+// daemon with --allow set to the plan-derived (intersected) resource set and blocks
+// until it is reachable, mirroring the L6-proven run path (internal/runtime/run.go).
+func startPolicyDaemon(binPath, socketPath string, allow []string) (policyDaemon, error) {
+	daemon := &policy.PolicyDaemon{BinPath: binPath, SocketPath: socketPath, Allow: allow}
+	if err := daemon.Start(context.Background()); err != nil {
+		return nil, err
+	}
+	return daemon, nil
+}
+
+// planScopedPolicy is the orchestrate-path PolicyClient that owns the policy daemon
+// lifecycle and feeds it the PLAN-DERIVED allow set (ADR 055 seam 1, task 122). It
+// implements orchestrator.PlanScoper: the orchestrator calls ConfigureForPlan with
+// the admitted plan before issuing that plan's decisions, and planScopedPolicy
+// (re)starts the daemon with effectiveAllow(plan, base) so the independent engine
+// ALLOWS exactly the resources the plan declared.
+//
+// Until ConfigureForPlan runs there is no daemon and no underlying client, so every
+// Decide is fail-closed deny — the orchestrate path never permits a spawn without a
+// plan-scoped engine behind it.
+type planScopedPolicy struct {
+	binPath    string
+	socketPath string
+	base       []string
+	newDaemon  daemonStarter
+
+	mu      sync.Mutex
+	daemon  policyDaemon
+	client  *policy.PolicyClient
+	lastSet string // joined effective-allow set of the daemon currently serving
+}
+
+// ConfigureForPlan (re)launches the policy daemon with this plan's effective allow
+// set. When a daemon is already serving the identical set it is reused; otherwise the
+// running daemon is stopped and a new one launched with the new --allow. An empty
+// effective set is valid and intended: the daemon is launched with an empty --allow
+// so it denies every spawn (fail-closed, ADR 055 / TC-004).
+func (p *planScopedPolicy) ConfigureForPlan(plan orchestrator.Plan) error {
+	allow := effectiveAllow(plan, p.base)
+	key := strings.Join(allow, "\x00")
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.daemon != nil && p.client != nil && key == p.lastSet {
+		return nil // already serving this exact set
+	}
+	if p.daemon != nil {
+		_ = p.daemon.Stop()
+		p.daemon = nil
+		p.client = nil
+	}
+
+	daemon, err := p.newDaemon(p.binPath, p.socketPath, allow)
+	if err != nil {
+		return fmt.Errorf("orchestrate: start policy daemon: %w", err)
+	}
+	p.daemon = daemon
+	p.client = policy.NewClient(p.socketPath)
+	p.lastSet = key
+	return nil
+}
+
+// Decide routes to the daemon-backed client when a plan has been configured. Before
+// ConfigureForPlan (no daemon yet) it is fail-closed deny — no spawn proceeds without
+// a plan-scoped engine.
+func (p *planScopedPolicy) Decide(req policy.DecideRequest) (policy.DecideResponse, error) {
+	p.mu.Lock()
+	client := p.client
+	p.mu.Unlock()
+	if client == nil {
+		return policy.DecideResponse{Decision: policy.DecisionDeny}, nil
+	}
+	return client.Decide(req)
+}
+
+// stop tears down the running daemon (if any). Safe to call when no daemon ran.
+func (p *planScopedPolicy) stop() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.daemon != nil {
+		_ = p.daemon.Stop()
+		p.daemon = nil
+		p.client = nil
+	}
 }
 
 // denyAllPolicy is the fail-closed PolicyClient used when no policy engine is

@@ -8,9 +8,21 @@
 
 | Req ID     | Test cases        | Covered? |
 |------------|-------------------|----------|
-| REQ-122-01 | TC-001            | ⏳ |
-| REQ-122-02 | TC-002, TC-003    | ⏳ |
-| REQ-122-03 | TC-004            | ⏳ |
+| REQ-122-01 | TC-001            | ✅ |
+| REQ-122-02 | TC-002, TC-003    | ✅ |
+| REQ-122-03 | TC-004            | ✅ |
+
+**Test map (implemented):**
+- TC-001 → `internal/cli/policy_planscope_test.go::TestDaemonReceivesPlanDerivedAllowNoBase`
+  (daemon `--allow` == plan-derived set, set equality) + `internal/orchestrator/plan_scoper_test.go::TestHandleConfiguresPolicyForPlanBeforeDeciding`
+  (live `Handle` wires the plan into the PlanScoper before deciding).
+- TC-002 → `TestEffectiveAllowTable` (narrowing rows) + `TestDaemonReceivesIntersectionWithBase`
+  (daemon receives the intersection) + `TestParseAllowBaseTrimsAndDropsBlanks`.
+- TC-003 → `TestEffectiveAllowTable` (nil/empty base rows) + `TestEffectiveAllowWhitespaceBaseIsFullSet`
+  + `TestDaemonReceivesFullSetWhenBaseEmpty`.
+- TC-004 → `TestEffectiveAllowTable` (disjoint row) + `TestDaemonReceivesEmptyAllowOnDisjointBaseFailClosed`
+  + `TestDecideBeforeConfigureIsDeny` (no daemon → deny) +
+  `internal/orchestrator/plan_scoper_test.go::TestHandleFailsClosedWhenConfigureForPlanErrors`.
 
 ## Unit under test
 

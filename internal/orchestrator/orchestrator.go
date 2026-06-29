@@ -196,6 +196,23 @@ type PolicyClient interface {
 	Decide(req policy.DecideRequest) (policy.DecideResponse, error)
 }
 
+// PlanScoper is an OPTIONAL extension of PolicyClient (ADR 055 seam 1, task 122).
+// A PolicyClient that owns the policy daemon's lifecycle implements it so the
+// orchestrator can hand it the admitted plan BEFORE issuing that plan's decisions.
+// The implementation configures the deployment policy engine with the plan-derived
+// allow set (Plan.AllowedResources, intersected with an optional deployment base)
+// so the independent engine ALLOWS exactly the resources this plan declared — the
+// daemon side of plan-derived authorization.
+//
+// Fail-closed: ConfigureForPlan returns a non-nil error if the engine cannot be
+// configured for the plan (e.g. daemon start failure); the orchestrator treats that
+// as a planning failure and dispatches nothing. A PolicyClient that does NOT own a
+// daemon (the always-deny fallback, test fakes) need not implement this — the
+// orchestrator skips the hook and the existing fail-closed decisions stand.
+type PlanScoper interface {
+	ConfigureForPlan(plan Plan) error
+}
+
 // Approval is an envelope-verified inbound approval message (ADR 046 §4). The
 // channel adapter constructs it AFTER VerifyAndOpen succeeds, carrying the
 // verified envelope roles so the orchestrator can assert operator→orchestrator
@@ -345,6 +362,18 @@ func (o *Orchestrator) Handle(ctx context.Context, goal supervisor.Task) (PlanRe
 	if len(plan.SubGoals) == 0 {
 		o.registry.SetState(goal.ID, StateFailed)
 		return PlanResult{}, fmt.Errorf("orchestrator: empty plan for goal %q", goal.ID)
+	}
+
+	// Plan-derived authorization, daemon side (ADR 055 seam 1, task 122): when the
+	// PolicyClient owns the policy daemon's lifecycle (PlanScoper), configure the
+	// deployment engine with THIS plan's derived allow set BEFORE issuing any of its
+	// decisions, so the independent engine permits exactly the resources the plan
+	// declared. Fail-closed: a configuration error fails the goal (dispatch nothing).
+	if scoper, ok := o.policy.(PlanScoper); ok {
+		if err := scoper.ConfigureForPlan(plan); err != nil {
+			o.registry.SetState(goal.ID, StateFailed)
+			return PlanResult{}, fmt.Errorf("orchestrator: configure policy for plan %q: %w", plan.GoalID, err)
+		}
 	}
 
 	decision, err := o.decideSpawn(plan)

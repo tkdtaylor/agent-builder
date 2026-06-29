@@ -61,6 +61,13 @@ const (
 	EnvPolicyBin    = "AGENT_BUILDER_POLICY_BIN"
 	EnvPolicySocket = "AGENT_BUILDER_POLICY_SOCKET"
 	EnvPolicyRisk   = "AGENT_BUILDER_POLICY_RISK"
+	// EnvPolicyAllow is the optional deployment base allow (comma-separated) for
+	// the orchestrate path (ADR 055 seam 1, task 122). It INTERSECTS the
+	// plan-derived allow set (Plan.AllowedResources): the policy daemon serving a
+	// plan's decisions is launched with effectiveAllow(plan, base). The deployment
+	// can only NARROW (intersect), never widen, what a plan authorizes. Unset (or
+	// whitespace-only) means no narrowing — the full plan-derived set is used.
+	EnvPolicyAllow = "AGENT_BUILDER_POLICY_ALLOW"
 
 	// defaultPolicyRisk is the static context.risk value sent in the AuthZEN
 	// decide request when AGENT_BUILDER_POLICY_RISK is unset (ADR 038).
@@ -1392,4 +1399,3 @@ func newProductionGate() (supervisor.Gate, error) {
 	}
 	return verifier, nil
 }
-
