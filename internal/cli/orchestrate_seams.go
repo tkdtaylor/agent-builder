@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/tkdtaylor/agent-builder/internal/audit"
@@ -136,59 +135,16 @@ func (r logReporter) Report(_ context.Context, text string) error {
 	return err
 }
 
-// envGoalSource is the validation-harness / single-goal GoalSource: it reads ONE
-// goal from AGENT_BUILDER_GOAL_SPEC (with AGENT_BUILDER_GOAL_ID / _REPO) or, when
-// that is unset and a Stdin reader is provided, from stdin. It returns the goal
-// exactly once, then ok=false on the next call (one goal per invocation — the
-// harness drives one plan per process).
-type envGoalSource struct {
-	getenv    func(string) string
-	stdin     io.Reader
-	delivered bool
-}
-
-// EnvGoalSpec / EnvGoalID / EnvGoalRepo configure the single-goal env source the
+// EnvGoalSpec / EnvGoalID / EnvGoalRepo configure the single-goal env input the
 // validation harness uses to feed a goal to the orchestrate subcommand without an
-// inbound channel.
+// inbound channel. Under the generalized inbound seam (ADR 054 §2) these are read by
+// envMessageSource (router.go), which delivers AGENT_BUILDER_GOAL_SPEC as the first
+// MsgNewGoal before any stdin line.
 const (
 	EnvGoalSpec = "AGENT_BUILDER_GOAL_SPEC"
 	EnvGoalID   = "AGENT_BUILDER_GOAL_ID"
 	EnvGoalRepo = "AGENT_BUILDER_GOAL_REPO"
 )
-
-func newEnvGoalSource(getenv func(string) string, stdin io.Reader) supervisor.GoalSource {
-	return &envGoalSource{getenv: getenv, stdin: stdin}
-}
-
-func (s *envGoalSource) Next() (supervisor.Task, bool, error) {
-	if s.delivered {
-		return supervisor.Task{}, false, nil
-	}
-	s.delivered = true
-
-	spec := strings.TrimSpace(s.getenv(EnvGoalSpec))
-	if spec == "" && s.stdin != nil {
-		raw, err := io.ReadAll(s.stdin)
-		if err != nil {
-			return supervisor.Task{}, false, fmt.Errorf("orchestrate: read goal from stdin: %w", err)
-		}
-		spec = strings.TrimSpace(string(raw))
-	}
-	if spec == "" {
-		// No goal configured — nothing to do (ok=false, no error).
-		return supervisor.Task{}, false, nil
-	}
-
-	id := strings.TrimSpace(s.getenv(EnvGoalID))
-	if id == "" {
-		id = "goal"
-	}
-	return supervisor.Task{
-		ID:   id,
-		Repo: strings.TrimSpace(s.getenv(EnvGoalRepo)),
-		Spec: spec,
-	}, true, nil
-}
 
 // filepathJoinTemp joins name onto the OS temp dir (small helper to keep the
 // orchestrate.go import set minimal).
