@@ -1,6 +1,6 @@
 # Task 107: Gate-failure feedback — Task contract + loop threading
 
-**Status:** backlog  
+**Status:** completed  
 **Priority:** must-have  
 **Project:** agent-builder  
 **Depends on:** tasks 102–106 (OllamaNative harness, verified); task 013 (RetryingLoop)  

@@ -164,6 +164,8 @@ func (l *RetryingLoop) RunOnce() (RetryOutcome, error) {
 			if attempt == l.policy.MaxAttempts {
 				return l.markNeedsHuman(task, l.policy.MaxAttempts, last)
 			}
+			// Populate PriorFailure for the next attempt with formatted failure detail
+			task.PriorFailure = FormatFailure(outcome)
 		default:
 			return RetryOutcome{}, fmt.Errorf("loop: retry attempt returned unexpected outcome %q", outcome.Kind)
 		}

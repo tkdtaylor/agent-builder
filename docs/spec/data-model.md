@@ -93,11 +93,12 @@ field       type      notes
 ID          string    zero-padded task ID from `# Task NNN:`
 Repo        string    project/repo name from `**Project:**`
 Spec        string    path to the task file the executor must satisfy
+PriorFailure string   non-empty only on retry attempt N≥2; formatted gate-failure detail from previous attempt
 ```
 
 - **Identity:** `ID` is unique across parsed task files.
-- **Lifecycle:** produced by task-source parsing and later consumed by the supervisor/agent loop and executor seam.
-- **Relationships:** embedded in `tasksource.Candidate`.
+- **Lifecycle:** produced by task-source parsing and later consumed by the supervisor/agent loop and executor seam. The `PriorFailure` field is populated by the retry loop after a failed gate verification, forwarding formatted failure detail to the next executor attempt.
+- **Relationships:** embedded in `tasksource.Candidate`. The first attempt always has `PriorFailure == ""`; subsequent attempts receive formatted gate-failure detail from `loop.FormatFailure` if the previous attempt failed the gate.
 
 ### State: Claude CLI Executor
 
