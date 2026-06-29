@@ -32,7 +32,11 @@ empty-allowlist denial that currently stops every orchestrate goal at `Plan deni
 | REQ-118-01 | `Plan.AllowedResources()` returns the deduped set `{GoalID} ∪ {recipe names} ∪ {task IDs}`. | must have |
 | REQ-118-02 | The orchestrator gates each spawn decision on the plan-derived set first: in-plan resources proceed to the policy engine; out-of-plan resources are denied without consulting policy. | must have |
 | REQ-118-03 | Effective decision = `plan-allows ∧ policy-allows` — the policy engine remains the independent ceiling (an in-plan resource it denies is still denied). | must have |
-| REQ-118-04 | The policy daemon is configured with the plan-derived allow set, intersected with an optional deployment base allow (`AGENT_BUILDER_POLICY_ALLOW`); deployment can only narrow, never widen. | must have |
+
+> REQ-118-04 (feed the policy *daemon* the plan-derived allow ∩ deployment base
+> `AGENT_BUILDER_POLICY_ALLOW`) is split into **task 122** — it needs per-plan
+> daemon-lifecycle wiring in `internal/cli`, a distinct concern from this
+> orchestrator-side gate.
 
 ## Readiness gate
 
@@ -45,9 +49,7 @@ empty-allowlist denial that currently stops every orchestrate goal at `Plan deni
 - [ ] [REQ-118-01] `Plan.AllowedResources()` derives + dedups the resource set (TC-001, TC-002).
 - [ ] [REQ-118-02] In-plan resources reach policy; out-of-plan denied without a policy call (TC-003, TC-004).
 - [ ] [REQ-118-03] In-plan ∧ policy-deny → deny; in-plan ∧ policy-allow → allow (TC-005).
-- [ ] [REQ-118-04] Daemon allow = plan-derived ∩ optional deployment base (TC-006, TC-007).
-- [ ] `make check` passes; existing orchestrate tests updated (the empty-allow deny path is replaced).
-- [ ] `docs/spec/configuration.md` documents `AGENT_BUILDER_POLICY_ALLOW` and the plan-derived allow behavior on orchestrate.
+- [ ] `make check` passes; existing orchestrate tests green (no regression).
 
 ## Verification plan
 
@@ -64,10 +66,11 @@ empty-allowlist denial that currently stops every orchestrate goal at `Plan deni
 
 ## Out of scope
 
+- Feeding the policy *daemon* the plan-scoped allow set (task 122 — daemon side).
 - Routing the dispatched task to the worker (task 119), real result propagation
   (task 120), blocked-action feedback (task 121).
 - A request-scoped authorization protocol inside the `policy-engine` block (follow-up
-  ADR) — v1 configures the daemon allow per plan within agent-builder.
+  ADR).
 
 ## Notes
 
