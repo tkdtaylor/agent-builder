@@ -18,6 +18,11 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
 
+// generateSealKeyPair is the seam used to generate X25519 seal keypairs for the
+// in-process v1 wire. Tests may override this variable to inject a failure without
+// non-portable crypto/rand fault injection (SEC-001 fault-injection seam).
+var generateSealKeyPair = envelope.GenerateKeyPair
+
 // newTransportDispatch returns the live DispatchFunc for the orchestrate path. It
 // round-trips every sub-goal through the worker envelope transport (ADR 048) before
 // declaring the dispatch done:
@@ -35,11 +40,20 @@ import (
 // assembly time — the seal layer provides confidentiality + tamper-evidence on the
 // in-process hop; the long-lived, file-backed, fail-closed-checked key is the
 // Ed25519 signing key (signingKey), which is what 083 SEC-003 guards.
-func newTransportDispatch(signingKey ed25519.PrivateKey, workItemCache, resultCache *envelope.ReplayCache, sink audit.Sink, logger *slog.Logger) orchestrator.DispatchFunc {
+//
+// Returns a non-nil error if keypair generation fails (SEC-001: fail fast on
+// crypto/rand failure rather than silently sealing under zero keys).
+func newTransportDispatch(signingKey ed25519.PrivateKey, workItemCache, resultCache *envelope.ReplayCache, sink audit.Sink, logger *slog.Logger) (orchestrator.DispatchFunc, error) {
 	// Generate the X25519 seal keypairs for the in-process wire once. Both ends are
 	// in-process, so the orchestrator owns both halves of the seal for v1.
-	orchXPub, orchXPriv, _ := envelope.GenerateKeyPair()
-	workerXPub, workerXPriv, _ := envelope.GenerateKeyPair()
+	orchXPub, orchXPriv, err := generateSealKeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("newTransportDispatch: generate seal keypair (orch): %w", err)
+	}
+	workerXPub, workerXPriv, err := generateSealKeyPair()
+	if err != nil {
+		return nil, fmt.Errorf("newTransportDispatch: generate seal keypair (worker): %w", err)
+	}
 
 	signPub := signingKey.Public().(ed25519.PublicKey)
 
@@ -64,7 +78,7 @@ func newTransportDispatch(signingKey ed25519.PrivateKey, workItemCache, resultCa
 		AuditSink:   sink, Logger: logger,
 	})
 
-	return func(ctx context.Context, sub orchestrator.SubGoal, base runtimewiring.Config) error {
+	dispatch := orchestrator.DispatchFunc(func(ctx context.Context, sub orchestrator.SubGoal, base runtimewiring.Config) error {
 		env, err := workItemSender.DispatchWorkItem(sub.Task)
 		if err != nil {
 			return fmt.Errorf("orchestrate dispatch: seal work-item for %q: %w", sub.Task.ID, err)
@@ -90,7 +104,8 @@ func newTransportDispatch(signingKey ed25519.PrivateKey, workItemCache, resultCa
 			return fmt.Errorf("orchestrate dispatch: verify result for %q: %w", sub.Task.ID, err)
 		}
 		return nil
-	}
+	})
+	return dispatch, nil
 }
 
 // logReporter is the fallback outbound Reporter: it writes the rendered text to the
