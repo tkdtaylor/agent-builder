@@ -87,6 +87,48 @@ type Plan struct {
 	SubGoals []SubGoal
 }
 
+// AllowedResources returns the deduped, deterministically-ordered set of policy
+// resource IDs this plan authorizes (ADR 055 seam 1, plan-derived authorization).
+// It is the union of the plan's own decision-resource IDs: the goal ID (the
+// spawn-plan resource), each sub-goal's recipe name (the spawn-worker resource),
+// and each sub-goal's task ID (the worker's run-task resource). The orchestrator
+// scopes its spawn decisions to this set so a goal can only authorize the actions
+// its own plan declares — least-privilege, constructed from the plan. Ordering is
+// deterministic: goal ID first, then recipe names and task IDs in sub-goal order,
+// each on first occurrence.
+func (p Plan) AllowedResources() []string {
+	seen := make(map[string]struct{})
+	ordered := make([]string, 0, 1+2*len(p.SubGoals))
+	add := func(id string) {
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		ordered = append(ordered, id)
+	}
+	add(p.GoalID)
+	for _, sub := range p.SubGoals {
+		add(sub.RecipeName)
+	}
+	for _, sub := range p.SubGoals {
+		add(sub.Task.ID)
+	}
+	return ordered
+}
+
+// authorizesResource reports whether id is in the plan's derived allow set.
+func (p Plan) authorizesResource(id string) bool {
+	for _, r := range p.AllowedResources() {
+		if r == id {
+			return true
+		}
+	}
+	return false
+}
+
 // SubGoalOutcome is the typed result of dispatching one sub-goal (ADR 046 §2).
 type SubGoalOutcome struct {
 	SubGoal string // the sub-goal spec text
@@ -664,7 +706,7 @@ func (o *Orchestrator) dispatchOne(ctx context.Context, plan Plan, sub SubGoal) 
 	// self-repo bright line (REQ-085-05a) is checked inside decideSpawnWorker and
 	// overrides the policy decision fail-closed. A non-allow decision skips the
 	// dispatch, records a denied outcome, and reports the denial.
-	decision, denyReason := o.decideSpawnWorker(sub)
+	decision, denyReason := o.decideSpawnWorker(plan, sub)
 	// For deny events, include the deny reason in the audit event (SEC-004: distinguish
 	// policy deny from self-repo deny). For allow, record just the recipe name.
 	auditReason := sub.RecipeName
@@ -748,10 +790,23 @@ func (o *Orchestrator) dispatchWithSemaphore(ctx context.Context, sub SubGoal) e
 // transport/parse error yields DecisionDeny, never allow). It returns the decision
 // and, when the decision is not allow, a short human-facing reason recorded as the
 // sub-goal's denied-outcome Detail and reported via the Reporter.
-func (o *Orchestrator) decideSpawnWorker(sub SubGoal) (policy.Decision, string) {
+func (o *Orchestrator) decideSpawnWorker(plan Plan, sub SubGoal) (policy.Decision, string) {
 	// Self-repo bright line — independent of the policy file, fail-closed.
 	if targetsOwnRepo(sub) {
 		return policy.DecisionDeny, fmt.Sprintf("self-repo bright line: refusing to dispatch a worker targeting %s", OwnRepo)
+	}
+
+	// Plan-derived authorization gate (ADR 055 seam 1): a worker may only spawn for
+	// a recipe and task this plan actually declared. A sub-goal whose recipe or task
+	// is not in the plan's derived allow set is denied WITHOUT consulting the policy
+	// engine — the plan can only authorize the actions it constructed. In normal
+	// operation every dispatched sub-goal comes from plan.SubGoals, so this passes;
+	// it is the least-privilege backstop against a foreign/injected sub-goal.
+	if !plan.authorizesResource(sub.RecipeName) {
+		return policy.DecisionDeny, fmt.Sprintf("plan-derived authorization: recipe %q is not in the plan's allowed set", sub.RecipeName)
+	}
+	if !plan.authorizesResource(sub.Task.ID) {
+		return policy.DecisionDeny, fmt.Sprintf("plan-derived authorization: task %q is not in the plan's allowed set", sub.Task.ID)
 	}
 
 	req := policy.DecideRequest{
