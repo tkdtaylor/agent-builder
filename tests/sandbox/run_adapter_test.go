@@ -1,6 +1,7 @@
 package sandbox_test
 
 import (
+	"context"
 	"errors"
 	"go/parser"
 	"go/token"
@@ -190,7 +191,7 @@ func TestSupervisorAcceptsOnlySandboxInterface(t *testing.T) {
 	if s == nil {
 		t.Fatal("TC-003: New() returned nil supervisor")
 	}
-	if err := s.Run(); !errors.Is(err, supervisor.ErrNilContainmentBox) {
+	if err := s.Run(context.Background()); !errors.Is(err, supervisor.ErrNilContainmentBox) {
 		t.Fatalf("TC-003: Run() error = %v, want ErrNilContainmentBox when dispatch seams are absent", err)
 	}
 

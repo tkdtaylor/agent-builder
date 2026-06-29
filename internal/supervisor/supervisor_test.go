@@ -2,6 +2,7 @@ package supervisor
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -34,7 +36,7 @@ func TestRunDispatchesOneTaskAndLogsLifecycle(t *testing.T) {
 		WithContainmentBox(box),
 		WithInBoxLoop(loop),
 		WithLogger(slog.New(slog.NewTextHandler(&logs, nil))),
-	).Run()
+	).Run(context.Background())
 	if err != nil {
 		t.Fatalf("TC-001: Run() error = %v, want nil", err)
 	}
@@ -79,7 +81,7 @@ func TestRunPassesCreatedBoxToLoopBeforeTeardown(t *testing.T) {
 		WithTask(task),
 		WithContainmentBox(box),
 		WithInBoxLoop(loop),
-	).Run()
+	).Run(context.Background())
 	if err != nil {
 		t.Fatalf("TC-002: Run() error = %v, want nil", err)
 	}
@@ -109,7 +111,7 @@ func TestRunTearsDownOnceOnLoopError(t *testing.T) {
 		WithTask(Task{ID: "017"}),
 		WithContainmentBox(box),
 		WithInBoxLoop(loop),
-	).Run()
+	).Run(context.Background())
 	if !errors.Is(err, loopErr) {
 		t.Fatalf("TC-003: Run() error = %v, want loop error %v", err, loopErr)
 	}
@@ -137,7 +139,7 @@ func TestRunTearsDownOnceOnLoopPanic(t *testing.T) {
 		WithTask(Task{ID: "017"}),
 		WithContainmentBox(box),
 		WithInBoxLoop(loop),
-	).Run()
+	).Run(context.Background())
 	if err == nil {
 		t.Fatal("TC-004: Run() error = nil, want panic recovery error")
 	}
@@ -157,14 +159,19 @@ func TestRunTimeoutUsesConfiguredDeadlineAndKillsBox(t *testing.T) {
 	var logs bytes.Buffer
 	release := make(chan struct{})
 	callLog := []string{}
+	// logMu is shared between box and loop so their concurrent callLog appends
+	// ("loop.run" on the loop goroutine, "box.kill"/"box.teardown" on the control
+	// goroutine when the timer fires) are race-free under -race.
+	var logMu sync.Mutex
 	box := &fakeBox{
 		handle:  BoxHandle{ID: "box-018", Worktree: "/work"},
 		callLog: &callLog,
+		logMu:   &logMu,
 		onKill: func() {
 			close(release)
 		},
 	}
-	loop := &fakeInBoxLoop{callLog: &callLog, blockUntil: release}
+	loop := &fakeInBoxLoop{callLog: &callLog, logMu: &logMu, blockUntil: release}
 	start := time.Now()
 
 	err := New(
@@ -173,7 +180,7 @@ func TestRunTimeoutUsesConfiguredDeadlineAndKillsBox(t *testing.T) {
 		WithInBoxLoop(loop),
 		WithLogger(slog.New(slog.NewTextHandler(&logs, nil))),
 		WithRunTimeout(25*time.Millisecond),
-	).Run()
+	).Run(context.Background())
 	elapsed := time.Since(start)
 	if !errors.Is(err, ErrRunTimedOut) {
 		t.Fatalf("TC-001-Configurable-Timeout: Run() error = %v, want ErrRunTimedOut", err)
@@ -239,7 +246,7 @@ func TestRunTimeoutRecordsTimedOutOutcome(t *testing.T) {
 		WithInBoxLoop(loop),
 		WithRunRecordPath(recordPath),
 		WithRunTimeout(25*time.Millisecond),
-	).Run()
+	).Run(context.Background())
 	if !errors.Is(err, ErrRunTimedOut) {
 		t.Fatalf("TC-003-RunRecord-Timed-Out: Run() error = %v, want ErrRunTimedOut", err)
 	}
@@ -312,7 +319,7 @@ func TestRunWithoutTimeoutDoesNotKill(t *testing.T) {
 		WithTask(Task{ID: "018"}),
 		WithContainmentBox(box),
 		WithInBoxLoop(loop),
-	).Run()
+	).Run(context.Background())
 	if err != nil {
 		t.Fatalf("TC-005-Unset-Timeout-No-Kill: Run() error = %v, want nil", err)
 	}
@@ -328,13 +335,20 @@ func TestRunWithoutTimeoutDoesNotKill(t *testing.T) {
 func TestRunTimeoutSurfacesKillErrorAndStillTearsDown(t *testing.T) {
 	killErr := errors.New("kill failed")
 	callLog := []string{}
+	var logMu sync.Mutex
 	recordPath := filepath.Join(t.TempDir(), "kill-error.ndjson")
+	release := make(chan struct{})
 	box := &fakeBox{
 		handle:  BoxHandle{ID: "box-018"},
 		killErr: killErr,
 		callLog: &callLog,
+		logMu:   &logMu,
+		// Even though Kill reports an error, a killed box's in-box loop process
+		// terminates — model that by unblocking the loop so the supervisor's join
+		// (killAndJoin) completes. The supervisor still surfaces killErr as a leak.
+		onKill: func() { close(release) },
 	}
-	loop := &fakeInBoxLoop{blockUntil: make(chan struct{}), callLog: &callLog}
+	loop := &fakeInBoxLoop{blockUntil: release, callLog: &callLog, logMu: &logMu}
 
 	err := New(
 		WithTask(Task{ID: "018"}),
@@ -342,7 +356,7 @@ func TestRunTimeoutSurfacesKillErrorAndStillTearsDown(t *testing.T) {
 		WithInBoxLoop(loop),
 		WithRunRecordPath(recordPath),
 		WithRunTimeout(25*time.Millisecond),
-	).Run()
+	).Run(context.Background())
 	if !errors.Is(err, ErrRunTimedOut) {
 		t.Fatalf("TC-006-Kill-Error-Still-Tears-Down: Run() error = %v, want ErrRunTimedOut", err)
 	}
@@ -386,14 +400,23 @@ func TestRunRejectsMissingDispatchDependencies(t *testing.T) {
 
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
-			if err := New(tc.options...).Run(); !errors.Is(err, tc.wantErr) {
+			if err := New(tc.options...).Run(context.Background()); !errors.Is(err, tc.wantErr) {
 				t.Fatalf("Run() error = %v, want %v", err, tc.wantErr)
 			}
 		})
 	}
 }
 
+// fakeBox is the test ContainmentBox double. Its mutable bookkeeping (call
+// counters, recorded handles, the shared callLog) is mutex-guarded because the
+// supervisor's run-loop calls Kill on the control goroutine while the in-box loop
+// goroutine concurrently touches the SAME shared callLog (and the test goroutine
+// reads the counters after Run returns). The mutex makes those accesses race-free
+// under -race — the supervisor's join (killAndJoin) establishes the happens-before
+// edge for the post-Run reads; this mutex covers the concurrent-append window
+// while both goroutines are live (task 116: the cancel arm shares this path).
 type fakeBox struct {
+	mu            sync.Mutex
 	handle        BoxHandle
 	err           error
 	killErr       error
@@ -406,19 +429,26 @@ type fakeBox struct {
 	tasks         []Task
 	handles       []BoxHandle
 	killedHandles []BoxHandle
-	callLog       *[]string
+	// callLog points at a shared slice the loop goroutine also appends to. logMu
+	// (shared with the loop) guards the slice; nil callLog disables logging.
+	callLog *[]string
+	logMu   *sync.Mutex
 }
 
 func (b *fakeBox) Create(task Task) (BoxHandle, error) {
+	b.mu.Lock()
 	b.createCalls++
 	b.tasks = append(b.tasks, task)
+	b.mu.Unlock()
 	b.record("box.create")
 	return b.handle, b.err
 }
 
 func (b *fakeBox) Kill(handle BoxHandle) error {
+	b.mu.Lock()
 	b.killCalls++
 	b.killedHandles = append(b.killedHandles, handle)
+	b.mu.Unlock()
 	b.record("box.kill")
 	if b.onKill != nil {
 		b.onKill()
@@ -427,8 +457,10 @@ func (b *fakeBox) Kill(handle BoxHandle) error {
 }
 
 func (b *fakeBox) Teardown(handle BoxHandle) error {
+	b.mu.Lock()
 	b.teardownCalls++
 	b.handles = append(b.handles, handle)
+	b.mu.Unlock()
 	b.record("box.teardown")
 	if b.onTeardown != nil {
 		return errors.Join(b.onTeardown(), b.teardownErr)
@@ -437,12 +469,18 @@ func (b *fakeBox) Teardown(handle BoxHandle) error {
 }
 
 func (b *fakeBox) record(event string) {
-	if b.callLog != nil {
-		*b.callLog = append(*b.callLog, event)
+	if b.callLog == nil {
+		return
 	}
+	if b.logMu != nil {
+		b.logMu.Lock()
+		defer b.logMu.Unlock()
+	}
+	*b.callLog = append(*b.callLog, event)
 }
 
 type fakeInBoxLoop struct {
+	mu         sync.Mutex
 	err        error
 	panicValue any
 	blockUntil <-chan struct{}
@@ -450,16 +488,20 @@ type fakeInBoxLoop struct {
 	calls      int
 	tasks      []Task
 	handles    []BoxHandle
-	callLog    *[]string
+	// callLog points at the SAME shared slice fakeBox appends to; logMu (shared with
+	// the box) guards it so the concurrent "loop.run" append and "box.kill" append
+	// are race-free.
+	callLog *[]string
+	logMu   *sync.Mutex
 }
 
 func (l *fakeInBoxLoop) RunInside(handle BoxHandle, task Task, streams RunStreams) error {
+	l.mu.Lock()
 	l.calls++
 	l.handles = append(l.handles, handle)
 	l.tasks = append(l.tasks, task)
-	if l.callLog != nil {
-		*l.callLog = append(*l.callLog, "loop.run")
-	}
+	l.mu.Unlock()
+	l.recordRun()
 	if l.duringRun != nil {
 		if err := l.duringRun(streams); err != nil {
 			return err
@@ -474,6 +516,17 @@ func (l *fakeInBoxLoop) RunInside(handle BoxHandle, task Task, streams RunStream
 	return l.err
 }
 
+func (l *fakeInBoxLoop) recordRun() {
+	if l.callLog == nil {
+		return
+	}
+	if l.logMu != nil {
+		l.logMu.Lock()
+		defer l.logMu.Unlock()
+	}
+	*l.callLog = append(*l.callLog, "loop.run")
+}
+
 func runSupervisorRecord(t *testing.T, name string, box *fakeBox, loop *fakeInBoxLoop, timeout time.Duration) (string, error) {
 	t.Helper()
 
@@ -484,7 +537,7 @@ func runSupervisorRecord(t *testing.T, name string, box *fakeBox, loop *fakeInBo
 		WithInBoxLoop(loop),
 		WithRunRecordPath(recordPath),
 		WithRunTimeout(timeout),
-	).Run()
+	).Run(context.Background())
 	return recordPath, err
 }
 

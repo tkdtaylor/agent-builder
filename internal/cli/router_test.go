@@ -295,11 +295,15 @@ func TestTC113_04_RouterDispatchesByKind(t *testing.T) {
 	loopDone := make(chan error, 1)
 	go func() { loopDone <- runControlLoop(context.Background(), oc) }()
 
-	// new-goal → one actor for goal-1 spawned; its dispatch enters (held by latch).
-	select {
-	case <-disp.entered["goal-1"]:
-	case <-time.After(3 * time.Second):
-		t.Fatal("goal-1 dispatch never entered — new-goal did not spawn an actor")
+	// new-goal → one actor for goal-1 spawned. We wait for the actor to leave Queued
+	// (proving new-goal spawned it) rather than for the dispatch to enter the latch:
+	// task 116 makes the trailing `cancel goal-1` actually cancel goal-1's context, so
+	// a fast cancel may pre-empt the worker BEFORE its dispatch reaches the latch (the
+	// worker is torn down before it ever runs — a legitimate cancel outcome). Either
+	// way the actor started and consumed the routed commands, which is what this
+	// routing test asserts.
+	if st := waitPastQueued(t, reg, "goal-1", 3*time.Second); st == orchestrator.StateQueued {
+		t.Fatal("goal-1 never left Queued — new-goal did not spawn an actor")
 	}
 
 	// A mailbox exists for goal-1 (the router delivers info/cancel here, never to the

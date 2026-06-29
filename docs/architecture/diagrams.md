@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-29 (task 113 — inbound message protocol: the control loop now reads a typed `supervisor.MessageSource` (NEW seam; `GoalSource` left intact) and **routes by kind** — new-goal→actor (mailbox created register-then-start), status→registry handler, info/cancel→addressed per-goal command mailbox, unknown goalID→graceful "no such goal"; built on task 112's async control-loop core)
+**Last updated:** 2026-06-29 (task 116 — cancellation + worker teardown: `runtime.Run`/`Supervisor.Run` now take a leading `context.Context`; the run-loop `select` gains a `case <-ctx.Done():` arm beside the wall-clock arm reusing the SAME `box.Kill`/`Teardown` path; a per-goal `context.WithCancel` is derived at `routeNewGoal` and its `CancelFunc` registered, so a `cancel <goalID>` tears down only that goal's in-flight workers, sets `Cancelled`, consumes its plan, and releases its worker permit — building on task 113's inbound message protocol and task 112's async control-loop core)
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -312,14 +312,16 @@ sequenceDiagram
         alt MsgNewGoal
             Ctrl->>Mbox: Create(goalID) — mailbox BEFORE register/start (register-then-start)
             Ctrl->>Reg: Register(goalID, Queued)
-            Ctrl->>Goal: go actor(goal) — intake decoupled from processing (next message read immediately)
+            Ctrl->>Reg: SetCancelFunc(goalID, cancel) — per-goal context.WithCancel (ADR 054 §5, task 116)
+            Ctrl->>Goal: go actor(goalCtx, goal) — intake decoupled, actor runs under the per-goal cancel ctx
             Goal->>Goal: acquire admission slot (park Queued while fleet at MAX_GOALS)
-            Goal->>Orch: Handle(goal) — owns this goalID's lifecycle
+            Goal->>Orch: Handle(goalCtx, goal) — owns this goalID's lifecycle
             Note over Goal,Orch: Handle transitions Reg Planning→(AwaitingApproval or Dispatching)→Done/Failed, worker semaphore acquired INSIDE per-sub-goal dispatch (fleet-wide cap)
         else MsgStatus
             Ctrl->>Reg: status handler reads registry (handler body = task 114, empty GoalID = fleet)
         else MsgInfo / MsgCancel
             Ctrl->>Mbox: deliver(msg) to addressed goal's mailbox (unknown goalID → graceful "no such goal", no mailbox created)
+            Note over Mbox,Goal: actor consumes MsgInfo→apply-info-at-checkpoint (task 115) and MsgCancel→Reg.Cancel(goalID) fires the goal's ctx → workers tear down via run-loop ctx.Done() arm, state→Cancelled, plan consumed (task 116)
         else malformed line
             Ctrl->>Ctrl: ErrMalformedInput → report + continue (never a new-goal, never a panic)
         end
@@ -358,9 +360,10 @@ sequenceDiagram
                 Policy-->>Orch: decision
                 Orch->>Audit: spawn-decided
                 alt allow (and not own-repo)
-                    Orch->>Runtime: Run(base cfg with RecipeName) — dispatch worker
+                    Orch->>Runtime: Run(goalCtx, base cfg with RecipeName) — dispatch worker (ctx forwarded, task 116)
+                    Note over Orch,Runtime: a cancel of goalCtx fires Supervisor.Run's case <-ctx.Done(): arm → SAME box.Kill/Teardown path as the wall-clock timeout, and the deferred Semaphore.Release frees the permit
                     Runtime-->>Audit: worker events (containment ... finish, same chain)
-                    Runtime-->>Orch: nil / error
+                    Runtime-->>Orch: nil / error (ErrRunCancelled on cancel)
                 else deny / own-repo
                     Orch->>Reporter: Report("Worker spawn denied")
                     Orch-->>Orch: record denied outcome (no dispatch)
@@ -429,10 +432,21 @@ plus per-sub-goal `running`/`done`/`failed`); the registry is a **projection for
 observability only**, never the source of control-flow truth (the `PlanStore` is), so a
 registry write failure never halts a goal. All user-visible output flows through the one
 mutex-guarded Reporter, keeping stdout race-free; the audit chain stays `verify`-clean
-across M goals × N workers on the single mutex-guarded `Append`. The status-query
-*handler body*, apply-info fold, and cancellation teardown are deferred to tasks
-114–116; this task (113) wires the message protocol + the kind-dispatch router and the
-per-goal command mailbox.
+across M goals × N workers on the single mutex-guarded `Append`.
+
+**Cancellation teardown (task 116 / ADR 054 §5).** Each goal runs under a per-goal
+`context.WithCancel` derived at `routeNewGoal`; its `CancelFunc` lives in the registry.
+A `cancel <goalID>` fires that `CancelFunc`, cancelling ONLY that goal's context (no
+blast radius). The cancellation threads through `Handle` → `dispatchPlan` →
+`runtime.Run` → `Supervisor.Run` to the run-loop `select`, which now has a
+`case <-ctx.Done():` arm beside the wall-clock `case <-timer.C:` arm — both run the
+**same** `box.Kill`/`Teardown` path (no new teardown mechanism). The cancel handler then
+sets `Cancelled`, consumes the plan from the `PlanStore` under the same delete path
+`Resume` uses (no double-dispatch on a racing approval), and the deferred
+`Semaphore.Release` frees the worker permit (no leak). Partial-teardown failures surface
+in the goal report as a leak; the wall-clock timeout remains the backstop. The
+status-query handler body (task 114) and apply-info fold (task 115) are live; this leaves
+only L6 live-sandbox cancellation operator-deferred.
 
 ---
 

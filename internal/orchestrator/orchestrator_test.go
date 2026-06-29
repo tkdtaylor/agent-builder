@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator"
 	"github.com/tkdtaylor/agent-builder/internal/policy"
@@ -469,5 +470,58 @@ func TestRecipesRegistered(t *testing.T) {
 		if _, err := recipe.SelectRecipe(name); err != nil {
 			t.Errorf("recipe %q must be registered for dispatch tests: %v", name, err)
 		}
+	}
+}
+
+// TC-116-01 — the ctx given to Handle is FORWARDED to the dispatch seam (not dropped).
+// Before task 116 defaultDispatch/the transport closure ignored the DispatchFunc ctx
+// past the transport step; the fix threads it into runtime.Run. This asserts the seam
+// contract at the orchestrator boundary: a cancel of the Handle ctx is OBSERVED inside
+// the dispatch call (the dispatch's ctx.Done() fires), which is the mechanism the
+// run-loop ctx.Done() arm relies on to tear down an in-flight worker.
+func TestTC116_01_HandleForwardsCancelContextToDispatch(t *testing.T) {
+	rep := &fakeReporter{}
+	pol := &fakePolicy{decision: policy.DecisionAllow}
+
+	entered := make(chan struct{})
+	observedCancel := make(chan struct{})
+	dispatch := orchestrator.DispatchFunc(func(ctx context.Context, _ orchestrator.SubGoal, _ runtime.Config) error {
+		close(entered)
+		// The dispatch must SEE the Handle ctx: when the test cancels it, ctx.Done()
+		// fires here. If the ctx were dropped (the pre-116 bug) this would block forever.
+		<-ctx.Done()
+		close(observedCancel)
+		return ctx.Err()
+	})
+
+	o := orchestrator.New(
+		orchestrator.NewStructuredPlanner(knownRecipes...),
+		pol, rep, runtime.Config{},
+		orchestrator.WithDispatchFunc(dispatch),
+	)
+	goal := supervisor.Task{ID: "g1", Spec: "coding-agent: implement X"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	handleDone := make(chan struct{})
+	go func() {
+		_, _ = o.Handle(ctx, goal)
+		close(handleDone)
+	}()
+
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("TC-116-01: dispatch never entered")
+	}
+	cancel()
+	select {
+	case <-observedCancel:
+	case <-time.After(3 * time.Second):
+		t.Fatal("TC-116-01: dispatch did not observe the cancelled Handle ctx — the ctx was DROPPED, not forwarded")
+	}
+	select {
+	case <-handleDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("TC-116-01: Handle did not return after dispatch saw cancellation")
 	}
 }

@@ -1,6 +1,7 @@
 package supervisor_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -20,7 +21,7 @@ func TestRunRecordWireFormatAndOutcomeVocabulary(t *testing.T) {
 		supervisor.WithContainmentBox(&recordBox{handle: supervisor.BoxHandle{ID: "box-019", Worktree: "/work/agent-builder"}}),
 		supervisor.WithInBoxLoop(recordLoop{}),
 		supervisor.WithRunRecordPath(recordPath),
-	).Run()
+	).Run(context.Background())
 	if err != nil {
 		t.Fatalf("TC-001-RunRecord-Wire-Format: Run() error = %v, want nil", err)
 	}
@@ -92,7 +93,7 @@ func TestRunRecordStreamsOutputAndPersistsAfterTeardown(t *testing.T) {
 		supervisor.WithContainmentBox(box),
 		supervisor.WithInBoxLoop(loop),
 		supervisor.WithRunRecordPath(recordPath),
-	).Run()
+	).Run(context.Background())
 	if err != nil {
 		t.Fatalf("TC-002-Stream-Capture: Run() error = %v, want nil", err)
 	}
@@ -135,7 +136,7 @@ func TestRunRecordKeepsPartialStreamWhenLoopFails(t *testing.T) {
 		supervisor.WithContainmentBox(box),
 		supervisor.WithInBoxLoop(loop),
 		supervisor.WithRunRecordPath(recordPath),
-	).Run()
+	).Run(context.Background())
 	if !errors.Is(err, loopErr) {
 		t.Fatalf("TC-004-No-Post-Teardown-Readback: Run() error = %v, want %v", err, loopErr)
 	}

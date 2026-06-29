@@ -7,6 +7,7 @@ package supervisor
 // TC-068-06: Checkpoint failure logged, teardown and run outcome unaffected.
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -70,7 +71,7 @@ func newSuccessfulSupervisorRun(t *testing.T, cs *audit.CheckpointSigner) error 
 	if cs != nil {
 		opts = append(opts, WithCheckpointSigner(cs))
 	}
-	return New(opts...).Run()
+	return New(opts...).Run(context.Background())
 }
 
 // newFailingSupervisorRun runs a supervisor with a loop that returns an error.
@@ -86,7 +87,7 @@ func newFailingSupervisorRun(t *testing.T, cs *audit.CheckpointSigner) error {
 	if cs != nil {
 		opts = append(opts, WithCheckpointSigner(cs))
 	}
-	return New(opts...).Run()
+	return New(opts...).Run(context.Background())
 }
 
 // TC-068-05: Supervisor calls VerifyChain then CreateCheckpoint on success path.
@@ -207,7 +208,7 @@ func TestSupervisorTeardownRunsAfterCheckpointFailure(t *testing.T) {
 		WithContainmentBox(box),
 		WithInBoxLoop(loop),
 		WithCheckpointSigner(cs),
-	).Run()
+	).Run(context.Background())
 
 	if err != nil {
 		t.Fatalf("TC-068-06 teardown: Run() error = %v, want nil", err)

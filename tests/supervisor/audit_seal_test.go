@@ -6,6 +6,7 @@ package supervisor_test
 // before.
 
 import (
+	"context"
 	"errors"
 	"os/exec"
 	"strings"
@@ -103,7 +104,7 @@ func TestSupervisorSealsSinkBeforeTeardownOnSuccess(t *testing.T) {
 		supervisor.WithContainmentBox(box),
 		supervisor.WithInBoxLoop(auditEmittingLoop{}),
 		supervisor.WithSink(sink),
-	).Run()
+	).Run(context.Background())
 	if err != nil {
 		t.Fatalf("TC-041-03: Run() error = %v, want nil", err)
 	}
@@ -142,7 +143,7 @@ func TestSupervisorSealsSinkBeforeTeardownOnFailure(t *testing.T) {
 		supervisor.WithContainmentBox(box),
 		supervisor.WithInBoxLoop(auditEmittingLoop{err: loopErr}),
 		supervisor.WithSink(sink),
-	).Run()
+	).Run(context.Background())
 	if !errors.Is(err, loopErr) {
 		t.Fatalf("TC-041-03 failure: Run() error = %v, want loop error", err)
 	}
@@ -168,7 +169,7 @@ func TestSupervisorWithoutSinkBehavesAsBefore(t *testing.T) {
 		supervisor.WithTask(supervisor.Task{ID: "041"}),
 		supervisor.WithContainmentBox(box),
 		supervisor.WithInBoxLoop(auditEmittingLoop{}),
-	).Run()
+	).Run(context.Background())
 	if err != nil {
 		t.Fatalf("TC-041-03 no-sink: Run() error = %v, want nil", err)
 	}
@@ -189,7 +190,7 @@ func TestSupervisorSurfacesSealError(t *testing.T) {
 		supervisor.WithContainmentBox(box),
 		supervisor.WithInBoxLoop(auditEmittingLoop{}),
 		supervisor.WithSink(sink),
-	).Run()
+	).Run(context.Background())
 	if !errors.Is(err, sealErr) {
 		t.Fatalf("TC-041-03 seal-error: Run() error = %v, want seal error joined", err)
 	}

@@ -2,6 +2,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -54,7 +55,11 @@ func Main(config Config) int {
 	}
 	if config.Run == nil {
 		config.Run = func() error {
-			return runtimewiring.RunFromEnv(config.Stdout)
+			// The single-task CLI path has no orchestrator/goalID, so no cancellation
+			// context applies — pass context.Background() (the run-loop's ctx.Done()
+			// arm never fires here; the wall-clock timeout remains the only kill
+			// trigger). Cancellation is the orchestrate path's concern (task 116).
+			return runtimewiring.RunFromEnv(context.Background(), config.Stdout)
 		}
 	}
 	if config.Gate == nil {
