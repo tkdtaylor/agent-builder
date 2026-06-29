@@ -12,5 +12,6 @@ func main() {
 		Args:   os.Args[1:],
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
+		Stdin:  os.Stdin,
 	}))
 }

@@ -36,6 +36,7 @@ type Config struct {
 	Args    []string
 	Stdout  io.Writer
 	Stderr  io.Writer
+	Stdin   io.Reader
 	Version string
 	Run     Runner
 	Gate    Verifier
@@ -77,6 +78,8 @@ func Main(config Config) int {
 		return runVerify(config, config.Args[1:])
 	case "verify-checkpoint":
 		return runVerifyCheckpoint(config, config.Args[1:])
+	case "orchestrate":
+		return runOrchestrate(config, config.Args[1:])
 	default:
 		writef(config.Stderr, "usage error: unknown subcommand %q\n\n", config.Args[0])
 		printUsage(config.Stderr)
@@ -227,12 +230,14 @@ func usage(stderr io.Writer, err error) int {
 func printUsage(w io.Writer) {
 	write(w, `Usage:
   agent-builder run
+  agent-builder orchestrate
   agent-builder version
   agent-builder verify <repo>
   agent-builder verify-checkpoint --checkpoint <path> --public-key <path> [--logfile <path>]
 
 Subcommands:
   run                   dispatch one supervisor loop
+  orchestrate           drive the Tier-1 orchestrator: goal-intake -> plan -> N workers
   version               print the agent-builder version
   verify <repo>         run the verification gate against a repo
   verify-checkpoint     verify a signed checkpoint against an Ed25519 public key
