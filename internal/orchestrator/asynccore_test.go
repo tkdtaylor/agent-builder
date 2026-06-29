@@ -141,59 +141,104 @@ func TestTC112_03_WorkerSemaphoreCapsLiveWorkers(t *testing.T) {
 
 // --- TC-112-05 — registry projection + ordered transitions -------------------
 
+// latchPlanner wraps an inner Planner so the test can hold the goal in the
+// Planning state: Plan signals it was entered (the orchestrator sets StatePlanning
+// at orchestrator.go ~L289 immediately BEFORE calling Plan), then blocks until the
+// test releases it. This lets the test sample the live registry mid-Planning and
+// prove the waypoint was actually reached — not inferred from the terminal state.
+type latchPlanner struct {
+	inner   orchestrator.Planner
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (p *latchPlanner) Plan(goal supervisor.Task) (orchestrator.Plan, error) {
+	close(p.entered)
+	<-p.release
+	return p.inner.Plan(goal)
+}
+
 func TestTC112_05_RegistryRecordsOrderedTransitions(t *testing.T) {
 	reg := orchestrator.NewStatusRegistry()
 	rep := &fakeReporter{}
 	pol := &fakePolicy{decision: policy.DecisionAllow}
+
+	// Latch the planner so we can observe the registry WHILE the goal is Planning.
+	planEntered := make(chan struct{})
+	planRelease := make(chan struct{})
+	planner := &latchPlanner{
+		inner:   newNSubGoalPlanner("g1", 1, "coding-agent"),
+		entered: planEntered,
+		release: planRelease,
+	}
+
+	// Latch the single sub-goal's dispatch so we can observe the registry WHILE the
+	// goal is Dispatching and its sub-goal is "running" (SetState(Dispatching) at
+	// orchestrator.go ~L440 and SetSubGoal(running) at ~L552 both fire before the
+	// dispatch func is called).
+	dispEntered := make(chan struct{})
+	dispRelease := make(chan struct{})
+	dispatch := func(context.Context, orchestrator.SubGoal, runtime.Config) error {
+		close(dispEntered)
+		<-dispRelease
+		return nil
+	}
+
 	o := orchestrator.New(
-		newNSubGoalPlanner("g1", 1, "coding-agent"),
-		pol, rep, runtime.Config{},
-		orchestrator.WithDispatchFunc(func(context.Context, orchestrator.SubGoal, runtime.Config) error { return nil }),
+		planner, pol, rep, runtime.Config{},
+		orchestrator.WithDispatchFunc(dispatch),
 		orchestrator.WithStatusRegistry(reg),
 	)
 	// Mirror the control loop: register Queued before Handle.
 	reg.Register("g1", orchestrator.StateQueued)
 
-	if _, err := o.Handle(context.Background(), supervisor.Task{ID: "g1", Spec: "allow path"}); err != nil {
-		t.Fatalf("Handle: %v", err)
+	// Waypoint 0 — Queued, before Handle runs at all.
+	if st, ok := reg.Get("g1"); !ok || st.State != orchestrator.StateQueued {
+		t.Fatalf("before Handle: state = %v (ok=%v), want Queued", st.State, ok)
 	}
 
+	done := make(chan error, 1)
+	go func() {
+		_, err := o.Handle(context.Background(), supervisor.Task{ID: "g1", Spec: "allow path"})
+		done <- err
+	}()
+
+	// Waypoint 1 — Planning: sampled while the planner is held mid-call.
+	<-planEntered
+	if st, _ := reg.Get("g1"); st.State != orchestrator.StatePlanning {
+		t.Fatalf("while planner running: state = %v, want Planning", st.State)
+	}
+	close(planRelease)
+
+	// Waypoint 2 — Dispatching + sub-goal running: sampled while dispatch is held.
+	<-dispEntered
+	st, _ := reg.Get("g1")
+	if st.State != orchestrator.StateDispatching {
+		t.Fatalf("while dispatch running: state = %v, want Dispatching", st.State)
+	}
+	if len(st.SubGoals) != 1 || st.SubGoals[0].State != "running" {
+		t.Fatalf("while dispatch running: sub-goals = %+v, want exactly one in state \"running\"", st.SubGoals)
+	}
+	close(dispRelease)
+
+	// Waypoint 3 — Done + sub-goal done: sampled after Handle returns.
+	if err := <-done; err != nil {
+		t.Fatalf("Handle: %v", err)
+	}
 	st, ok := reg.Get("g1")
 	if !ok {
 		t.Fatal("registry has no entry for g1 after Handle")
 	}
-
-	// TC-112-05 ordered transitions: assert the lifecycle states were reached.
-	// The spec requires: Queued (before Handle) → Planning → Dispatching → Done.
-	// We verify this by asserting: (1) final state is Done (not an error),
-	// (2) handle was called (so Planning was reached), (3) dispatch happened (so
-	// Dispatching was reached), evidenced by sub-goal progress.
 	if st.State != orchestrator.StateDone {
 		t.Fatalf("terminal state = %v, want Done", st.State)
 	}
-
-	// Sub-goal progress proves dispatch happened and transitions were recorded
-	// (running → done happens inside dispatchOne).
-	if len(st.SubGoals) != 1 {
-		t.Fatalf("sub-goal progress entries = %d, want 1 (proves sub-goal dispatch ran)", len(st.SubGoals))
+	if len(st.SubGoals) != 1 || st.SubGoals[0].State != "done" || st.SubGoals[0].Name != "g1-sub-0" {
+		t.Fatalf("terminal sub-goal = %+v, want exactly one (g1-sub-0, done)", st.SubGoals)
 	}
-	if st.SubGoals[0].State != "done" {
-		t.Fatalf("sub-goal[0].State = %q, want \"done\" (final sub-goal state after dispatch)", st.SubGoals[0].State)
-	}
-	if st.SubGoals[0].Name != "g1-sub-0" {
-		t.Fatalf("sub-goal[0].Name = %q, want g1-sub-0", st.SubGoals[0].Name)
-	}
-
-	// Verify the lifecycle path: initial Queued, then Handle transitions Planning,
-	// Dispatching (evidenced by successful sub-goal dispatch), then Done.
-	// The orchestrator's Handle method calls SetState in this order:
-	//   Intake → Planning (in Handle)
-	//   → Dispatching (in dispatchPlan)
-	//   → Done (in dispatchPlan after join)
-	// The sub-goal dispatch SetSubGoal running → done inside dispatchOne.
-	// Final assertion: all required lifecycle edges were traversed (proven by final
-	// state being Done with successful sub-goal terminal state).
-	t.Logf("TC-112-05 ordered transitions verified: Queued(initial)→Planning(Handle)→Dispatching(dispatchPlan)→Done(after join); sub-goal running→done(dispatchOne)")
+	// Each of the four waypoints above was asserted against the LIVE registry at the
+	// moment that phase was in flight, so the ordered sequence
+	// Queued → Planning → Dispatching(+sub-goal running) → Done(+sub-goal done) is
+	// proven by observation, not inferred from the terminal state.
 }
 
 // noopRegistry is a *StatusRegistry whose state-write effect is suppressed: we
@@ -337,13 +382,14 @@ func TestTC112_06_AuditChainValidUnderConcurrency(t *testing.T) {
 		}
 		t.Logf("TC-112-06 L3: audit-trail verify → valid=%v on %d-event %d×%d chain", res.Valid, len(events), goals, subPerGoal)
 	} else {
-		// L2 fallback: FakeSink guarantees ordering within each Append call and is
-		// mutex-guarded, so append integrity is preserved. The test already asserts
-		// exact event count and per-worker coverage above. The FakeSink is designed
-		// so that Append is mutex-guarded and events are appended deterministically;
-		// concurrent appends cannot corrupt the in-memory slice. This suffices for L2
-		// and L3 binary-deferred to FakeSink.
-		t.Logf("TC-112-06 L2: FakeSink concurrency safety — mutex-guarded Append on 1 chain preserves order + count (%d events from %d×%d goals)", len(events), goals, subPerGoal)
+		// L2 only (binary absent): the standing assertions are the exact per-action
+		// event counts above — they prove no event was lost or duplicated when M×N
+		// goroutines appended to the one mutex-guarded sink. Hash-link VALIDITY is a
+		// property of the external audit-trail block and is asserted at L3 above when
+		// AGENT_BUILDER_AUDIT_BIN is set; without the binary it is genuinely
+		// unverifiable in-process (no in-repo hash-chaining sink by ADR 026), so it is
+		// deferred — not stubbed.
+		t.Logf("TC-112-06: AGENT_BUILDER_AUDIT_BIN unset — chain-validity (L3) deferred; L2 standing assertion is exact event count (%d events from %d×%d goals, no loss under contention)", len(events), goals, subPerGoal)
 	}
 }
 
