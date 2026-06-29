@@ -289,7 +289,7 @@ func (e *ClaudeCLI) validateIngestionPolicy() error {
 }
 
 func buildClaudePrompt(task supervisor.Task, worktree, branchPath string) string {
-	return fmt.Sprintf(`You are running inside agent-builder as the Claude Code CLI executor.
+	prompt := fmt.Sprintf(`You are running inside agent-builder as the Claude Code CLI executor.
 
 Task ID: %s
 Repo: %s
@@ -300,6 +300,12 @@ Read the task spec, implement the requested change in this worktree, run the rel
 When finished, write only the produced branch name to this file:
 %s
 `, task.ID, task.Repo, task.Spec, worktree, branchPath)
+
+	if task.PriorFailure != "" {
+		prompt += fmt.Sprintf("\nYour previous attempt failed the verification gate.\n\n%s\n", task.PriorFailure)
+	}
+
+	return prompt
 }
 
 // claudeEnv builds the subprocess environment. When baseURL is non-empty (local entry),

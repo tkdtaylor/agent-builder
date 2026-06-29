@@ -123,7 +123,7 @@ func (g *GeminiCLI) run(ctx context.Context, task supervisor.Task) (supervisor.R
 
 // buildGeminiPrompt constructs the task prompt passed to the Gemini CLI.
 func buildGeminiPrompt(task supervisor.Task, worktree string) string {
-	return fmt.Sprintf(`You are running inside agent-builder as the Gemini CLI executor.
+	prompt := fmt.Sprintf(`You are running inside agent-builder as the Gemini CLI executor.
 
 Task ID: %s
 Repo: %s
@@ -134,6 +134,12 @@ Read the task spec, implement the requested change in this worktree, run the rel
 When finished, write the produced branch name as the last line of your output in the format:
 BRANCH: <branch-name>
 `, task.ID, task.Repo, task.Spec, worktree)
+
+	if task.PriorFailure != "" {
+		prompt += fmt.Sprintf("\nYour previous attempt failed the verification gate.\n\n%s\n", task.PriorFailure)
+	}
+
+	return prompt
 }
 
 // geminiEnv constructs the subprocess environment with the Gemini API key injected.

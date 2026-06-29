@@ -814,3 +814,77 @@ func TestNewClaudeCLIFromEntryLocalModeEnv(t *testing.T) {
 		}
 	}
 }
+
+// TestClaudePromptIncludesFailureSectionWhenPriorFailureSet verifies that buildClaudePrompt
+// includes the gate-failure section when task.PriorFailure is non-empty.
+// TC-108-01
+func TestClaudePromptIncludesFailureSectionWhenPriorFailureSet(t *testing.T) {
+	task := supervisor.Task{
+		ID:           "001",
+		Repo:         "exec-sandbox",
+		Spec:         "/tasks/001.md",
+		PriorFailure: "Failed step: go-fmt\nOutput:\nbad_file.go\nFix these issues before producing the branch.",
+	}
+	prompt := buildClaudePrompt(task, "/worktree", "/tmp/branch.txt")
+
+	// Assert: contains "previous attempt"
+	if !strings.Contains(prompt, "previous attempt") {
+		t.Errorf("prompt missing 'previous attempt', got:\n%s", prompt)
+	}
+
+	// Assert: contains "verification gate"
+	if !strings.Contains(prompt, "verification gate") {
+		t.Errorf("prompt missing 'verification gate', got:\n%s", prompt)
+	}
+
+	// Assert: contains the step name from PriorFailure
+	if !strings.Contains(prompt, "go-fmt") {
+		t.Errorf("prompt missing 'go-fmt', got:\n%s", prompt)
+	}
+
+	// Assert: contains the step output from PriorFailure
+	if !strings.Contains(prompt, "bad_file.go") {
+		t.Errorf("prompt missing 'bad_file.go', got:\n%s", prompt)
+	}
+
+	// Assert: contains "Fix these issues"
+	if !strings.Contains(prompt, "Fix these issues") {
+		t.Errorf("prompt missing 'Fix these issues', got:\n%s", prompt)
+	}
+}
+
+// TestClaudePromptOmitsFailureSectionWhenPriorFailureEmpty verifies that buildClaudePrompt
+// OMITS the gate-failure section when task.PriorFailure is empty.
+// TC-108-02
+func TestClaudePromptOmitsFailureSectionWhenPriorFailureEmpty(t *testing.T) {
+	task := supervisor.Task{
+		ID:   "001",
+		Repo: "exec-sandbox",
+		Spec: "/tasks/001.md",
+		// PriorFailure is zero-value ""
+	}
+	prompt := buildClaudePrompt(task, "/worktree", "/tmp/branch.txt")
+
+	// Assert: does NOT contain "previous attempt"
+	if strings.Contains(prompt, "previous attempt") {
+		t.Errorf("prompt should not contain 'previous attempt' when PriorFailure is empty, got:\n%s", prompt)
+	}
+
+	// Assert: does NOT contain "verification gate"
+	if strings.Contains(prompt, "verification gate") {
+		t.Errorf("prompt should not contain 'verification gate' when PriorFailure is empty, got:\n%s", prompt)
+	}
+
+	// Assert: does NOT contain "Fix these issues"
+	if strings.Contains(prompt, "Fix these issues") {
+		t.Errorf("prompt should not contain 'Fix these issues' when PriorFailure is empty, got:\n%s", prompt)
+	}
+
+	// Assert: core content is present
+	if !strings.Contains(prompt, "Task ID: 001") {
+		t.Errorf("core prompt missing 'Task ID: 001', got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "/worktree") {
+		t.Errorf("core prompt missing '/worktree', got:\n%s", prompt)
+	}
+}

@@ -113,13 +113,17 @@ func (o *OllamaNative) Run(t supervisor.Task) (supervisor.Result, error) {
 	ctx := context.Background() // TODO: context should come from supervisor
 
 	// Initialize messages with the initial prompt
+	initialContent := fmt.Sprintf(
+		"Task ID: %s\nRepo: %s\nSpec: %s\n\nYou are an autonomous coding agent. Use the provided tools to complete this task.",
+		t.ID, t.Repo, t.Spec,
+	)
+	if t.PriorFailure != "" {
+		initialContent += fmt.Sprintf("\n\nYour previous attempt failed the verification gate.\n\n%s\n", t.PriorFailure)
+	}
 	messages := []ollamaclient.Message{
 		{
-			Role: "user",
-			Content: fmt.Sprintf(
-				"Task ID: %s\nRepo: %s\nSpec: %s\n\nYou are an autonomous coding agent. Use the provided tools to complete this task.",
-				t.ID, t.Repo, t.Spec,
-			),
+			Role:    "user",
+			Content: initialContent,
 		},
 	}
 

@@ -544,3 +544,337 @@ func TestTC10602_LoopForwardsObjectArgsToRealToolSet(t *testing.T) {
 		t.Errorf("committed out.txt on branch = %q, want DONE", c)
 	}
 }
+
+// capturingChatter records the first ChatRequest and returns a terminal response.
+// Used for testing that the initial message content includes the failure section.
+type capturingChatter struct {
+	firstRequest *ollamaclient.ChatRequest
+}
+
+func (c *capturingChatter) Chat(ctx context.Context, req ollamaclient.ChatRequest) (ollamaclient.ChatResponse, error) {
+	if c.firstRequest == nil {
+		// Capture the first request
+		c.firstRequest = &ollamaclient.ChatRequest{
+			Model:    req.Model,
+			Messages: make([]ollamaclient.Message, len(req.Messages)),
+			Tools:    make([]ollamaclient.Tool, len(req.Tools)),
+		}
+		copy(c.firstRequest.Messages, req.Messages)
+		copy(c.firstRequest.Tools, req.Tools)
+	}
+	// Return a terminal response (no tool calls) so the loop terminates
+	return ollamaclient.ChatResponse{
+		Message: ollamaclient.Message{
+			Role:    "assistant",
+			Content: "Task complete.",
+		},
+	}, nil
+}
+
+// TestOllamaNativeInitialMessageIncludesFailureSectionWhenPriorFailureSet verifies that
+// OllamaNative.Run includes the gate-failure section in the initial user message when
+// task.PriorFailure is non-empty.
+// TC-108-07
+func TestOllamaNativeInitialMessageIncludesFailureSectionWhenPriorFailureSet(t *testing.T) {
+	tmpDir := t.TempDir()
+	initGitRepo(t, tmpDir)
+
+	chatter := &capturingChatter{}
+	toolDispatcher := &stubToolDispatcher{
+		toolSchemas: []ollamaclient.Tool{},
+		branchFile:  filepath.Join(tmpDir, "BRANCH"),
+		dispatchFunc: func(toolName, argsJSON string) (string, error) {
+			// Write the branch file on finish_branch call
+			if toolName == "finish_branch" {
+				var args struct {
+					Branch string `json:"branch"`
+				}
+				if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+					return "", err
+				}
+				if err := os.WriteFile(filepath.Join(tmpDir, "BRANCH"), []byte(args.Branch), 0644); err != nil {
+					return "", err
+				}
+				return "branch finished", nil
+			}
+			return "", errors.New("unknown tool")
+		},
+	}
+
+	cfg := OllamaNativeConfig{
+		Endpoint: "http://localhost:11434",
+		Model:    "qwen3:8b",
+		Worktree: tmpDir,
+	}
+
+	executor, err := newOllamaNativeWithChatter(cfg, chatter, toolDispatcher)
+	if err != nil {
+		t.Fatalf("newOllamaNativeWithChatter: %v", err)
+	}
+
+	task := supervisor.Task{
+		ID:           "001",
+		Repo:         "exec-sandbox",
+		Spec:         "/tasks/001.md",
+		PriorFailure: "Failed step: go-build\nOutput:\n./main.go:5: undefined: Foo\nFix these issues before producing the branch.",
+	}
+
+	_, err = executor.Run(task)
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	if chatter.firstRequest == nil {
+		t.Fatal("capturingChatter did not capture a request")
+	}
+
+	if len(chatter.firstRequest.Messages) == 0 {
+		t.Fatal("capturedRequest has no messages")
+	}
+
+	firstMsg := chatter.firstRequest.Messages[0]
+
+	// Assert: Role is "user"
+	if firstMsg.Role != "user" {
+		t.Errorf("firstMsg.Role = %q, want %q", firstMsg.Role, "user")
+	}
+
+	// Assert: contains "previous attempt"
+	if !strings.Contains(firstMsg.Content, "previous attempt") {
+		t.Errorf("message missing 'previous attempt', got:\n%s", firstMsg.Content)
+	}
+
+	// Assert: contains "verification gate"
+	if !strings.Contains(firstMsg.Content, "verification gate") {
+		t.Errorf("message missing 'verification gate', got:\n%s", firstMsg.Content)
+	}
+
+	// Assert: contains the step name from PriorFailure
+	if !strings.Contains(firstMsg.Content, "go-build") {
+		t.Errorf("message missing 'go-build', got:\n%s", firstMsg.Content)
+	}
+
+	// Assert: contains the step output from PriorFailure
+	if !strings.Contains(firstMsg.Content, "undefined: Foo") {
+		t.Errorf("message missing 'undefined: Foo', got:\n%s", firstMsg.Content)
+	}
+}
+
+// TestOllamaNativeInitialMessageOmitsFailureSectionWhenPriorFailureEmpty verifies that
+// OllamaNative.Run OMITS the gate-failure section in the initial user message when
+// task.PriorFailure is empty.
+// TC-108-08
+func TestOllamaNativeInitialMessageOmitsFailureSectionWhenPriorFailureEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	initGitRepo(t, tmpDir)
+
+	chatter := &capturingChatter{}
+	toolDispatcher := &stubToolDispatcher{
+		toolSchemas: []ollamaclient.Tool{},
+		branchFile:  filepath.Join(tmpDir, "BRANCH"),
+		dispatchFunc: func(toolName, argsJSON string) (string, error) {
+			// Write the branch file on finish_branch call
+			if toolName == "finish_branch" {
+				var args struct {
+					Branch string `json:"branch"`
+				}
+				if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+					return "", err
+				}
+				if err := os.WriteFile(filepath.Join(tmpDir, "BRANCH"), []byte(args.Branch), 0644); err != nil {
+					return "", err
+				}
+				return "branch finished", nil
+			}
+			return "", errors.New("unknown tool")
+		},
+	}
+
+	cfg := OllamaNativeConfig{
+		Endpoint: "http://localhost:11434",
+		Model:    "qwen3:8b",
+		Worktree: tmpDir,
+	}
+
+	executor, err := newOllamaNativeWithChatter(cfg, chatter, toolDispatcher)
+	if err != nil {
+		t.Fatalf("newOllamaNativeWithChatter: %v", err)
+	}
+
+	task := supervisor.Task{
+		ID:   "001",
+		Repo: "exec-sandbox",
+		Spec: "/tasks/001.md",
+		// PriorFailure is zero-value ""
+	}
+
+	_, err = executor.Run(task)
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	if chatter.firstRequest == nil {
+		t.Fatal("capturingChatter did not capture a request")
+	}
+
+	if len(chatter.firstRequest.Messages) == 0 {
+		t.Fatal("capturedRequest has no messages")
+	}
+
+	firstMsg := chatter.firstRequest.Messages[0]
+
+	// Assert: Role is "user"
+	if firstMsg.Role != "user" {
+		t.Errorf("firstMsg.Role = %q, want %q", firstMsg.Role, "user")
+	}
+
+	// Assert: does NOT contain "previous attempt"
+	if strings.Contains(firstMsg.Content, "previous attempt") {
+		t.Errorf("message should not contain 'previous attempt' when PriorFailure is empty, got:\n%s", firstMsg.Content)
+	}
+
+	// Assert: does NOT contain "verification gate"
+	if strings.Contains(firstMsg.Content, "verification gate") {
+		t.Errorf("message should not contain 'verification gate' when PriorFailure is empty, got:\n%s", firstMsg.Content)
+	}
+
+	// Assert: core content is present
+	if !strings.Contains(firstMsg.Content, "Task ID: 001") {
+		t.Errorf("message missing 'Task ID: 001', got:\n%s", firstMsg.Content)
+	}
+}
+
+// TestSpecBehaviorsUpdatedForAllHarnesses verifies that docs/spec/behaviors.md
+// documents that all four executors propagate gate-failure detail into their prompts.
+// TC-108-11
+func TestSpecBehaviorsUpdatedForAllHarnesses(t *testing.T) {
+	// Try multiple paths to find the spec file
+	possiblePaths := []string{
+		"docs/spec/behaviors.md",
+		"../../../docs/spec/behaviors.md",
+		"../../docs/spec/behaviors.md",
+	}
+
+	var specContent []byte
+	var err error
+	found := false
+
+	for _, path := range possiblePaths {
+		specContent, err = os.ReadFile(path)
+		if err == nil {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		t.Skipf("could not find spec file in any of the expected locations")
+		return
+	}
+
+	specText := string(specContent)
+
+	// Assert: spec contains "PriorFailure" OR "gate-failure feedback" OR "prior failure"
+	// (task 107's guard)
+	if !strings.Contains(specText, "PriorFailure") &&
+		!strings.Contains(specText, "gate-failure feedback") &&
+		!strings.Contains(specText, "prior failure") {
+		t.Errorf("spec missing PriorFailure / gate-failure / prior failure reference")
+	}
+
+	// Assert: spec contains all four harnesses or collective term
+	hasClaude := strings.Contains(specText, "Claude")
+	hasCodex := strings.Contains(specText, "Codex")
+	hasGemini := strings.Contains(specText, "Gemini")
+	hasOllama := strings.Contains(specText, "Ollama")
+	hasAllExecutors := strings.Contains(specText, "all executors") || strings.Contains(specText, "every harness")
+
+	allHarnessesNamed := hasClaude && hasCodex && hasGemini && hasOllama
+	if !allHarnessesNamed && !hasAllExecutors {
+		t.Errorf("spec missing indication that all four harnesses consume PriorFailure")
+	}
+}
+
+// TestCrossHarnessFailureSectionConsistency verifies that all four prompt builders
+// include "previous attempt" and "verification gate" when PriorFailure is non-empty.
+// TC-108-09
+func TestCrossHarnessFailureSectionConsistency(t *testing.T) {
+	priorFailure := "Failed step: go-test\nOutput:\nFAIL TestX\nFix these issues before producing the branch."
+	task := supervisor.Task{
+		ID:           "001",
+		Repo:         "exec-sandbox",
+		Spec:         "/tasks/001.md",
+		PriorFailure: priorFailure,
+	}
+
+	// Build prompts from all four harnesses
+	claudeOut := buildClaudePrompt(task, "/worktree", "/tmp/branch.txt")
+	codexOut := buildCodexPrompt(task, "/worktree")
+	geminiOut := buildGeminiPrompt(task, "/worktree")
+
+	// For Ollama, use the capturingChatter
+	tmpDir := t.TempDir()
+	_ = os.MkdirAll(tmpDir, 0755)
+	if err := exec.Command("git", "init", "-q", tmpDir).Run(); err != nil {
+		t.Fatalf("git init failed: %v", err)
+	}
+
+	chatter := &capturingChatter{}
+	toolDispatcher := &stubToolDispatcher{
+		toolSchemas: []ollamaclient.Tool{},
+		branchFile:  filepath.Join(tmpDir, "BRANCH"),
+	}
+
+	cfg := OllamaNativeConfig{
+		Endpoint: "http://localhost:11434",
+		Model:    "qwen3:8b",
+		Worktree: tmpDir,
+	}
+
+	executor, err := newOllamaNativeWithChatter(cfg, chatter, toolDispatcher)
+	if err != nil {
+		t.Fatalf("newOllamaNativeWithChatter: %v", err)
+	}
+
+	_, _ = executor.Run(task) // Run to populate the chatter's firstRequest
+
+	var ollamaOut string
+	if chatter.firstRequest != nil && len(chatter.firstRequest.Messages) > 0 {
+		ollamaOut = chatter.firstRequest.Messages[0].Content
+	}
+
+	// Test each output
+	outputs := []struct {
+		name string
+		out  string
+	}{
+		{"Claude", claudeOut},
+		{"Codex", codexOut},
+		{"Gemini", geminiOut},
+		{"Ollama", ollamaOut},
+	}
+
+	for _, tt := range outputs {
+		t.Run(tt.name, func(t *testing.T) {
+			// Assert: contains "previous attempt"
+			if !strings.Contains(tt.out, "previous attempt") {
+				t.Errorf("%s output missing 'previous attempt'", tt.name)
+			}
+
+			// Assert: contains "verification gate"
+			if !strings.Contains(tt.out, "verification gate") {
+				t.Errorf("%s output missing 'verification gate'", tt.name)
+			}
+
+			// Assert: contains the step name
+			if !strings.Contains(tt.out, "go-test") {
+				t.Errorf("%s output missing 'go-test'", tt.name)
+			}
+
+			// Assert: contains the step output
+			if !strings.Contains(tt.out, "FAIL TestX") {
+				t.Errorf("%s output missing 'FAIL TestX'", tt.name)
+			}
+		})
+	}
+}

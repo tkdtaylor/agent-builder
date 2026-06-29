@@ -285,3 +285,64 @@ func TestGeminiCLI_RunSubprocessNonZeroExitReturnsError(t *testing.T) {
 // ---- TC-090-05 is verified by make fitness-supervisor-isolation + make check ----
 // The compile-time assertion above ensures no import direction violation.
 // The fitness check enforces F-003 at the import-graph level.
+
+// TestGeminiPromptIncludesFailureSectionWhenPriorFailureSet verifies that buildGeminiPrompt
+// includes the gate-failure section when task.PriorFailure is non-empty.
+// TC-108-05
+func TestGeminiPromptIncludesFailureSectionWhenPriorFailureSet(t *testing.T) {
+	task := supervisor.Task{
+		ID:           "001",
+		Repo:         "exec-sandbox",
+		Spec:         "/tasks/001.md",
+		PriorFailure: "Failed step: golangci-lint\nOutput:\nerr: unused variable\nFix these issues before producing the branch.",
+	}
+	prompt := buildGeminiPrompt(task, "/worktree")
+
+	// Assert: contains "previous attempt"
+	if !strings.Contains(prompt, "previous attempt") {
+		t.Errorf("prompt missing 'previous attempt', got:\n%s", prompt)
+	}
+
+	// Assert: contains "verification gate"
+	if !strings.Contains(prompt, "verification gate") {
+		t.Errorf("prompt missing 'verification gate', got:\n%s", prompt)
+	}
+
+	// Assert: contains the step name from PriorFailure
+	if !strings.Contains(prompt, "golangci-lint") {
+		t.Errorf("prompt missing 'golangci-lint', got:\n%s", prompt)
+	}
+
+	// Assert: contains the step output from PriorFailure
+	if !strings.Contains(prompt, "unused variable") {
+		t.Errorf("prompt missing 'unused variable', got:\n%s", prompt)
+	}
+}
+
+// TestGeminiPromptOmitsFailureSectionWhenPriorFailureEmpty verifies that buildGeminiPrompt
+// OMITS the gate-failure section when task.PriorFailure is empty.
+// TC-108-06
+func TestGeminiPromptOmitsFailureSectionWhenPriorFailureEmpty(t *testing.T) {
+	task := supervisor.Task{
+		ID:   "001",
+		Repo: "exec-sandbox",
+		Spec: "/tasks/001.md",
+		// PriorFailure is zero-value ""
+	}
+	prompt := buildGeminiPrompt(task, "/worktree")
+
+	// Assert: does NOT contain "previous attempt"
+	if strings.Contains(prompt, "previous attempt") {
+		t.Errorf("prompt should not contain 'previous attempt' when PriorFailure is empty, got:\n%s", prompt)
+	}
+
+	// Assert: does NOT contain "verification gate"
+	if strings.Contains(prompt, "verification gate") {
+		t.Errorf("prompt should not contain 'verification gate' when PriorFailure is empty, got:\n%s", prompt)
+	}
+
+	// Assert: core content is present
+	if !strings.Contains(prompt, "Task ID: 001") {
+		t.Errorf("core prompt missing 'Task ID: 001', got:\n%s", prompt)
+	}
+}
