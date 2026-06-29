@@ -388,6 +388,16 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		source = newEnvMessageSource(os.Getenv, config.Stdin)
 	}
 
+	// Status handler (task 114): wire the live registry-read + Reporter-answer
+	// handler when no test override is provided. The handler captures
+	// context.Background() — a status read is a non-blocking registry snapshot
+	// that does not need the control-loop's cancellation signal (ADR 054 §3:
+	// status is immediate; it never waits on a goal actor).
+	statusHandler := ov.statusHandler
+	if statusHandler == nil {
+		statusHandler = newStatusHandler(context.Background(), registry, reporter)
+	}
+
 	return orchestrateConfig{
 		orch:          orch,
 		source:        source,
@@ -395,7 +405,7 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		registry:      registry,
 		maxGoals:      maxGoals,
 		reporter:      reporter,
-		statusHandler: ov.statusHandler,
+		statusHandler: statusHandler,
 	}, cleanup, nil
 }
 
