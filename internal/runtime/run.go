@@ -102,6 +102,13 @@ type Config struct {
 	GitHubToken      string
 	RecipeName       string
 
+	// DispatchedTask is set by the orchestrate dispatch path (ADR 055 seam 2, task 119).
+	// When non-nil, Run uses this single task as the worker's goal instead of
+	// calling the recipe's file-based GoalSourceFactory (which would read task files
+	// from TaskRoot). The single-task `run` subcommand leaves this nil, preserving
+	// its existing file-discovery behaviour unchanged.
+	DispatchedTask *supervisor.Task
+
 	// Vault wiring (ADR 036, task 066). VaultBin empty => vault disabled.
 	VaultBin       string
 	VaultSocket    string
@@ -568,9 +575,18 @@ func Run(ctx context.Context, config Config, stdout io.Writer) error {
 	// This is the thin assembler pattern: all construction flows through the recipe.
 	seamConfig := &seamConfigAdapter{config: &config}
 
-	goalSource, err := r.GoalSourceFactory(seamConfig)
-	if err != nil {
-		return fmt.Errorf("run: construct goal source: %w", err)
+	// Goal source: if the orchestrate dispatch path seeded a DispatchedTask (ADR 055
+	// seam 2, task 119), bypass the recipe's file-based GoalSourceFactory and yield
+	// that one task directly. The single-task `run` subcommand always leaves
+	// DispatchedTask nil, so its tasksource file-discovery path is unchanged.
+	var goalSource supervisor.GoalSource
+	if config.DispatchedTask != nil {
+		goalSource = &singleTaskSource{task: *config.DispatchedTask}
+	} else {
+		goalSource, err = r.GoalSourceFactory(seamConfig)
+		if err != nil {
+			return fmt.Errorf("run: construct goal source: %w", err)
+		}
 	}
 
 	resultSink, err := r.ResultSinkFactory(seamConfig)
@@ -1376,3 +1392,4 @@ func newProductionGate() (supervisor.Gate, error) {
 	}
 	return verifier, nil
 }
+

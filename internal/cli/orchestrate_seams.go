@@ -23,6 +23,12 @@ import (
 // non-portable crypto/rand fault injection (SEC-001 fault-injection seam).
 var generateSealKeyPair = envelope.GenerateKeyPair
 
+// runWorker is the seam the orchestrate dispatch closure uses to run a per-worker
+// runtime assembly (ADR 055 seam 2, task 119). Tests override it with a spy that
+// records the Config.DispatchedTask the worker would have consumed, without
+// launching a real sandbox.
+var runWorker = runtimewiring.Run
+
 // newTransportDispatch returns the live DispatchFunc for the orchestrate path. It
 // round-trips every sub-goal through the worker envelope transport (ADR 048) before
 // declaring the dispatch done:
@@ -79,6 +85,16 @@ func newTransportDispatch(signingKey ed25519.PrivateKey, workItemCache, resultCa
 	})
 
 	dispatch := orchestrator.DispatchFunc(func(ctx context.Context, sub orchestrator.SubGoal, base runtimewiring.Config) error {
+		// Fail fast: a blank task ID or Spec is a hard error — dispatching an
+		// empty goal would silently no-op the worker and produce a false-OK result
+		// (ADR 055 seam 2, task 119 TC-003; interacts with task 120 honest-result).
+		if sub.Task.ID == "" {
+			return fmt.Errorf("orchestrate dispatch: sub-goal has blank Task.ID — refusing to dispatch an empty goal")
+		}
+		if sub.Task.Spec == "" {
+			return fmt.Errorf("orchestrate dispatch: sub-goal %q has blank Task.Spec — refusing to dispatch an empty goal", sub.Task.ID)
+		}
+
 		env, err := workItemSender.DispatchWorkItem(sub.Task)
 		if err != nil {
 			return fmt.Errorf("orchestrate dispatch: seal work-item for %q: %w", sub.Task.ID, err)
@@ -92,9 +108,14 @@ func newTransportDispatch(signingKey ed25519.PrivateKey, workItemCache, resultCa
 		// per-goal cancel context (ADR 054 §5, task 116) is threaded into runtime.Run
 		// so a `cancel <goalID>` tears down this in-flight worker via the run-loop's
 		// case <-ctx.Done(): arm (the same box.Kill/Teardown path as the timeout).
+		//
+		// DispatchedTask seeds the worker's goal source (ADR 055 seam 2, task 119):
+		// the worker uses singleTaskSource{sub.Task} instead of reading task files
+		// from TaskRoot, so the dispatched goal drives execution.
 		cfg := base
 		cfg.RecipeName = sub.RecipeName
-		if runErr := runtimewiring.Run(ctx, cfg, io.Discard); runErr != nil {
+		cfg.DispatchedTask = &sub.Task
+		if runErr := runWorker(ctx, cfg, io.Discard); runErr != nil {
 			return runErr
 		}
 		// Replay-check the worker's result envelope against the SHARED result cache,

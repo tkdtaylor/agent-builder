@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** agent-builder
-**Last updated:** 2026-06-28 (task 084 — memory-guard adoption: memoryguard adapter + TamperAwarePlanStore + WithAuditSink)
+**Last updated:** 2026-06-29 (task 119 — ADR 055 seam 2: DispatchedTask goal-source seam + runWorker spy seam; blank-task hard error)
 
 The system's contact surface — everything that calls into the system, everything the system calls out to, and the public boundaries within the system. Each interface is a stable contract: changes here are breaking changes.
 
@@ -898,6 +898,12 @@ type Config struct {
 	GitHubCLI        string
 	GitToken         string
 	GitHubToken      string
+
+	// DispatchedTask (ADR 055 seam 2, task 119): when non-nil, Run uses this
+	// single task as the worker's goal instead of calling the recipe's
+	// file-based GoalSourceFactory. Set by the orchestrate dispatch closure;
+	// nil for the single-task `run` subcommand (file-discovery unchanged).
+	DispatchedTask *supervisor.Task
 }
 
 func ConfigFromEnv(getenv func(string) string) (Config, error)
@@ -913,8 +919,15 @@ func RunFromEnv(ctx context.Context, stdout io.Writer) error
   a teardown leak). The single-task CLI path passes `context.Background()` (no cancel
   trigger; the timeout is the only kill). The orchestrate path passes the goal's derived
   cancel context, so a `cancel <goalID>` tears down that goal's in-flight workers.
+- **Goal-source seam (ADR 055 seam 2, task 119):** when `DispatchedTask` is non-nil,
+  `Run` bypasses the recipe's file-based `GoalSourceFactory` and seeds a
+  `singleTaskSource` from `*DispatchedTask` — the dispatched sub-goal drives the worker.
+  When `DispatchedTask` is nil (the `run` subcommand path), `Run` calls the recipe's
+  `GoalSourceFactory` as before (tasksource file-discovery, unchanged). The orchestrate
+  dispatch closure validates that `Task.ID` and `Task.Spec` are non-blank before setting
+  this field; a blank ID or Spec is a hard error that prevents the worker from starting.
 - **Consumers:** `internal/cli` uses `RunFromEnv` as the default implementation of `agent-builder run`.
-- **Collaborators:** `tasksource.Source`, `executor.ClaudeCLI`, production `gate.Gate`, `sandboxruntime.Runner`, supervisor dispatch seams, `loop.RetryingLoop`, and `publisher.GitHubCLI`.
+- **Collaborators:** `tasksource.Source` (run-subcommand path) / `singleTaskSource` (orchestrate path), `executor.ClaudeCLI`, production `gate.Gate`, `sandboxruntime.Runner`, supervisor dispatch seams, `loop.RetryingLoop`, and `publisher.GitHubCLI`.
 - **Required behavior:** required configuration is validated before task selection mutates status or the Executor can start. The runtime selects at most one task, gives that task to the supervisor, publishes only after Executor success plus Gate pass plus non-empty branch capture, and records pick/attempt/verify/publish/finish evidence through the supervisor RunRecord streams when configured.
 
 ### Interface: branch publisher
