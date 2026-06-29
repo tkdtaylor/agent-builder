@@ -47,9 +47,15 @@ var runWorker = runtimewiring.Run
 // in-process hop; the long-lived, file-backed, fail-closed-checked key is the
 // Ed25519 signing key (signingKey), which is what 083 SEC-003 guards.
 //
+// reporter receives a success or failure report for each dispatched sub-goal (ADR
+// 055 seam 3, task 120): OK only when the worker returned nil; any error (gate
+// failure, executor failure, or idle/no-op run) is reported as a failure and
+// carries the sub-goal identity so the operator can see which sub-goal failed.
+// A nil reporter silently discards the report (safe no-op).
+//
 // Returns a non-nil error if keypair generation fails (SEC-001: fail fast on
 // crypto/rand failure rather than silently sealing under zero keys).
-func newTransportDispatch(signingKey ed25519.PrivateKey, workItemCache, resultCache *envelope.ReplayCache, sink audit.Sink, logger *slog.Logger) (orchestrator.DispatchFunc, error) {
+func newTransportDispatch(signingKey ed25519.PrivateKey, workItemCache, resultCache *envelope.ReplayCache, sink audit.Sink, logger *slog.Logger, reporter supervisor.Reporter) (orchestrator.DispatchFunc, error) {
 	// Generate the X25519 seal keypairs for the in-process wire once. Both ends are
 	// in-process, so the orchestrator owns both halves of the seal for v1.
 	orchXPub, orchXPriv, err := generateSealKeyPair()
@@ -115,19 +121,37 @@ func newTransportDispatch(signingKey ed25519.PrivateKey, workItemCache, resultCa
 		cfg := base
 		cfg.RecipeName = sub.RecipeName
 		cfg.DispatchedTask = &sub.Task
-		if runErr := runWorker(ctx, cfg, io.Discard); runErr != nil {
-			return runErr
-		}
+		runErr := runWorker(ctx, cfg, io.Discard)
+
+		// Seal+sign the worker's REAL result (ADR 055 seam 3, task 120): OK only
+		// when the worker returned nil. Any error (gate failure, executor failure,
+		// or an idle/no-op run) is carried as OK:false — never masked as a success.
+		result := supervisor.Result{OK: runErr == nil}
+
 		// Replay-check the worker's result envelope against the SHARED result cache,
 		// closing the replay window on the return path.
-		resEnv, err := resultSender.DispatchResult(supervisor.Result{OK: true})
+		resEnv, err := resultSender.DispatchResult(result)
 		if err != nil {
 			return fmt.Errorf("orchestrate dispatch: seal result for %q: %w", sub.Task.ID, err)
 		}
 		if _, err := resultReceiver.ReceiveResult(resEnv); err != nil {
 			return fmt.Errorf("orchestrate dispatch: verify result for %q: %w", sub.Task.ID, err)
 		}
-		return nil
+
+		// Report the real outcome to the operator (ADR 055 seam 3, task 120).
+		// A nil reporter is a safe no-op; report errors are swallowed (a failed
+		// report must not override the worker's real outcome).
+		if reporter != nil {
+			var reportText string
+			if runErr == nil {
+				reportText = fmt.Sprintf("worker completed sub-goal %q", sub.Task.ID)
+			} else {
+				reportText = fmt.Sprintf("worker failed sub-goal %q: %v", sub.Task.ID, runErr)
+			}
+			_ = reporter.Report(ctx, reportText)
+		}
+
+		return runErr
 	})
 	return dispatch, nil
 }
