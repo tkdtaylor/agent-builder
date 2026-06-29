@@ -142,6 +142,12 @@ type SubGoalOutcome struct {
 	// so the orchestrate feedback path can route it to bounded reevaluation and then
 	// to an independent human escalation. nil for success and for non-policy failures.
 	Blocked *loop.BlockedAction
+	// ReevaluationOutcome carries the result of bounded reevaluation on a blocked
+	// action (ADR 055 seam 4, task 123): either an escalation to human (needs-human)
+	// or a resolved replan. Set only when Blocked != nil and reevaluation was attempted.
+	// nil for success and for non-policy failures. The caller (reporter) surfaces this
+	// to the operator.
+	ReevaluationOutcome loop.ReevaluationOutcome
 }
 
 // PlanResult is the aggregated typed outcome of a dispatched plan (ADR 046 §2).
@@ -264,6 +270,17 @@ type Orchestrator struct {
 	// pre-112 unbounded behaviour, used by single-goal unit tests). Set via
 	// WithWorkerSemaphore.
 	workerSem *Semaphore
+	// statusWriter is the task status writer for escalation (ADR 055 seam 4, task 123).
+	// When non-nil and a blocked outcome is reevaluated, dispatchPlan calls
+	// ReevaluateBlockedSpawn with this writer. A nil writer disables reevaluation
+	// escalation writes — the reevaluation still runs if the writer is nil, but
+	// escalation status updates are skipped (a no-op, consistent with nil registry
+	// and nil semaphore). Set via WithStatusWriter.
+	statusWriter loop.StatusWriter
+	// reevaluationBound is the max reevaluation attempts before escalating a blocked
+	// action (ADR 055 seam 4, task 123). It defaults to AGENT_BUILDER_MAX_ATTEMPTS
+	// when unset (zero). Set via WithReevaluationBound.
+	reevaluationBound int
 }
 
 // Option configures an Orchestrator.
@@ -315,6 +332,23 @@ func WithStatusRegistry(r *StatusRegistry) Option {
 // all goal actors so the bound is fleet-wide, not per-goal.
 func WithWorkerSemaphore(s *Semaphore) Option {
 	return func(o *Orchestrator) { o.workerSem = s }
+}
+
+// WithStatusWriter sets the task status writer used for escalation on blocked actions
+// (ADR 055 seam 4, task 123). When unset (nil), bounded reevaluation still runs but
+// escalation writes are skipped (the reevaluation is a no-op on escalation, mirroring
+// nil registry / nil semaphore). The orchestrate CLI assembles a real writer from the
+// task root; single-goal tests may pass nil or inject a spy.
+func WithStatusWriter(w loop.StatusWriter) Option {
+	return func(o *Orchestrator) { o.statusWriter = w }
+}
+
+// WithReevaluationBound sets the max reevaluation attempts before escalating a blocked
+// action (ADR 055 seam 4, task 123). When unset (zero), defaults to the same bound
+// as AGENT_BUILDER_MAX_ATTEMPTS (gate-failure retries). The orchestrate CLI reads the
+// env var and supplies it via this option.
+func WithReevaluationBound(bound int) Option {
+	return func(o *Orchestrator) { o.reevaluationBound = bound }
 }
 
 // New constructs an Orchestrator. planner, pol, and reporter are required.
@@ -687,6 +721,42 @@ func (o *Orchestrator) dispatchPlan(ctx context.Context, plan Plan) (PlanResult,
 		if err != nil {
 			o.registry.SetState(plan.GoalID, StateFailed)
 			return result, fmt.Errorf("orchestrator: audit spawn-decided deny: %w", err)
+		}
+	}
+
+	// Post-join reevaluation (ADR 055 seam 4, task 123): for each blocked outcome,
+	// invoke bounded reevaluation and fold the result into the outcome. Reevaluation
+	// runs serially AFTER the join (not inside per-sub-goal goroutines) so the shared
+	// planner is never raced. A nil statusWriter skips the reevaluation escalation
+	// write (no-op, consistent with nil registry / nil semaphore). The reevaluation
+	// outcome is recorded but does NOT trigger re-dispatch on this cycle — re-dispatch
+	// on a resolved replan is a follow-up task. The reevaluation bound defaults to
+	// the base config's MaxAttempts when unset (zero).
+	if o.statusWriter != nil {
+		bound := o.reevaluationBound
+		if bound <= 0 {
+			bound = o.baseConfig.MaxAttempts
+		}
+		for i := range result.Outcomes {
+			outcome := &result.Outcomes[i]
+			if outcome.Blocked != nil {
+				// Reconstruct the supervisor.Task for ReevaluateBlockedSpawn from the
+				// plan (two fields are sufficient: ID and Spec, per task 123 design notes).
+				goal := supervisor.Task{ID: plan.GoalID, Spec: plan.Goal}
+				reevOutcome, err := o.ReevaluateBlockedSpawn(
+					goal,
+					*outcome.Blocked,
+					bound,
+					o.statusWriter,
+				)
+				if err != nil {
+					// A reevaluation error is not a plan-halt signal (best-effort
+					// escalation). Log it but continue.
+					_ = o.reporter.Report(ctx, fmt.Sprintf("reevaluation error: %v", err))
+				} else {
+					outcome.ReevaluationOutcome = reevOutcome
+				}
+			}
 		}
 	}
 
