@@ -63,9 +63,9 @@ func TestFormatFailureGateFail(t *testing.T) {
 		t.Errorf("expected 'Fix these issues' in result, got: %s", result)
 	}
 
-	// Verify go-build is NOT included (only first failing step)
-	if strings.Contains(result, "go-build") && strings.Index(result, "go-test") < strings.Index(result, "go-build") {
-		t.Errorf("expected only first failing step, but go-build appears in result: %s", result)
+	// Verify go-build (a passing step) is NOT included at all — only the first failing step.
+	if strings.Contains(result, "go-build") {
+		t.Errorf("passing step go-build must not appear in failure feedback: %s", result)
 	}
 }
 
@@ -157,9 +157,10 @@ func TestFormatFailureTruncatesLongOutput(t *testing.T) {
 	outputSection := result[outputStart:outputEnd]
 	xCount := strings.Count(outputSection, "x")
 
-	// The x count should be <= MaxFailureOutputBytes (accounting for newlines)
-	if xCount > MaxFailureOutputBytes {
-		t.Errorf("expected at most %d x characters in output section, got %d", MaxFailureOutputBytes, xCount)
+	// 3000 x's in, truncated to exactly the cap: the output section must contain
+	// exactly MaxFailureOutputBytes x characters (all-ASCII input → 1 byte/rune).
+	if xCount != MaxFailureOutputBytes {
+		t.Errorf("expected exactly %d x characters in output section, got %d", MaxFailureOutputBytes, xCount)
 	}
 }
 
@@ -289,6 +290,10 @@ func TestTaskContractAndBehaviorSpecUpdated(t *testing.T) {
 	if !strings.Contains(dataModelStr, "PriorFailure") {
 		t.Errorf("expected 'PriorFailure' in data-model.md")
 	}
+	// The entry must describe the field as populated only on retry attempts N≥2.
+	if !strings.Contains(dataModelStr, "retry attempt N≥2") {
+		t.Errorf("data-model.md must describe PriorFailure as non-empty only on retry attempt N≥2")
+	}
 
 	// Check behaviors.md
 	behaviorsContent, err := os.ReadFile(behaviorsPath)
@@ -301,6 +306,13 @@ func TestTaskContractAndBehaviorSpecUpdated(t *testing.T) {
 		!strings.Contains(strings.ToLower(behaviorsStr), "gate-failure feedback") &&
 		!strings.Contains(strings.ToLower(behaviorsStr), "priorfailure") {
 		t.Errorf("expected reference to gate-failure feedback in behaviors.md")
+	}
+	// The section must describe the first-attempt-empty / subsequent-attempt-formatted behavior.
+	if !strings.Contains(behaviorsStr, "first attempt") || !strings.Contains(behaviorsStr, `PriorFailure == ""`) {
+		t.Errorf("behaviors.md must describe that the first attempt has PriorFailure == \"\" and later attempts receive formatted failure")
+	}
+	if !strings.Contains(behaviorsStr, "FormatFailure") {
+		t.Errorf("behaviors.md must reference loop.FormatFailure as the source of the formatted failure detail")
 	}
 }
 
