@@ -1,7 +1,7 @@
 # Data Model
 
 **Project:** agent-builder
-**Last updated:** 2026-06-26
+**Last updated:** 2026-06-29 (task 133 — Antigravity harness driver added)
 
 What data exists, how it's structured, where it lives, and what relationships hold between entities. Covers persistent storage, in-memory state, and data-on-the-wire formats.
 
@@ -181,12 +181,13 @@ Availability     registry.Availability   available or exhausted-until ResetAt
 #### Value: `registry.HarnessDriver`
 
 ```
-value           notes
-─────────────────────────────────────────────────────────────────
-claude-cli      Claude Code CLI harness (also used for local models via translation proxy)
-codex-cli       Codex CLI harness
-gemini-cli      Google Gemini CLI harness
-ollama-native   Native Ollama executor harness (direct /api/chat invocation; no translation proxy)
+value              notes
+──────────────────────────────────────────────────────────────────────
+claude-cli         Claude Code CLI harness (also used for local models via translation proxy)
+codex-cli          Codex CLI harness
+gemini-cli         Google Gemini CLI harness (subscription/OAuth)
+antigravity-cli    Antigravity (`agy`) CLI harness (subscription/OAuth)
+ollama-native      Native Ollama executor harness (direct /api/chat invocation; no translation proxy)
 ```
 
 - **Identity:** discriminates the executor harness to run.

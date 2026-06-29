@@ -28,11 +28,14 @@ const TranslationProxySeam = "litellm/claude-code-router"
 //   These entries set ANTHROPIC_BASE_URL (or use native local inference) instead of injecting cloud auth.
 // - "gemini": uses Gemini subscription/OAuth login (Harness = HarnessGeminiCLI, SecretRef = "").
 //   The gemini CLI uses its own cached OAuth login (~/.gemini) and does not require an API key injected.
+// - "antigravity": uses Antigravity subscription/OAuth login (Harness = HarnessAntigravityCLI, SecretRef = "").
+//   The agy CLI uses its own cached OAuth login (~/.antigravity) and does not require an API key injected.
 var localHarnessEntries = map[string]struct{}{
 	"local-qwen":   {},
 	"local":        {},
 	"local-ollama": {},
 	"gemini":       {},
+	"antigravity":  {},
 }
 
 // LoadFromEnv reads well-known env-var prefixes and constructs enabled entries.
@@ -46,6 +49,7 @@ func LoadFromEnv() ([]RegistryEntry, error) {
 		"local-ollama":  HarnessOllamaNative,
 		"codex":         HarnessCodexCLI,
 		"gemini":        HarnessGeminiCLI,
+		"antigravity":   HarnessAntigravityCLI,
 	}
 
 	var entries []RegistryEntry

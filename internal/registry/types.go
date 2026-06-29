@@ -12,6 +12,8 @@ const (
 	HarnessCodexCLI HarnessDriver = "codex-cli"
 	// HarnessGeminiCLI is the Google Gemini CLI harness.
 	HarnessGeminiCLI HarnessDriver = "gemini-cli"
+	// HarnessAntigravityCLI is the Antigravity (agy) CLI harness.
+	HarnessAntigravityCLI HarnessDriver = "antigravity-cli"
 	// HarnessOllamaNative is the native Ollama executor harness.
 	HarnessOllamaNative HarnessDriver = "ollama-native"
 )
@@ -25,6 +27,8 @@ func (h HarnessDriver) String() string {
 		return "codex-cli"
 	case HarnessGeminiCLI:
 		return "gemini-cli"
+	case HarnessAntigravityCLI:
+		return "antigravity-cli"
 	case HarnessOllamaNative:
 		return "ollama-native"
 	default:

@@ -501,6 +501,8 @@ func buildExecutorForEntry(entry registry.RegistryEntry, config Config) (supervi
 		return executor.NewCodexCLI(entry, src, config.Worktree), nil
 	case registry.HarnessGeminiCLI:
 		return executor.NewGeminiCLI(entry, src, config.Worktree), nil
+	case registry.HarnessAntigravityCLI:
+		return executor.NewAntigravityCLI(entry, src, config.Worktree), nil
 	case registry.HarnessOllamaNative:
 		toolset, err := ollamatoolset.NewToolSet(config.Worktree)
 		if err != nil {
