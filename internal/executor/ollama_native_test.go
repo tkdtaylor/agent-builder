@@ -5,12 +5,48 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tkdtaylor/agent-builder/internal/executor/ollamaclient"
+	"github.com/tkdtaylor/agent-builder/internal/executor/ollamatoolset"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
+
+// initGitRepo initializes a git repo with one initial commit in dir, so the
+// OllamaNative terminal-branch commit step (commitWorktree) has a repo to act on.
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	run := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+	}
+	run("init", "-q")
+	run("config", "user.email", "t@t")
+	run("config", "user.name", "t")
+	if err := os.WriteFile(filepath.Join(dir, "seed.txt"), []byte("seed\n"), 0644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	run("add", "-A")
+	run("commit", "-q", "-m", "init")
+}
+
+// gitShow returns the content of path on branch in the repo at dir.
+func gitShow(t *testing.T, dir, branch, path string) string {
+	t.Helper()
+	cmd := exec.Command("git", "show", branch+":"+path)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git show %s:%s: %v: %s", branch, path, err, out)
+	}
+	return string(out)
+}
 
 // TestTC10301_OllamaNativeSatisfiesExecutorInterface verifies that OllamaNative
 // implements supervisor.Executor interface.
@@ -22,8 +58,8 @@ func TestTC10301_OllamaNativeSatisfiesExecutorInterface(t *testing.T) {
 
 // stubChatter mocks the Ollama client for testing.
 type stubChatter struct {
-	responses []ollamaclient.ChatResponse
-	callCount int
+	responses        []ollamaclient.ChatResponse
+	callCount        int
 	capturedRequests []ollamaclient.ChatRequest
 }
 
@@ -82,6 +118,7 @@ func (s *stubToolDispatcher) ExtractBranch() (string, bool) {
 func TestTC10302_LoopExecutesWriteFileAndReturnsProducedBranch(t *testing.T) {
 	// Create a temp directory for the worktree
 	tmpDir := t.TempDir()
+	initGitRepo(t, tmpDir)
 
 	// Create a stub chatter with two responses
 	branchFilePath := filepath.Join(tmpDir, "BRANCH")
@@ -94,7 +131,7 @@ func TestTC10302_LoopExecutesWriteFileAndReturnsProducedBranch(t *testing.T) {
 						{
 							Function: ollamaclient.ToolCallFunction{
 								Name:      "write_file",
-								Arguments: `{"path":"BRANCH","content":"task/103-test"}`,
+								Arguments: json.RawMessage(`{"path":"BRANCH","content":"task/103-test"}`),
 							},
 						},
 					},
@@ -180,6 +217,20 @@ func TestTC10302_LoopExecutesWriteFileAndReturnsProducedBranch(t *testing.T) {
 	if stubChatter.callCount != 2 {
 		t.Errorf("Stub client call count mismatch: got %d, want %d", stubChatter.callCount, 2)
 	}
+
+	// TC-106-04: the loop must COMMIT the worktree edits onto the produced branch,
+	// so the published branch actually contains the work (not just a name). Assert the
+	// branch exists and the model's file is committed on it with exact content.
+	if got := gitShow(t, tmpDir, "task/103-test", "BRANCH"); got != "task/103-test" {
+		t.Errorf("committed BRANCH file on branch mismatch: got %q, want %q", got, "task/103-test")
+	}
+	// The worktree must be left on the produced branch.
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = tmpDir
+	headOut, _ := cmd.CombinedOutput()
+	if strings.TrimSpace(string(headOut)) != "task/103-test" {
+		t.Errorf("worktree not left on produced branch: HEAD=%q", strings.TrimSpace(string(headOut)))
+	}
 }
 
 // TestTC10303_LoopStopsAtHardIterationCap verifies that the loop returns OK:false
@@ -197,7 +248,7 @@ func TestTC10303_LoopStopsAtHardIterationCap(t *testing.T) {
 						{
 							Function: ollamaclient.ToolCallFunction{
 								Name:      "read_file",
-								Arguments: `{"path":"x"}`,
+								Arguments: json.RawMessage(`{"path":"x"}`),
 							},
 						},
 					},
@@ -210,7 +261,7 @@ func TestTC10303_LoopStopsAtHardIterationCap(t *testing.T) {
 						{
 							Function: ollamaclient.ToolCallFunction{
 								Name:      "read_file",
-								Arguments: `{"path":"x"}`,
+								Arguments: json.RawMessage(`{"path":"x"}`),
 							},
 						},
 					},
@@ -223,7 +274,7 @@ func TestTC10303_LoopStopsAtHardIterationCap(t *testing.T) {
 						{
 							Function: ollamaclient.ToolCallFunction{
 								Name:      "read_file",
-								Arguments: `{"path":"x"}`,
+								Arguments: json.RawMessage(`{"path":"x"}`),
 							},
 						},
 					},
@@ -287,6 +338,7 @@ func TestTC10303_LoopStopsAtHardIterationCap(t *testing.T) {
 // tool results as role:"tool" messages in the next request.
 func TestTC10304_LoopAppendsToolResultsAsMessages(t *testing.T) {
 	tmpDir := t.TempDir()
+	initGitRepo(t, tmpDir)
 
 	// Create a stub chatter that captures requests
 	stubChatter := &stubChatter{
@@ -298,7 +350,7 @@ func TestTC10304_LoopAppendsToolResultsAsMessages(t *testing.T) {
 						{
 							Function: ollamaclient.ToolCallFunction{
 								Name:      "write_file",
-								Arguments: `{"path":"out.txt","content":"hello"}`,
+								Arguments: json.RawMessage(`{"path":"out.txt","content":"hello"}`),
 							},
 						},
 					},
@@ -442,4 +494,53 @@ func TestTC10306_FitnessCheckSupervisorIsolation(t *testing.T) {
 	// the supervisor package importing executor packages.
 	// The actual fitness check is run via make fitness-supervisor-isolation.
 	t.Log("Fitness check: supervisor isolation is preserved (verified via make fitness-supervisor-isolation)")
+}
+
+// TestTC10602_LoopForwardsObjectArgsToRealToolSet (REQ-106-02) drives the loop with
+// the REAL ollamatoolset.ToolSet over a git worktree: an object-form write_file tool
+// call must produce the file with exact content, then finish_branch + terminate yields
+// Result{Branch, OK}. Proves string(json.RawMessage) is forwarded to Dispatch correctly.
+func TestTC10602_LoopForwardsObjectArgsToRealToolSet(t *testing.T) {
+	tmpDir := t.TempDir()
+	initGitRepo(t, tmpDir)
+
+	toolset, err := ollamatoolset.NewToolSet(tmpDir)
+	if err != nil {
+		t.Fatalf("NewToolSet: %v", err)
+	}
+
+	chatter := &stubChatter{responses: []ollamaclient.ChatResponse{
+		{Message: ollamaclient.Message{Role: "assistant", ToolCalls: []ollamaclient.ToolCall{
+			{Function: ollamaclient.ToolCallFunction{Name: "write_file", Arguments: json.RawMessage(`{"path":"out.txt","content":"DONE"}`)}},
+		}}},
+		{Message: ollamaclient.Message{Role: "assistant", ToolCalls: []ollamaclient.ToolCall{
+			{Function: ollamaclient.ToolCallFunction{Name: "finish_branch", Arguments: json.RawMessage(`{"branch":"task/106-test"}`)}},
+		}}},
+		{Message: ollamaclient.Message{Role: "assistant", Content: "done"}},
+	}}
+
+	exec, err := newOllamaNativeWithChatter(OllamaNativeConfig{Endpoint: "http://x", Model: "m", Worktree: tmpDir}, chatter, toolset)
+	if err != nil {
+		t.Fatalf("newOllamaNativeWithChatter: %v", err)
+	}
+	result, err := exec.Run(supervisor.Task{ID: "106", Repo: "r", Spec: "s"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The object-form write_file args were forwarded to the real toolset → file written.
+	got, err := os.ReadFile(filepath.Join(tmpDir, "out.txt"))
+	if err != nil {
+		t.Fatalf("out.txt not written: %v", err)
+	}
+	if string(got) != "DONE" {
+		t.Errorf("out.txt content = %q, want DONE", string(got))
+	}
+	if result.Branch != "task/106-test" || !result.OK {
+		t.Errorf("Result = %+v, want {Branch:task/106-test OK:true}", result)
+	}
+	// And the work is committed on the produced branch.
+	if c := gitShow(t, tmpDir, "task/106-test", "out.txt"); c != "DONE" {
+		t.Errorf("committed out.txt on branch = %q, want DONE", c)
+	}
 }
