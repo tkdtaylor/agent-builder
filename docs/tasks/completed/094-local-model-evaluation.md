@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-06-27
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 
@@ -61,17 +61,17 @@ is "re-runnable and worth periodically revisiting." This task is the first run.
 ## Readiness gate
 
 - [x] Test spec `094-local-model-evaluation-test-spec.md` exists (written first)
-- [ ] Task 091 merged (local entry + translation-proxy seam — provides the config
+- [x] Task 091 merged (local entry + translation-proxy seam — provides the config
   plumbing this evaluation populates)
-- [ ] Task 092 merged (router — the routing path the local entry will participate in)
-- [ ] Inference server and translation proxy installed on target hardware
-- [ ] CUDA backend confirmed available (`nvidia-smi` shows RTX 4060)
+- [x] Task 092 merged (router — the routing path the local entry will participate in)
+- [x] Inference server and translation proxy installed on target hardware
+- [x] CUDA backend confirmed available (`nvidia-smi` shows RTX 4060)
 
 ## Acceptance criteria
 
-- [ ] [REQ-094-01] TC-094-01: ≥3 models benchmarked; TTFT/TPS/VRAM recorded; selected model meets the bars; results in verify commit
-- [ ] [REQ-094-02] TC-094-02: selected model drives `agent-builder run` via translation proxy; branch produced; gate passes for a trivial task
-- [ ] [REQ-094-03] TC-094-03: benchmark results + recommended config documented in verify commit + `docs/spec/configuration.md`; marked re-runnable
+- [x] [REQ-094-01] TC-094-01: ≥3 models benchmarked; TTFT/TPS/VRAM recorded; selected model meets the bars; results in verify commit
+- [x] [REQ-094-02] TC-094-02: selected model drives `agent-builder run`; branch produced; gate passes for a trivial task — achieved via the native Ollama harness (ADR 051), which supersedes the original claude-CLI-via-translation-proxy mechanism. L6 PASSED on target host: `qwen3:8b`/`ollama-native` produced branch `task/001-add-product` (commit `f71191a`) with all 7 gate steps green
+- [x] [REQ-094-03] TC-094-03: benchmark results + recommended config documented in verify commit + `docs/spec/configuration.md`; marked re-runnable
 
 ## Verification plan
 
