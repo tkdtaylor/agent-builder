@@ -43,9 +43,10 @@ var (
 // Task is one unit of work: build or modify exactly one target repo on its own
 // branch. One task = one repo = one branch (no cross-repo sprawl).
 type Task struct {
-	ID   string // e.g. "001"
-	Repo string // target block repo, e.g. "exec-sandbox"
-	Spec string // path to the task spec the executor must satisfy
+	ID           string // e.g. "001"
+	Repo         string // target block repo, e.g. "exec-sandbox"
+	Spec         string // path to the task spec the executor must satisfy
+	PriorFailure string // non-empty only on retry attempt N≥2; formatted gate-failure detail from previous attempt
 }
 
 // Result is what an executor returns after attempting a Task.
