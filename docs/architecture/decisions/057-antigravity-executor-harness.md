@@ -2,7 +2,8 @@
 
 **Status:** accepted  
 **Date:** 2026-06-29  
-**Related:** ADR 056 (Gemini subscription/OAuth pattern), ADR 033 (subscription auth), ADR 052 (gate-failure prompt injection), task 132 (Gemini CLI), task 133 (Antigravity implementation)
+**Related:** ADR 056 (Gemini subscription/OAuth pattern), ADR 033 (subscription auth), ADR 052 (gate-failure prompt injection), task 132 (Gemini CLI), task 133 (Antigravity implementation), task 134 (executor owns branch+commit)  
+**Amended:** 2026-06-29 (task 134) — executor owns branch creation and commit; agy's `BRANCH:` output advisory only
 
 ## Context
 
@@ -47,6 +48,21 @@ We add **`HarnessAntigravityCLI`** ("antigravity-cli") as a new executor harness
 - **Auth pattern complete**: Subscription/OAuth is now a proven pattern across two harnesses (Gemini + Antigravity). Future harnesses using self-managed OAuth can follow this template.
 - **Cross-harness prompt parity**: All executors (Claude, Codex, Gemini, Antigravity, Ollama) now share the `PriorFailure` failure-section structure (ADR 052, task 108). This ensures the router can transparently swap harnesses without the agent seeing a different prompt shape on retry.
 
+## Amendment — Task 134: Executor owns branch + commit
+
+**Finding (forensic evidence, 2026-06-29):** Live probes against `agy` v1.0.13 on two runs revealed:
+- ✅ agy **reliably edits files in-place** in the worktree (confirmed: files written to disk).
+- ❌ agy's **git/shell operations do NOT persist to the worktree repo** — `git checkout -b` + commit left repo on `main` with no branch and no commit, both runs. agy's terminal tool is sandboxed away from the host `.git`.
+- ⚠️ agy's **self-reported `BRANCH:` / "success" output is unreliable** — one run hallucinated a full success it didn't perform; another produced empty output.
+
+**Decision (task 134):** The **executor** (agent-builder trusted code), not agy, owns branch creation and commit:
+- After agy exits 0, the executor resolves the branch name: prefer `BRANCH: <name>` in stdout (advisory), else default to `task/<id>`.
+- The executor commits the worktree: `git checkout -B <branch> && git add -A && git commit` (identity set per-command so it works without configured user).
+- If the worktree has no changes after agy runs, executor returns an error (no empty branch).
+- This pattern mirrors task 106 (OllamaNative executor owns the commit, not the model loop).
+
+**Consequence:** The Antigravity executor now reaches L6 (live agy run against a target worktree → executor-committed branch → verification gate passes). The contract is clear: agy edits; the executor commits and owns the published branch.
+
 ## References
 
 - ADR 056 (Gemini self-managed OAuth login) — establishes the subscription-mode pattern.
@@ -54,3 +70,4 @@ We add **`HarnessAntigravityCLI`** ("antigravity-cli") as a new executor harness
 - ADR 052 (gate-failure prompt injection) — the `PriorFailure` section used here.
 - Task 132 (Gemini CLI subscription mode) — direct template for this executor.
 - Task 108 (cross-harness parity) — ensures prompt consistency.
+- Task 106 (Ollama Native executor owns the commit) — the precedent for executor-side branch/commit logic.

@@ -113,12 +113,13 @@ func TestAntigravitySubscriptionModeRunsHeadless(t *testing.T) {
 	entry.ModelID = modelID
 
 	worktree := t.TempDir()
+	initGitRepo(t, worktree)
 
-	// Stub subprocess: exits 0, outputs the branch marker.
+	// Stub subprocess: exits 0, outputs the branch marker, writes a file to trigger commit.
 	stubOut := "Running Antigravity...\nBRANCH: " + expectedBranch + "\n"
 	capture := &capturedCmd{}
 	cli := NewAntigravityCLI(entry, src, worktree)
-	cli.cmdFactory = stubAntigravityCommandFactory(t, stubOut, 0, capture)
+	cli.cmdFactory = stubAntigravityCommandFactoryWithFileWrite(t, worktree, "work.txt", "content", stubOut, 0, capture)
 
 	task := supervisor.Task{ID: "133", Repo: "agent-builder", Spec: "docs/tasks/backlog/133-antigravity-executor-harness.md"}
 
@@ -236,9 +237,12 @@ func TestAntigravityExtractsBranch(t *testing.T) {
 	entry := testAntigravityEntry("")
 	entry.ModelID = modelID
 
+	worktree := t.TempDir()
+	initGitRepo(t, worktree)
+
 	stubOut := "Running task...\nBRANCH: " + expectedBranch + "\n"
-	cli := NewAntigravityCLI(entry, src, t.TempDir())
-	cli.cmdFactory = stubAntigravityCommandFactory(t, stubOut, 0, nil)
+	cli := NewAntigravityCLI(entry, src, worktree)
+	cli.cmdFactory = stubAntigravityCommandFactoryWithFileWrite(t, worktree, "work.txt", "content", stubOut, 0, nil)
 
 	task := supervisor.Task{ID: "133", Repo: "agent-builder", Spec: "spec"}
 	result, err := cli.Run(task)
@@ -253,29 +257,81 @@ func TestAntigravityExtractsBranch(t *testing.T) {
 	}
 }
 
-func TestAntigravityMissingBranchErrors(t *testing.T) {
-	// TC-133-03 Variant B: stdout with no BRANCH line → error wrapping ErrAntigravityMissingBranch.
+func TestAntigravityBranchNameFallback(t *testing.T) {
+	// TC-134-02: stdout with no BRANCH line → branch falls back to task/<task.ID>
 	const modelID = "Claude Opus 4.6 (Thinking)"
 
 	src := &testAntigravitySecretSourceThatFailsIfCalled{}
 	entry := testAntigravityEntry("")
 	entry.ModelID = modelID
 
-	// Stub subprocess with output that has no BRANCH line.
-	stubOut := "Running task...\nNo branch produced.\n"
-	cli := NewAntigravityCLI(entry, src, t.TempDir())
+	worktree := t.TempDir()
+
+	// Initialize worktree as a git repo with a seed commit.
+	initGitRepo(t, worktree)
+
+	// Stub subprocess with output that has no BRANCH line, but writes a file.
+	stubOut := "Running task...\nNo explicit branch.\n"
+	cli := NewAntigravityCLI(entry, src, worktree)
+	cli.cmdFactory = stubAntigravityCommandFactoryWithFileWrite(t, worktree, "add.go", "package main", stubOut, 0, nil)
+
+	task := supervisor.Task{ID: "134", Repo: "agent-builder", Spec: "spec"}
+	result, err := cli.Run(task)
+	if err != nil {
+		t.Fatalf("Run() returned unexpected error: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("result.OK = false, want true")
+	}
+
+	// TC-134-02: branch should be the fallback task/<id>.
+	expectedBranch := "task/134"
+	if result.Branch != expectedBranch {
+		t.Fatalf("result.Branch = %q, want %q (fallback)", result.Branch, expectedBranch)
+	}
+
+	// Verify the file is actually committed on the branch.
+	content := gitShowFile(t, worktree, expectedBranch, "add.go")
+	if !strings.Contains(content, "package main") {
+		t.Fatalf("committed file does not contain expected content: %s", content)
+	}
+}
+
+func TestAntigravityNoChangesIsError(t *testing.T) {
+	// TC-134-03: stub agy writes nothing (worktree unchanged) and exits 0 → run returns error
+	const modelID = "Claude Opus 4.6 (Thinking)"
+
+	src := &testAntigravitySecretSourceThatFailsIfCalled{}
+	entry := testAntigravityEntry("")
+	entry.ModelID = modelID
+
+	worktree := t.TempDir()
+
+	// Initialize worktree as a git repo with a seed commit.
+	initGitRepo(t, worktree)
+
+	// Stub subprocess that writes nothing (no changes).
+	stubOut := "Running task...\nCompleted but no changes.\n"
+	cli := NewAntigravityCLI(entry, src, worktree)
+	// stubAntigravityCommandFactory does NOT write a file.
 	cli.cmdFactory = stubAntigravityCommandFactory(t, stubOut, 0, nil)
 
-	task := supervisor.Task{ID: "133", Repo: "agent-builder", Spec: "spec"}
+	task := supervisor.Task{ID: "134", Repo: "agent-builder", Spec: "spec"}
 	result, err := cli.Run(task)
 	if err == nil {
-		t.Fatal("Run() returned nil error, want ErrAntigravityMissingBranch")
+		t.Fatal("Run() returned nil error, want ErrAntigravityNoChanges")
 	}
-	if !errors.Is(err, ErrAntigravityMissingBranch) {
-		t.Fatalf("error does not wrap ErrAntigravityMissingBranch: %v", err)
+	if !errors.Is(err, ErrAntigravityNoChanges) {
+		t.Fatalf("error does not wrap ErrAntigravityNoChanges: %v", err)
 	}
 	if result.OK {
-		t.Fatal("result.OK = true, want false on missing branch")
+		t.Fatal("result.OK = true, want false when no changes")
+	}
+
+	// TC-134-03: verify no new branch was created (still on seed branch).
+	currentBranch := getCurrentBranch(t, worktree)
+	if currentBranch == "task/134" {
+		t.Fatal("new branch was created despite no changes")
 	}
 }
 
@@ -426,5 +482,171 @@ func TestAntigravityPromptOmitsFailureSectionWhenPriorFailureEmpty(t *testing.T)
 	// Assert: core content is present
 	if !strings.Contains(prompt, "Task ID: 133") {
 		t.Errorf("core prompt missing 'Task ID: 133', got:\n%s", prompt)
+	}
+}
+
+// ---- Test helpers for task 134 ----
+
+// stubAntigravityCommandFactoryWithFileWrite returns a factory that creates a stub "agy"
+// that writes a file to the worktree before exiting.
+func stubAntigravityCommandFactoryWithFileWrite(t *testing.T, worktree, filename, content, stdout string, exitCode int, captureState *capturedCmd) antigravityCommandCreator {
+	t.Helper()
+	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		// Record the real (name, args) passed by the executor for assertion.
+		if captureState != nil {
+			captureState.setAgyCommand(name, args)
+		}
+
+		// Write the file to the worktree BEFORE re-invoking the subprocess.
+		filePath := fmt.Sprintf("%s/%s", worktree, filename)
+		if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+			t.Fatalf("failed to write stub file: %v", err)
+		}
+
+		// Re-invoke ourselves as a subprocess; TestMain routes to runHelperProcess.
+		cmd := exec.CommandContext(ctx, os.Args[0])
+		cmd.Env = []string{
+			"CODEX_HELPER_STDOUT=" + stdout,
+			fmt.Sprintf("CODEX_HELPER_EXIT=%d", exitCode),
+			"GO_WANT_HELPER_PROCESS=1",
+		}
+		if captureState != nil {
+			captureState.set(cmd)
+		}
+		return cmd
+	}
+}
+
+// gitShowFile retrieves the content of a file at a specific branch using git show.
+// Reuses the gitShow helper pattern from ollama_native_test.go.
+func gitShowFile(t *testing.T, worktree, branch, filename string) string {
+	t.Helper()
+	cmd := exec.Command("git", "show", branch+":"+filename)
+	cmd.Dir = worktree
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git show %s:%s: %v: %s", branch, filename, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// getCurrentBranch retrieves the currently checked-out branch name.
+func getCurrentBranch(t *testing.T, worktree string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD")
+	cmd.Dir = worktree
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git rev-parse HEAD: %v: %s", err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// ---- TC-134-01: Commits worktree with explicit branch ----
+
+func TestAntigravityCommitsWorktreeOntoBranch(t *testing.T) {
+	// TC-134-01 (REQ-134-01, -04): temp git worktree with seed commit; stub agy writes file + prints BRANCH.
+	// After run: assert result {Branch:"task/x", OK:true}; worktree on that branch; file committed.
+	const modelID = "Claude Opus 4.6 (Thinking)"
+
+	src := &testAntigravitySecretSourceThatFailsIfCalled{}
+	entry := testAntigravityEntry("")
+	entry.ModelID = modelID
+
+	worktree := t.TempDir()
+	initGitRepo(t, worktree)
+
+	// Stub subprocess: writes add.go and prints explicit branch.
+	stubOut := "Running task...\nBRANCH: task/x\n"
+	cli := NewAntigravityCLI(entry, src, worktree)
+	cli.cmdFactory = stubAntigravityCommandFactoryWithFileWrite(t, worktree, "add.go", "package main\nfunc main() {}", stubOut, 0, nil)
+
+	task := supervisor.Task{ID: "134", Repo: "agent-builder", Spec: "spec"}
+	result, err := cli.Run(task)
+	if err != nil {
+		t.Fatalf("Run() returned unexpected error: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("result.OK = false, want true")
+	}
+	if result.Branch != "task/x" {
+		t.Fatalf("result.Branch = %q, want %q", result.Branch, "task/x")
+	}
+
+	// TC-134-01: assert the worktree is on the branch.
+	branch := getCurrentBranch(t, worktree)
+	if branch != "task/x" {
+		t.Fatalf("worktree on branch %q, want %q", branch, "task/x")
+	}
+
+	// TC-134-04: assert the file is committed (via git show).
+	content := gitShowFile(t, worktree, "task/x", "add.go")
+	if !strings.Contains(content, "package main") {
+		t.Fatalf("committed file does not contain expected content: %s", content)
+	}
+}
+
+// ---- TC-134-04: Commit works without configured git user ----
+
+func TestAntigravityCommitWorksWithoutGitUser(t *testing.T) {
+	// TC-134-04 (REQ-134-01): worktree with NO user.email/user.name configured;
+	// stub writes file → commit still succeeds (fallback config), branch contains file.
+	const modelID = "Claude Opus 4.6 (Thinking)"
+
+	src := &testAntigravitySecretSourceThatFailsIfCalled{}
+	entry := testAntigravityEntry("")
+	entry.ModelID = modelID
+
+	worktree := t.TempDir()
+
+	// Initialize git repo WITHOUT configuring user (different from initGitRepo).
+	cmd := exec.Command("git", "init")
+	cmd.Dir = worktree
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init failed: %v: %s", err, out)
+	}
+
+	// Create seed commit without configured user (using per-command config).
+	seedFile := fmt.Sprintf("%s/seed.txt", worktree)
+	if err := os.WriteFile(seedFile, []byte("seed"), 0644); err != nil {
+		t.Fatalf("failed to write seed file: %v", err)
+	}
+
+	cmd = exec.Command("git",
+		"-c", "user.name=seed",
+		"-c", "user.email=seed@local",
+		"add", "seed.txt")
+	cmd.Dir = worktree
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add seed.txt failed: %v: %s", err, out)
+	}
+
+	cmd = exec.Command("git",
+		"-c", "user.name=seed",
+		"-c", "user.email=seed@local",
+		"commit", "-m", "seed commit")
+	cmd.Dir = worktree
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit seed failed: %v: %s", err, out)
+	}
+
+	// Stub subprocess: writes a file.
+	stubOut := "Running task...\nBRANCH: task/y\n"
+	cli := NewAntigravityCLI(entry, src, worktree)
+	cli.cmdFactory = stubAntigravityCommandFactoryWithFileWrite(t, worktree, "test.go", "package test", stubOut, 0, nil)
+
+	task := supervisor.Task{ID: "134", Repo: "agent-builder", Spec: "spec"}
+	result, err := cli.Run(task)
+	if err != nil {
+		t.Fatalf("Run() returned unexpected error: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("result.OK = false, want true")
+	}
+
+	// TC-134-04: assert the file is committed (commit succeeded despite no global config).
+	content := gitShowFile(t, worktree, "task/y", "test.go")
+	if !strings.Contains(content, "package test") {
+		t.Fatalf("committed file does not contain expected content: %s", content)
 	}
 }
