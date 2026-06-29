@@ -6,7 +6,10 @@
 **Governing ADRs:** ADR 053 §3 (the orchestrate CLI wires the two planner seams from
 existing pieces — catalog, `ExecutorResolver` over `router.Select`, `Invoker` over
 `CompleterForEntry`). ADR 046 §6 (`*router.Router` satisfies `ExecutorResolver` only at the
-wiring layer). ADR 043 (registry + router).
+wiring layer). ADR 043 (registry + router). **ADR 054 §Existing-task-updates** (re-spec onto
+the **async control-plane assembly** and sequence this task **after task 112** — the planner
+seam is orthogonal to the control loop, so the substance is unchanged; only the surrounding
+assembly is the new control-plane assembly, not the serial loop).
 
 ## Context
 
@@ -14,8 +17,24 @@ Task 100 shipped the `LLMPlanner` and `planner.NewPlannerFromEnv(resolver, invok
 orchestrate CLI cannot select it: `internal/cli/orchestrate.go`'s `plannerFromEnv()` returns
 `ErrPlannerNotAvailable` for `AGENT_BUILDER_PLANNER=llm` (the deliberate placeholder left by
 task 099, "pending task 100"). Task 109 supplied the production single-shot backing
-(`executor.CompleterForEntry` + the ollama completer). This task closes the loop: assemble
-the two planner seams in `internal/cli` and remove the placeholder so `=llm` is live.
+(`executor.CompleterForEntry` + the ollama completer). This task assembles the two planner
+seams in `internal/cli` and removes the placeholder so `=llm` is live.
+
+### ADR 054 sequencing — assemble into the control-plane assembly, after task 112 (load-bearing)
+
+Task 112 (ADR 054) rewrites the orchestrate path from the serial `runGoalIntakeLoop` to the
+non-blocking **control-loop + actor-per-goal assembly**. The planner seam is **orthogonal to
+the control loop**: the planner is still constructed in `assembleOrchestrate` and fed to
+`Orchestrator.New` (via `WithPlanner`) regardless of whether intake is serial or async. So
+this task's seam-assembly substance is unchanged — but it must target the **post-112
+control-plane `assembleOrchestrate`**, not the serial loop 112 deletes, to avoid re-doing work
+and to avoid a merge collision on `assembleOrchestrate`/`plannerFromEnv`. **This task is
+sequenced after task 112.** The assertions below are written against the planner-selection
+path inside `assembleOrchestrate`; they do not depend on whether intake is serial or async
+(the planner is constructed and passed to `Orchestrator.New` the same way in both), so they
+hold unchanged on the control-plane assembly — TC-110-05 additionally asserts the assembled
+orchestrator wired by the control-plane `assembleOrchestrate` still receives the selected
+planner.
 
 ### The two seams to assemble (ADR 053 §3)
 
@@ -193,9 +212,17 @@ already imports `internal/executor` transitively via `internal/runtime`); no dir
 ```
 go test -count=1 ./internal/cli/... ./internal/orchestrator/... ./internal/orchestrator/planner/... ./tests/e2e/...
 ```
-Expected: `ok` for each. The existing `run`-path e2e and the task-099 orchestrate assembly
-tests still pass (SEC-003 startup key check, shared ReplayCache, policy fail-closed all
-unchanged — this task only swaps the planner construction).
+Expected: `ok` for each. The existing `run`-path e2e and the orchestrate assembly tests still
+pass (SEC-003 startup key check, shared ReplayCache, policy fail-closed all unchanged — this
+task only swaps the planner construction).
+
+**Control-plane assembly assertion (ADR 054):** the `assembleOrchestrate` under test is the
+**post-112 control-plane assembly** (control-loop + actor-per-goal), not the serial loop.
+Assert that, with `=llm`, the orchestrator the control-plane `assembleOrchestrate` constructs
+receives the `*planner.LLMPlanner` (e.g. a spy `Orchestrator.New`/`WithPlanner` records the
+planner's dynamic type, or the assembled orchestrator's planner is exercised through one goal
+and produces a model-sourced plan). This proves the planner seam survived the loop rewrite and
+still feeds `Orchestrator.New` on the async path.
 
 ---
 
@@ -253,4 +280,7 @@ unchanged — this task only swaps the planner construction).
 - The decomposition prompt quality / model evaluation (task 094).
 - Any change to the `orchestrator.Planner` interface or `internal/orchestrator`.
 - The SEC-001 keypair-error fix (task 111 — independent).
+- The async control-plane rewrite itself (task 112) — this task **consumes** the control-plane
+  `assembleOrchestrate` 112 produces and plugs the planner into it; it does not build the
+  control loop, registry, or semaphore.
 ```

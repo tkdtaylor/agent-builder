@@ -117,6 +117,11 @@ interface, or configuration. Within the one-task / at-most-two-modules rule.)
 
 - **Independent — no dependency on task 109 or 110** (and they do not depend on it). It may be
   worked in parallel on its own branch.
+- **Ordering: prefer landing this task BEFORE task 112 (ADR 054 §Existing-task-updates).** No
+  functional dependency, but 112 (the async control-plane core) restructures
+  `orchestrate_seams.go`/`orchestrate.go` — the same files this task edits. Getting this small,
+  self-contained fail-fast keygen fix in before that churn avoids a merge collision. No scope
+  change to this task.
 - Task 099 (orchestrate assembly + the SEC-001 finding) — merged.
 - Task 096 (`internal/envelope` transport) — merged.
 ```

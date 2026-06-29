@@ -13,6 +13,16 @@ planner's `ExecutorResolver`, close over task 109's `executor.CompleterForEntry`
 `ErrPlannerNotAvailable` placeholder for the `"llm"` case. Reconcile the now-stale "pending
 task 100" notes in the usage string and `docs/spec/configuration.md`.
 
+**Re-specced for ADR 054 (the async control plane).** Task 112 rewrites the orchestrate
+loop from the serial `runGoalIntakeLoop` to the non-blocking **control-loop + actor-per-goal
+assembly**. The planner seam is **orthogonal to the control loop**: the planner is still
+constructed in `assembleOrchestrate` and fed to `Orchestrator.New` (via `WithPlanner`)
+exactly as before — the control-loop rewrite does not change *where* the planner is built or
+*how* it is selected. So this task's substance is unchanged; only the surrounding assembly it
+plugs into is the new control-plane assembly, not the serial loop. **This task must land
+after task 112** (collision risk on `assembleOrchestrate`/`plannerFromEnv`) — see Dependencies
+and Readiness gate.
+
 ## Context
 
 ADR 053 (the authoritative design) §3 specifies how the orchestrate CLI assembles the two
@@ -21,6 +31,18 @@ returns `ErrPlannerNotAvailable` for `"llm"` — the deliberate placeholder left
 ("pending task 100"). Task 100 shipped the `LLMPlanner` + `planner.NewPlannerFromEnv`; task
 109 shipped the production single-shot backing (`executor.CompleterForEntry` + the ollama
 completer). This task is the wiring that turns `=llm` live.
+
+**ADR 054 sequencing (read first).** ADR 054 re-specs the orchestrate loop from serial to an
+async control plane (task 112). Per ADR 054 §Existing-task-updates, this task is **sequenced
+after task 112** so the planner is assembled into the **new control-plane assembly**, not the
+old serial loop that 112 deletes — re-litigating the planner inside the soon-to-be-rewritten
+loop wastes work and risks a merge collision on `assembleOrchestrate`/`plannerFromEnv`. The
+planner seam is orthogonal to the control loop (constructed in `assembleOrchestrate` →
+`Orchestrator.New`), so the change here is small: re-point any "the loop" references at the
+control-plane assembly and confirm `plannerFromEnv` still feeds `Orchestrator.New`.
+*(If the operator wants the LLM planner sooner, 110 may land before 112 against the serial
+loop — but then 112 must explicitly carry "preserve the `=llm` planner wiring across the loop
+rewrite" in its scope. The post-112 sequencing is cleaner and is the recommended order.)*
 
 ### The three pieces to assemble (ADR 053 §3)
 
@@ -87,11 +109,16 @@ import of `internal/executor` — they still see only the `Invoker` func type an
 
 ## Readiness gate
 
+- [ ] **Task 112 merged (async control-plane assembly).** This task plugs the planner into the
+      control-plane `assembleOrchestrate`, not the serial loop 112 replaces — do not start 110
+      before 112 merges (collision risk on `assembleOrchestrate`/`plannerFromEnv`). See ADR 054
+      §Existing-task-updates.
 - [ ] Task 109 merged (`executor.Completer`, ollama completer, `CompleterForEntry` dispatcher + `ErrSingleShotUnsupported`)
 - [x] Task 100 merged (`LLMPlanner` + `planner.NewPlannerFromEnv(resolver, invoke)`)
 - [x] Task 099 merged (`orchestrate` subcommand + `plannerFromEnv` + `EnvPlanner` constant + `ExitUsage` contract)
 - [x] Task 092/095 merged (router + `router.New` + `router.Router.Select` + `RoutingSpec`)
 - [x] ADR 053 §3 read and the catalog-build option chosen + documented in this task's feat commit
+- [x] ADR 054 §Existing-task-updates read (the post-112 sequencing + control-plane assembly target)
 
 ## Acceptance criteria
 
@@ -152,10 +179,20 @@ import of `internal/executor` — they still see only the `Invoker` func type an
 
 ## Dependencies
 
+- **Task 112 (async control-plane core) — HARD ordering dependency (ADR 054).** This task
+  assembles the planner into the control-plane `assembleOrchestrate` that task 112 produces,
+  not the serial loop 112 deletes. Landing 110 before 112 forces 112 to carry a "preserve the
+  `=llm` wiring across the loop rewrite" clause and risks a merge collision on
+  `assembleOrchestrate`/`plannerFromEnv`. **112 → 110.** No *functional* coupling (the planner
+  seam is orthogonal to the control loop) — purely a sequencing/collision-avoidance order.
 - **Task 109 (single-shot `Completer` seam + ollama completer + `CompleterForEntry`) — HARD
   dependency.** This task closes over `executor.CompleterForEntry` and propagates
   `executor.ErrSingleShotUnsupported`; both come from 109. **109 → 110.**
 - Task 100 (LLMPlanner + `NewPlannerFromEnv`) — merged.
 - Task 099 (orchestrate wiring + `EnvPlanner` + `ExitUsage`) — merged.
 - Task 092/095 (router) — merged.
+
+**Execution order (ADR 054):** `109` + `111` first → `112` (async core) → **`110`** (this
+task, re-specced onto the control-plane assembly) and `113` in parallel → `114`/`115`/`116`
+→ `117`.
 ```
