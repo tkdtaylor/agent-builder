@@ -56,10 +56,14 @@ func testAntigravityEntry(secretRef string) registry.RegistryEntry {
 // stubAntigravityCommandFactory returns an antigravityCommandCreator that re-invokes the test binary
 // as a subprocess (via TestMain/runHelperProcess) with GO_WANT_HELPER_PROCESS=1.
 // stdout is the text the helper writes to stdout; exitCode is the subprocess exit code.
-// The factory captures the created *exec.Cmd in captureState for test assertion.
+// The factory captures the real command (name, args) and the created *exec.Cmd in captureState.
 func stubAntigravityCommandFactory(t *testing.T, stdout string, exitCode int, captureState *capturedCmd) antigravityCommandCreator {
 	t.Helper()
 	return func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		// Record the real (name, args) passed by the executor for assertion.
+		if captureState != nil {
+			captureState.setAgyCommand(name, args)
+		}
 		// Re-invoke ourselves as a subprocess; TestMain routes to runHelperProcess.
 		cmd := exec.CommandContext(ctx, os.Args[0])
 		cmd.Env = []string{
@@ -129,7 +133,7 @@ func TestAntigravitySubscriptionModeRunsHeadless(t *testing.T) {
 		t.Fatalf("result.Branch = %q, want %q", result.Branch, expectedBranch)
 	}
 
-	// TC-133-02: assert the subprocess was invoked with the correct args and env.
+	// TC-133-02: assert the subprocess was invoked with the correct argv and env.
 	cmd := capture.get()
 	if cmd == nil {
 		t.Fatal("subprocess command was not captured")
@@ -140,11 +144,66 @@ func TestAntigravitySubscriptionModeRunsHeadless(t *testing.T) {
 		t.Fatalf("cmd.Dir = %q, want %q (the worktree path)", cmd.Dir, worktree)
 	}
 
-	// Assert the command name is "agy" (captured from the factory stub creation).
-	// Note: the factory re-invokes the test binary, so we can't directly assert cmd.Path.
-	// Instead, we verify the env was set correctly by the factory.
-	if len(cmd.Env) == 0 {
-		t.Fatal("subprocess env was not set")
+	// TC-133-02: Hard assert the real agy command name and args.
+	cmdName, cmdArgs := capture.getAgyCommand()
+	if cmdName != "agy" {
+		t.Fatalf("command name = %q, want %q", cmdName, "agy")
+	}
+
+	// Helper to find an arg and its following value (for --flag value pairs).
+	findArgAndValue := func(args []string, flag string) (bool, string) {
+		for i, arg := range args {
+			if arg == flag && i+1 < len(args) {
+				return true, args[i+1]
+			}
+		}
+		return false, ""
+	}
+
+	// Helper to check if arg is in the slice.
+	hasArg := func(args []string, arg string) bool {
+		for _, a := range args {
+			if a == arg {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Assert --print flag is present with the prompt.
+	hasPrint, printVal := findArgAndValue(cmdArgs, "--print")
+	if !hasPrint {
+		t.Fatalf("--print flag not found in argv: %v", cmdArgs)
+	}
+	// The prompt should contain the task spec and task ID sections.
+	if !strings.Contains(printVal, "Task ID: 133") {
+		t.Fatalf("--print value does not contain task ID section: %q", printVal)
+	}
+	if !strings.Contains(printVal, "Worktree:") {
+		t.Fatalf("--print value does not contain worktree section: %q", printVal)
+	}
+
+	// Assert --model flag is present with the expected model.
+	hasModel, modelVal := findArgAndValue(cmdArgs, "--model")
+	if !hasModel {
+		t.Fatalf("--model flag not found in argv: %v", cmdArgs)
+	}
+	if modelVal != modelID {
+		t.Fatalf("--model value = %q, want %q", modelVal, modelID)
+	}
+
+	// Assert --add-dir flag is present with the worktree.
+	hasAddDir, addDirVal := findArgAndValue(cmdArgs, "--add-dir")
+	if !hasAddDir {
+		t.Fatalf("--add-dir flag not found in argv: %v", cmdArgs)
+	}
+	if addDirVal != worktree {
+		t.Fatalf("--add-dir value = %q, want %q", addDirVal, worktree)
+	}
+
+	// Assert --dangerously-skip-permissions flag is present.
+	if !hasArg(cmdArgs, "--dangerously-skip-permissions") {
+		t.Fatalf("--dangerously-skip-permissions flag not found in argv: %v", cmdArgs)
 	}
 }
 

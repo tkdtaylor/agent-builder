@@ -84,9 +84,12 @@ func testCodexEntry(secretRef string) registry.RegistryEntry {
 
 // capturedCmd holds the last *exec.Cmd created by the stubbing factory,
 // allowing tests to assert the subprocess environment and arguments.
+// It also captures the real (name, args) passed to executor factories for argv assertion.
 type capturedCmd struct {
-	mu  sync.Mutex
-	cmd *exec.Cmd
+	mu       sync.Mutex
+	cmd      *exec.Cmd
+	cmdName  string   // real command name (e.g. "agy")
+	cmdArgs  []string // real command args passed by executor
 }
 
 func (c *capturedCmd) set(cmd *exec.Cmd) {
@@ -99,6 +102,21 @@ func (c *capturedCmd) get() *exec.Cmd {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.cmd
+}
+
+// setAgyCommand records the real agy command name and args for assertion.
+func (c *capturedCmd) setAgyCommand(name string, args []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.cmdName = name
+	c.cmdArgs = append([]string{}, args...) // copy args to avoid mutation
+}
+
+// getAgyCommand retrieves the recorded agy command name and args.
+func (c *capturedCmd) getAgyCommand() (string, []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.cmdName, append([]string{}, c.cmdArgs...)
 }
 
 // stubCommandFactory returns a commandCreator that re-invokes the test binary

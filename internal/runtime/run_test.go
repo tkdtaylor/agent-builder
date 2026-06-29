@@ -629,3 +629,83 @@ func TestConfigFromEnvAllowsGeminiSubscriptionEntryWithoutCloudKey(t *testing.T)
 		t.Fatal("GeminiCLI is nil")
 	}
 }
+
+// TestConfigFromEnvAllowsAntigravitySubscriptionEntryWithoutCloudKey tests that an Antigravity
+// subscription entry (empty SecretRef) is accepted without cloud credentials.
+// TC-133-06b, REQ-133-06
+func TestConfigFromEnvAllowsAntigravitySubscriptionEntryWithoutCloudKey(t *testing.T) {
+	// Use t.Setenv to set real environment variables.
+	t.Setenv("AGENT_BUILDER_TASK_ROOT", "/tmp/tasks")
+	t.Setenv("AGENT_BUILDER_WORKTREE", "/tmp/work")
+	t.Setenv("AGENT_BUILDER_EXEC_BOX_LAUNCHER", "containment/execution-box/run.sh")
+	t.Setenv("AGENT_BUILDER_RUN_TIMEOUT", "5m")
+	t.Setenv("AGENT_BUILDER_MAX_ATTEMPTS", "2")
+	t.Setenv("AGENT_BUILDER_PUBLISH_REMOTE", "origin")
+	// Antigravity subscription entry (empty SecretRef, no API key required)
+	t.Setenv("AGENT_BUILDER_REGISTRY_ANTIGRAVITY_ENABLED", "true")
+	t.Setenv("AGENT_BUILDER_REGISTRY_ANTIGRAVITY_ENDPOINT", "https://agy.google.com") // Required by loader, unused in subscription mode
+	t.Setenv("AGENT_BUILDER_REGISTRY_ANTIGRAVITY_MODEL", "Claude Opus 4.6 (Thinking)")
+	t.Setenv("AGENT_BUILDER_REGISTRY_ANTIGRAVITY_CAPABILITY_TIER", "3")
+	t.Setenv("AGENT_BUILDER_REGISTRY_ANTIGRAVITY_COST_WEIGHT", "5")
+	t.Setenv("AGENT_BUILDER_REGISTRY_ANTIGRAVITY_SECRET_REF", "") // Empty: subscription mode
+	// NO cloud credentials in environment
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+
+	getenv := func(key string) string {
+		// Delegate to actual environment (which we've set up with t.Setenv above).
+		val, _ := os.LookupEnv(key)
+		return val
+	}
+
+	config, err := ConfigFromEnv(getenv)
+	if err != nil {
+		t.Fatalf("ConfigFromEnv() for Antigravity subscription entry failed: %v", err)
+	}
+
+	// Verify that config was successfully created
+	if config.Worktree != "/tmp/work" {
+		t.Fatalf("Worktree = %q, want %q", config.Worktree, "/tmp/work")
+	}
+
+	// Now test buildExecutorForEntry for the Antigravity subscription entry
+	entries, err := registry.LoadFromEnv()
+	if err != nil {
+		t.Fatalf("registry.LoadFromEnv() failed: %v", err)
+	}
+
+	var antigravityEntry *registry.RegistryEntry
+	for i := range entries {
+		if entries[i].ID == "antigravity" {
+			antigravityEntry = &entries[i]
+			break
+		}
+	}
+
+	if antigravityEntry == nil {
+		t.Fatal("Antigravity entry not found in registry")
+	}
+
+	if antigravityEntry.SecretRef != "" {
+		t.Fatalf("Antigravity subscription entry SecretRef = %q, want empty", antigravityEntry.SecretRef)
+	}
+
+	// TC-133-06b: buildExecutorForEntry should return a *executor.AntigravityCLI for this entry.
+	exec, err := buildExecutorForEntry(*antigravityEntry, config)
+	if err != nil {
+		t.Fatalf("buildExecutorForEntry() for Antigravity subscription entry failed: %v", err)
+	}
+
+	if exec == nil {
+		t.Fatal("buildExecutorForEntry() returned nil executor")
+	}
+
+	antigravityCLI, ok := exec.(*executor.AntigravityCLI)
+	if !ok {
+		t.Fatalf("buildExecutorForEntry() returned %T, want *executor.AntigravityCLI", exec)
+	}
+
+	if antigravityCLI == nil {
+		t.Fatal("AntigravityCLI is nil")
+	}
+}
