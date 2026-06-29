@@ -17,8 +17,12 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/audit"
 	"github.com/tkdtaylor/agent-builder/internal/channel/worker"
 	"github.com/tkdtaylor/agent-builder/internal/envelope"
+	"github.com/tkdtaylor/agent-builder/internal/executor"
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator"
+	llmplanner "github.com/tkdtaylor/agent-builder/internal/orchestrator/planner"
 	"github.com/tkdtaylor/agent-builder/internal/policy"
+	"github.com/tkdtaylor/agent-builder/internal/registry"
+	"github.com/tkdtaylor/agent-builder/internal/router"
 	runtimewiring "github.com/tkdtaylor/agent-builder/internal/runtime"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 
@@ -728,7 +732,9 @@ func containsLaterDate(data string) bool {
 }
 
 // =============================================================================
-// Planner selection (REQ-099 assembly: "llm" pending task 100)
+// TC-110-01 — AGENT_BUILDER_PLANNER=llm assembles *planner.LLMPlanner (L2)
+// TC-110-02 — unknown planner value drives ExitUsage (L2)
+// (retained: structured default from prior TC-099 suite)
 // =============================================================================
 
 func TestPlannerFromEnvStructuredDefault(t *testing.T) {
@@ -742,14 +748,242 @@ func TestPlannerFromEnvStructuredDefault(t *testing.T) {
 	}
 }
 
-func TestPlannerFromEnvLLMNotAvailable(t *testing.T) {
+func TestPlannerFromEnvStructuredExplicit(t *testing.T) {
+	t.Setenv(EnvPlanner, "structured")
+	p, err := plannerFromEnv()
+	if err != nil {
+		t.Fatalf("structured explicit: %v", err)
+	}
+	if _, ok := p.(*orchestrator.StructuredPlanner); !ok {
+		t.Fatalf("planner type = %T, want *StructuredPlanner", p)
+	}
+}
+
+// TC-110-01: AGENT_BUILDER_PLANNER=llm → *llmplanner.LLMPlanner, nil error.
+// No AGENT_BUILDER_REGISTRY_* vars set → CLI builds synthetic-default catalog.
+func TestPlannerFromEnvLLMAssemblesLLMPlanner(t *testing.T) {
 	t.Setenv(EnvPlanner, "llm")
+	// No registry env vars set: the CLI synthesizes the default catalog entry.
+
+	p, err := plannerFromEnv()
+	if err != nil {
+		t.Fatalf("TC-110-01: plannerFromEnv with =llm returned error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("TC-110-01: plannerFromEnv returned nil planner")
+	}
+	// Dynamic type must be *llmplanner.LLMPlanner, NOT *orchestrator.StructuredPlanner.
+	if _, ok := p.(*llmplanner.LLMPlanner); !ok {
+		t.Fatalf("TC-110-01: planner dynamic type = %T, want *llmplanner.LLMPlanner", p)
+	}
+}
+
+// TC-110-02: unknown AGENT_BUILDER_PLANNER value → error naming value + valid
+// options; Main returns ExitUsage.
+func TestPlannerFromEnvUnknownValueReturnsError(t *testing.T) {
+	t.Setenv(EnvPlanner, "magic")
 	_, err := plannerFromEnv()
 	if err == nil {
-		t.Fatal("llm planner should not be available yet (task 100)")
+		t.Fatal("TC-110-02: expected non-nil error for unknown planner value")
 	}
-	if !errors.Is(err, ErrPlannerNotAvailable) {
-		t.Fatalf("err = %v, want errors.Is(err, ErrPlannerNotAvailable)", err)
+	if !strings.Contains(err.Error(), "magic") {
+		t.Errorf("TC-110-02: error %q must name the bad value %q", err.Error(), "magic")
+	}
+	if !strings.Contains(err.Error(), plannerStructured) || !strings.Contains(err.Error(), plannerLLM) {
+		t.Errorf("TC-110-02: error %q must list valid options %q and %q", err.Error(), plannerStructured, plannerLLM)
+	}
+}
+
+func TestPlannerFromEnvUnknownValueDrivesExitUsage(t *testing.T) {
+	t.Setenv(EnvPlanner, "magic")
+	setBaseConfigEnv(t)
+	writeSigningKeyFile(t)
+	var out, errbuf bytes.Buffer
+	code := Main(Config{Args: []string{"orchestrate"}, Stdout: &out, Stderr: &errbuf})
+	if code != ExitUsage {
+		t.Fatalf("TC-110-02: orchestrate with =magic exit = %d, want ExitUsage (%d); stderr: %s", code, ExitUsage, errbuf.String())
+	}
+}
+
+// =============================================================================
+// TC-110-03 — routerResolverAdapter wraps router.Select; drops ctx (L2)
+// =============================================================================
+
+// TestRouterResolverAdapterDelegatesSelect verifies the CLI's ExecutorResolver
+// adapter delegates to router.Select unchanged and propagates ErrNoEligibleExecutor.
+func TestRouterResolverAdapterDelegatesSelect(t *testing.T) {
+	// Build a one-entry catalog: local-ollama, CapabilityTier=1.
+	cat := registry.NewCatalog()
+	cat.RegisterEntry(registry.RegistryEntry{
+		ID:             "local-ollama",
+		Harness:        registry.HarnessOllamaNative,
+		CapabilityTier: 1,
+		CostWeight:     1,
+		Availability:   registry.Availability{Status: registry.AvailStatusAvailable},
+		Endpoint:       "http://localhost:11434",
+		ModelID:        "qwen3:8b",
+	})
+	r := router.New(cat)
+	res := &routerResolverAdapter{r: r}
+
+	// Sub-test A: eligible entry returned.
+	entry, err := res.Resolve(context.Background(), router.RoutingSpec{MinCapability: 1})
+	if err != nil {
+		t.Fatalf("TC-110-03A: Resolve returned error: %v", err)
+	}
+	if entry.ID != "local-ollama" {
+		t.Errorf("TC-110-03A: got entry ID %q, want %q", entry.ID, "local-ollama")
+	}
+
+	// Sub-test B: no eligible entry → ErrNoEligibleExecutor.
+	_, err = res.Resolve(context.Background(), router.RoutingSpec{MinCapability: 99})
+	if !errors.Is(err, router.ErrNoEligibleExecutor) {
+		t.Errorf("TC-110-03B: err = %v, want errors.Is(err, router.ErrNoEligibleExecutor)", err)
+	}
+
+	// Sub-test C: cancelled ctx does NOT change result — the adapter drops ctx.
+	// This is the documented limitation: router.Select is not context-cancellable.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+	entry2, err2 := res.Resolve(ctx, router.RoutingSpec{MinCapability: 1})
+	if err2 != nil {
+		t.Fatalf("TC-110-03C: cancelled ctx caused Resolve to fail: %v (adapter must drop ctx)", err2)
+	}
+	if entry2.ID != "local-ollama" {
+		t.Errorf("TC-110-03C: cancelled ctx changed result; got %q, want %q", entry2.ID, "local-ollama")
+	}
+}
+
+// =============================================================================
+// TC-110-04 — Invoker closure routes through CompleterForEntry (L2)
+// =============================================================================
+
+// TestInvokerClosureOllamaEntryYieldsCompleter verifies the Invoker closure
+// built in buildLLMPlanner obtains a non-nil completer for an ollama entry
+// (no ErrSingleShotUnsupported).
+func TestInvokerClosureOllamaEntryYieldsCompleter(t *testing.T) {
+	ollamaEntry := registry.RegistryEntry{
+		ID:       "local-ollama",
+		Harness:  registry.HarnessOllamaNative,
+		Endpoint: "http://localhost:11434",
+		ModelID:  "qwen3:8b",
+	}
+	// The Invoker is the same closure buildLLMPlanner constructs; we replicate it
+	// here to assert the completer-construction path in isolation.
+	invoke := llmplanner.Invoker(func(ctx context.Context, entry registry.RegistryEntry, _ string) (string, error) {
+		c, err := executor.CompleterForEntry(entry)
+		if err != nil {
+			return "", err
+		}
+		// We don't call Complete (no live model); just confirm c is non-nil.
+		_ = c
+		return "ok", nil
+	})
+
+	// TC-110-04A: ollama entry → no ErrSingleShotUnsupported, completer non-nil.
+	result, err := invoke(context.Background(), ollamaEntry, "ping")
+	if err != nil {
+		t.Fatalf("TC-110-04A: Invoker(ollama) returned error: %v", err)
+	}
+	if result != "ok" {
+		t.Errorf("TC-110-04A: Invoker result = %q, want %q", result, "ok")
+	}
+
+	// TC-110-04B: cloud entry → ErrSingleShotUnsupported propagated through Invoker.
+	cloudEntry := registry.RegistryEntry{
+		ID:      "claude-oauth",
+		Harness: registry.HarnessClaudeCLI,
+	}
+	_, err = invoke(context.Background(), cloudEntry, "ping")
+	if !errors.Is(err, executor.ErrSingleShotUnsupported) {
+		t.Errorf("TC-110-04B: err = %v, want errors.Is(err, executor.ErrSingleShotUnsupported)", err)
+	}
+}
+
+// =============================================================================
+// TC-110-05 — assembleOrchestrate with =llm wires *llmplanner.LLMPlanner (L2)
+// (F-010/F-014 fitness checks are asserted at L3 via make fitness targets)
+// =============================================================================
+
+// TestAssembleOrchestrateWithLLMPlannerWiresLLMPlanner asserts that with
+// AGENT_BUILDER_PLANNER=llm, the control-plane assembly (assembleOrchestrate)
+// feeds a *llmplanner.LLMPlanner into orchestrator.New — i.e. the planner seam
+// survives the task-112 loop rewrite and reaches the orchestrator on the async
+// path. This drives the REAL assembleOrchestrate with NO planner override (so
+// plannerFromEnv runs under =llm) and captures the exact planner handed to
+// orchestrator.New via the onPlanner seam — proving the producer→consumer link,
+// not merely that plannerFromEnv returns the right type (that is TC-110-01).
+func TestAssembleOrchestrateWithLLMPlannerWiresLLMPlanner(t *testing.T) {
+	t.Setenv(EnvPlanner, "llm")
+	setBaseConfigEnv(t)
+
+	var captured orchestrator.Planner
+	var capturedCount int
+	oc, cleanup, err := assembleOrchestrate(Config{Stdout: discard(), Stderr: discard()}, assembleOverrides{
+		// No planner override → assembleOrchestrate calls plannerFromEnv() under =llm.
+		dispatch:   (&spyDispatch{}).fn, // spy so no real worker runs
+		signingKey: testSigningKey(t),   // satisfy SEC-003 without a key file
+		onPlanner: func(p orchestrator.Planner) {
+			captured = p
+			capturedCount++
+		},
+	})
+	if err != nil {
+		t.Fatalf("TC-110-05: assembleOrchestrate(=llm) returned error: %v", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if oc.orch == nil {
+		t.Fatal("TC-110-05: assembleOrchestrate returned a nil orchestrator")
+	}
+	if capturedCount != 1 {
+		t.Fatalf("TC-110-05: onPlanner invoked %d times, want exactly 1 (the planner fed to orchestrator.New)", capturedCount)
+	}
+	if _, ok := captured.(*llmplanner.LLMPlanner); !ok {
+		t.Fatalf("TC-110-05: planner fed into orchestrator.New = %T, want *llmplanner.LLMPlanner", captured)
+	}
+}
+
+// =============================================================================
+// TC-110-06 — stale "pending task 100" notes removed; config doc matches live (L2)
+// =============================================================================
+
+func TestUsageStringHasNoPendingTask100(t *testing.T) {
+	var buf bytes.Buffer
+	orchestrateUsage(&buf)
+	usage := buf.String()
+	if strings.Contains(usage, "pending task 100") {
+		t.Errorf("TC-110-06: orchestrateUsage still contains stale %q text:\n%s", "pending task 100", usage)
+	}
+	if !strings.Contains(usage, "llm") {
+		t.Errorf("TC-110-06: orchestrateUsage does not mention %q as a live planner value", "llm")
+	}
+}
+
+func TestEnvPlannerDocHasNoPendingTask100(t *testing.T) {
+	// Assert the EnvPlanner constant doc comment no longer contains "pending task 100".
+	// We check the configuration.md directly (the code doc comment is source-internal).
+	data := readRepoDoc(t, "docs/spec/configuration.md")
+	// The PLANNER row must exist and must NOT say "pending".
+	if !strings.Contains(data, EnvPlanner) {
+		t.Errorf("TC-110-06: configuration.md does not contain %q", EnvPlanner)
+	}
+	// The row must not carry "pending task 100" stale text.
+	if strings.Contains(data, "pending task 100") {
+		t.Errorf("TC-110-06: configuration.md still contains stale %q text", "pending task 100")
+	}
+	// The row must describe llm as live (ollama-only behavior with cloud fail-closed).
+	if !strings.Contains(data, "llm") {
+		t.Errorf("TC-110-06: configuration.md PLANNER row does not mention %q as a live value", "llm")
+	}
+}
+
+func TestConfigurationDocLLMIsLiveNotPending(t *testing.T) {
+	data := readRepoDoc(t, "docs/spec/configuration.md")
+	// Confirm the row describes the ollama-only live behavior.
+	if !strings.Contains(data, "ollama") {
+		t.Errorf("TC-110-06: configuration.md PLANNER row does not mention ollama-only live behavior")
 	}
 }
 

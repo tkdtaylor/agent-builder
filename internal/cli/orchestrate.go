@@ -16,16 +16,22 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/audit"
 	"github.com/tkdtaylor/agent-builder/internal/channel/worker"
 	"github.com/tkdtaylor/agent-builder/internal/envelope"
+	"github.com/tkdtaylor/agent-builder/internal/executor"
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator"
+	"github.com/tkdtaylor/agent-builder/internal/orchestrator/planner"
 	"github.com/tkdtaylor/agent-builder/internal/policy"
+	"github.com/tkdtaylor/agent-builder/internal/registry"
+	"github.com/tkdtaylor/agent-builder/internal/router"
 	runtimewiring "github.com/tkdtaylor/agent-builder/internal/runtime"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
 
-// EnvPlanner selects the Planner the orchestrate subcommand assembles. The only
-// live-path value is "structured" (the default StructuredPlanner). "llm" is
-// reserved for task 100 and currently returns a clear "not yet available" error —
-// this task does not build the LLM planner (099 / 100 scope split).
+// EnvPlanner selects the Planner the orchestrate subcommand assembles. Live
+// values: "structured" (default, rule-based StructuredPlanner) and "llm"
+// (LLM-backed LLMPlanner, routes a decomposition prompt through the router/
+// registry path — ollama-native entries only; cloud harnesses fail closed via
+// ErrSingleShotUnsupported). Any other value is a fail-fast configuration error
+// (ExitUsage). Added in task 099; llm branch wired live in task 110 (ADR 053).
 const EnvPlanner = "AGENT_BUILDER_PLANNER"
 
 const (
@@ -50,9 +56,22 @@ const (
 	defaultMaxGoals   = 8
 )
 
-// ErrPlannerNotAvailable is returned when AGENT_BUILDER_PLANNER selects a planner
-// whose concrete is not yet wired (currently "llm", pending task 100).
-var ErrPlannerNotAvailable = errors.New("orchestrate: selected planner is not yet available")
+// errUsageConfig is the sentinel that marks assembly errors caused by a bad
+// AGENT_BUILDER_PLANNER value (or any other env-config mistake detected at
+// assembly time that the CLI should report as ExitUsage rather than ExitGeneric).
+// runOrchestrate checks for it with errors.Is to route to the usage exit path.
+var errUsageConfig = errors.New("orchestrate: configuration error (check env vars)")
+
+// defaultCLIClaudeEntryID is the synthetic fallback catalog entry the CLI builds
+// when no AGENT_BUILDER_REGISTRY_* entries are enabled — the same shape as
+// internal/runtime's defaultClaudeEntry (option (b), ADR 053 §3: the CLI builds
+// its own catalog rather than calling the unexported runtime.buildCatalog). Both
+// synthesize a CapabilityTier=1, CostWeight=1, HarnessClaudeCLI entry so the
+// router always has a routable entry at the base capability floor. The CLI's
+// synthetic entry carries no Endpoint/ModelID — it is only used to satisfy the
+// router's selection logic; a CompleterForEntry call against it fails closed with
+// ErrSingleShotUnsupported (cloud harness), which is the expected behavior.
+const defaultCLIClaudeEntryID = "claude-default"
 
 // orchestrateConfig carries the assembled orchestrator wiring. Its fields are
 // populated by assembleOrchestrator from environment configuration on the live
@@ -149,6 +168,13 @@ type assembleOverrides struct {
 	// one assembleOrchestrate sizes from maxWorkers — lets a test hold the SAME
 	// semaphore instance to assert "no permit leak after drain" (TC-112-07).
 	workerSem *orchestrator.Semaphore
+	// onPlanner, when non-nil, is invoked with the exact Planner value that
+	// assembleOrchestrate hands to orchestrator.New — the producer→consumer link a
+	// test needs to assert that the env-selected planner (e.g. *llmplanner.LLMPlanner
+	// under AGENT_BUILDER_PLANNER=llm) actually survives the control-plane assembly
+	// and reaches the orchestrator (TC-110-05). Production passes assembleOverrides{}
+	// so this is nil on the live path.
+	onPlanner func(orchestrator.Planner)
 }
 
 // runOrchestrate is the CLI dispatch for the orchestrate subcommand. It parses
@@ -172,7 +198,14 @@ func runOrchestrate(config Config, args []string) int {
 	if err != nil {
 		// SEC-003 fail-closed: a missing worker signing key (or any assembly error)
 		// exits non-zero BEFORE the goal-intake loop is ever entered.
+		//
+		// A usage-config error (e.g. unknown AGENT_BUILDER_PLANNER value) gets
+		// ExitUsage so the caller knows it is a configuration mistake, not a runtime
+		// failure. All other assembly errors get ExitGeneric.
 		writef(config.Stderr, "error: %v\n", err)
+		if errors.Is(err, errUsageConfig) {
+			return ExitUsage
+		}
 		return ExitGeneric
 	}
 	defer cleanup()
@@ -229,7 +262,8 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		resultCache = envelope.NewReplayCache(0)
 	}
 
-	// 4. Planner (default StructuredPlanner; "llm" reserved for task 100).
+	// 4. Planner: default StructuredPlanner; AGENT_BUILDER_PLANNER=llm selects the
+	//    LLMPlanner (ollama-native single-shot; cloud harnesses fail closed).
 	planner := ov.planner
 	if planner == nil {
 		p, err := plannerFromEnv()
@@ -324,6 +358,12 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 	workerSem := ov.workerSem
 	if workerSem == nil {
 		workerSem = orchestrator.NewSemaphore(maxWorkers)
+	}
+
+	// Test seam (TC-110-05): observe the exact planner the assembly feeds into
+	// orchestrator.New, proving the env-selected planner survives the control loop.
+	if ov.onPlanner != nil {
+		ov.onPlanner(planner)
 	}
 
 	orch := orchestrator.New(
@@ -543,19 +583,107 @@ func (oc orchestrateConfig) report(ctx context.Context, text string) {
 	_ = oc.reporter.Report(ctx, text)
 }
 
-// plannerFromEnv selects the Planner per AGENT_BUILDER_PLANNER. "structured"
-// (default) returns the StructuredPlanner. "llm" is reserved for task 100 and
-// returns ErrPlannerNotAvailable.
+// plannerFromEnv selects the Planner per AGENT_BUILDER_PLANNER (ADR 053 §3,
+// task 110). "structured" (default) returns the rule-based StructuredPlanner.
+// "llm" assembles the LLM-backed LLMPlanner by building a router catalog from
+// the environment (option (b) — the CLI builds its own catalog; internal/runtime
+// is unchanged), wrapping *router.Router.Select as the ExecutorResolver, and
+// closing over executor.CompleterForEntry as the Invoker. An unknown value
+// returns a fail-fast error that drives ExitUsage.
 func plannerFromEnv() (orchestrator.Planner, error) {
 	choice := strings.TrimSpace(os.Getenv(EnvPlanner))
 	switch choice {
 	case "", plannerStructured:
 		return orchestrator.NewStructuredPlanner(), nil
 	case plannerLLM:
-		return nil, fmt.Errorf("%s=%q: %w (pending task 100 — use %q)", EnvPlanner, plannerLLM, ErrPlannerNotAvailable, plannerStructured)
+		return buildLLMPlanner()
 	default:
-		return nil, fmt.Errorf("%s=%q is not a known planner (want %q or %q)", EnvPlanner, choice, plannerStructured, plannerLLM)
+		// Wrap errUsageConfig so runOrchestrate returns ExitUsage instead of ExitGeneric.
+		return nil, fmt.Errorf("%w: %s=%q is not a known planner (want %q or %q)", errUsageConfig, EnvPlanner, choice, plannerStructured, plannerLLM)
 	}
+}
+
+// buildLLMPlanner assembles the LLM-backed planner: catalog → router →
+// ExecutorResolver adapter + Invoker closure → planner.NewPlannerFromEnv.
+//
+// Catalog-build option (b) (ADR 053 §3): the CLI builds its own *registry.Catalog
+// from registry.LoadFromEnv() with the same synthetic-default fallback as
+// internal/runtime.buildCatalog (CapabilityTier=1, CostWeight=1,
+// HarnessClaudeCLI). This keeps internal/runtime unchanged and avoids exporting
+// its unexported buildCatalog. Both sites must NOT diverge in the default-entry
+// shape; see defaultCLIClaudeEntryID comment above.
+//
+// ExecutorResolver adapter: Resolve(ctx, spec) drops the ctx and calls
+// r.Select(spec). router.Select takes NO ctx — the router's entry selection is
+// not context-cancellable today. Dropping ctx is a documented, deliberate
+// limitation; a future cancellable Select can add ctx without changing the
+// adapter's external contract.
+//
+// Invoker closure: closes over executor.CompleterForEntry in internal/cli (where
+// internal/executor is already a transitive import via internal/runtime), so
+// internal/orchestrator/planner never sees the executor import — F-014 stays green.
+func buildLLMPlanner() (orchestrator.Planner, error) {
+	// 1. Build catalog from env, with synthetic-default fallback.
+	entries, err := registry.LoadFromEnv()
+	if err != nil {
+		return nil, fmt.Errorf("plannerFromEnv: load registry: %w", err)
+	}
+	cat := registry.NewCatalog()
+	if len(entries) == 0 {
+		// Synthetic default: same shape as internal/runtime.defaultClaudeEntry
+		// (CapabilityTier 1, CostWeight 1, HarnessClaudeCLI). A CompleterForEntry
+		// call against this entry fails closed with ErrSingleShotUnsupported (cloud
+		// harness) — the cloud-only fail-closed path documented in ADR 053 §2.
+		cat.RegisterEntry(registry.RegistryEntry{
+			ID:             defaultCLIClaudeEntryID,
+			Harness:        registry.HarnessClaudeCLI,
+			CapabilityTier: 1,
+			CostWeight:     1,
+			Availability:   registry.Availability{Status: registry.AvailStatusAvailable},
+		})
+	} else {
+		for _, e := range entries {
+			cat.RegisterEntry(e)
+		}
+	}
+
+	// 2. Router wraps the catalog; resolver adapter wraps router.Select.
+	r := router.New(cat)
+	// routerResolver is the ExecutorResolver adapter over *router.Router.Select.
+	// It drops the planner's ctx: router.Select takes no context and is not
+	// context-cancellable today — this is a deliberate, documented limitation.
+	// See ADR 053 §3 and the dropped-ctx note in the test spec (TC-110-03).
+	routerResolver := &routerResolverAdapter{r: r}
+
+	// 3. Invoker closure captures executor.CompleterForEntry. Constructed here in
+	// internal/cli (where internal/executor is already imported transitively via
+	// internal/runtime), so internal/orchestrator/planner never imports executor
+	// directly — F-010/F-014 stay green (ADR 053 §"Why F-010 and F-014 stay green").
+	invoke := planner.Invoker(func(ctx context.Context, entry registry.RegistryEntry, prompt string) (string, error) {
+		c, err := executor.CompleterForEntry(entry)
+		if err != nil {
+			return "", err
+		}
+		return c.Complete(ctx, entry, prompt)
+	})
+
+	return planner.NewPlannerFromEnv(routerResolver, invoke)
+}
+
+// routerResolverAdapter implements planner.ExecutorResolver by wrapping
+// *router.Router.Select. Resolve drops the ctx argument because router.Select
+// takes no context — selection is not context-cancellable today. This is a
+// deliberate, documented limitation (ADR 053 §3 / TC-110-03): a cancelled ctx
+// does not change the result; the router still returns the selected entry (or
+// ErrNoEligibleExecutor). A future cancellable Select can add ctx here without
+// changing the planner.ExecutorResolver contract.
+type routerResolverAdapter struct {
+	r *router.Router
+}
+
+func (a *routerResolverAdapter) Resolve(_ context.Context, spec router.RoutingSpec) (registry.RegistryEntry, error) {
+	// ctx intentionally dropped — router.Select is not context-cancellable today.
+	return a.r.Select(spec)
 }
 
 // auditSinkFromEnv constructs the shared audit.Sink from AGENT_BUILDER_AUDIT_RECORD
@@ -621,7 +749,7 @@ Required environment:
   AGENT_BUILDER_WORKER_SIGNING_KEY   orchestrator Ed25519 signing key (fail-closed at startup)
 
 Optional environment:
-  AGENT_BUILDER_PLANNER              "structured" (default) | "llm" (pending task 100)
+  AGENT_BUILDER_PLANNER              "structured" (default) | "llm" (ollama-native; cloud harnesses fail closed)
   AGENT_BUILDER_MEMORY_GUARD_BIN     memory-guard binary (else in-memory PlanStore + warning)
   AGENT_BUILDER_POLICY_BIN           policy-engine binary (else all spawns denied)
   AGENT_BUILDER_AUDIT_RECORD         audit chain logfile (shared orchestrator+worker sink)
