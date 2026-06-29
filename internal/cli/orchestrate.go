@@ -208,7 +208,12 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 			}
 			signingKey = key
 		}
-		dispatch = newTransportDispatch(signingKey, workItemCache, resultCache, auditSink, logger)
+		d, keyErr := newTransportDispatch(signingKey, workItemCache, resultCache, auditSink, logger)
+		if keyErr != nil {
+			cleanup()
+			return orchestrateConfig{}, noop, fmt.Errorf("orchestrate: %w", keyErr)
+		}
+		dispatch = d
 	}
 
 	// 9. Reporter — wired to the outbound channel seam (task 098); falls back to a
