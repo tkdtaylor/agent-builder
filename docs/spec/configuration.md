@@ -113,13 +113,42 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `AGENT_BUILDER_WORKER_SIGNING_KEY` | path | none | required when the orchestrator↔worker transport is constructed via `worker.NewWorkItemSenderFromEnv` / `worker.LoadSigningKey` | Path to the file holding the orchestrator's Ed25519 signing key (hex-encoded 64-byte `ed25519.PrivateKeySize` private key) for the orchestrator↔worker transport (ADR 048, task 083). The transport signs every dispatched work-item with this key so the worker can verify provenance, and replay-checks every inbound envelope. **Fail-closed at startup (REQ-083-05):** when the variable is unset, or names an absent/unreadable/malformed key file, the transport constructor returns an error satisfying `errors.Is(err, worker.ErrMissingSigningKey)` that names this variable, **before any work-item is dispatched or received** — never at first message receipt. The key bytes are never logged. |
 | `AGENT_BUILDER_MEMORY_GUARD_BIN` | path/name | unset | no | Path to the `memory-guard` block binary. **When set, the memory-guard write-gate + delete-verify are enabled** (ADR 049, task 084): orchestrator plan/fleet state writes go through `validate_write` (fail-closed on allow=false) and deletes go through `verify_delete` (tamper=halt on confirmed=false or residue_detected=true). When unset, the orchestrator degrades gracefully to the in-memory `MemoryPlanStore` (v1) and emits a structured warning log naming this variable. The absence of this variable is never a startup error — existing e2e tests pass unchanged when it is unset. A set-but-unresolvable binary surfaces as an error on the first IPC call (not at startup). |
 | `AGENT_BUILDER_PLANNER` | enum: `structured`, `llm` | `structured` | no | **`orchestrate` subcommand only** (task 099/100). Selects the `Planner` the orchestrator assembles. `structured` (default) wires the rule-based `StructuredPlanner` (no LLM, no executor import). `llm` (task 100) selects the LLM-backed `LLMPlanner` (`internal/orchestrator/planner`), which decomposes a free-form goal by routing a prompt through a model via the router/registry path (never `internal/executor` directly — F-014). The `planner.NewPlannerFromEnv` assembler reads this same env var; the `llm` branch requires a model resolver + invoker supplied at the wiring layer. Any other value is a fail-fast configuration error (the subcommand exits `ExitUsage`). |
-| `AGENT_BUILDER_GOAL_SPEC` | string | unset | no | **`orchestrate` subcommand only** (task 099). The single goal spec the env-backed `GoalSource` feeds to the orchestrator when no inbound channel is configured (the validation-harness path). The spec text is decomposed by the planner into sub-goals (one `"<recipe>: <text>"` line per sub-goal, or a single free-form line on the default recipe). When unset and stdin carries no goal, the subcommand idles (no dispatch). |
-| `AGENT_BUILDER_GOAL_ID` | string | `goal` | no | **`orchestrate` subcommand only** (task 099). The `Task.ID` used as the plan-state key for the env-backed goal. |
-| `AGENT_BUILDER_GOAL_REPO` | string | empty | no | **`orchestrate` subcommand only** (task 099). The `Task.Repo` carried into each sub-goal of the env-backed goal. |
+| `AGENT_BUILDER_GOAL_SPEC` | string | unset | no | **`orchestrate` subcommand only** (task 099, generalized in task 113 / ADR 054 §2). When set, the env/stdin `MessageSource` delivers it as the **first** inbound message — a single `MsgNewGoal` whose `Goal.Spec` is this text — before reading any stdin line. The spec text is decomposed by the planner into sub-goals (one `"<recipe>: <text>"` line per sub-goal, or a single free-form line on the default recipe). When unset and stdin carries no input, the subcommand idles (no dispatch). |
+| `AGENT_BUILDER_GOAL_ID` | string | `goal` | no | **`orchestrate` subcommand only** (task 099). The `Task.ID`/`GoalID` used as the plan-state and registry key for the `AGENT_BUILDER_GOAL_SPEC` goal. (Bare stdin goal lines auto-assign collision-free IDs `goal-1`, `goal-2`, … — see the stdin command grammar below.) |
+| `AGENT_BUILDER_GOAL_REPO` | string | empty | no | **`orchestrate` subcommand only** (task 099). The `Task.Repo` carried into the `AGENT_BUILDER_GOAL_SPEC` goal. |
 | `AGENT_BUILDER_MAX_WORKERS` | positive integer | `4` | no | **`orchestrate` subcommand only** (task 112, ADR 054 §1). The **fleet-wide** cap on total live sub-goal workers across all concurrent goals — the load-bearing bound on sandbox/box pressure. Enforced by a shared weighted semaphore acquired **inside** `dispatchPlan`'s per-sub-goal goroutine (`Acquire(1)` before the worker dispatch, deferred `Release(1)` after), so the total number of in-flight workers — summed over M concurrent goals × N sub-goals each — never exceeds this value. A non-integer, empty, or `< 1` value falls back to the default (the bound is a tuning knob, not a security gate, so a malformed value never fails the subcommand). |
 | `AGENT_BUILDER_MAX_GOALS` | positive integer | `8` | no | **`orchestrate` subcommand only** (task 112, ADR 054 §1). The **goal-admission cap**: the maximum number of goal-actor goroutines that may be in a non-`Queued`, non-terminal lifecycle state at once. Enforced at the control loop (not the orchestrator core); excess `new-goal`s are registered with `Queued` status and park until a live goal reaches a terminal state and frees a slot. This is back-pressure on planning state, looser than `AGENT_BUILDER_MAX_WORKERS`. A non-integer, empty, or `< 1` value falls back to the default. |
 | `VAULT_MASTER_KEY` | secret string (hex) | none | required when vault is enabled and `VAULT_MASTER_KEY_FILE` is unset | 32-byte hex-encoded master key for the vault daemon's encryption. Validated to decode to exactly 32 bytes; an invalid or short key is a fail-fast error. **Never auto-generated** — absence when vault is enabled fails loud (a silent ephemeral key would lose secrets across restarts). Never logged. |
 | `VAULT_MASTER_KEY_FILE` | path | none | alternative to `VAULT_MASTER_KEY` | Path to a file containing the hex master key. **Takes precedence over `VAULT_MASTER_KEY`** when both are set. The file contents are read and validated identically to `VAULT_MASTER_KEY`; the key value is never logged. |
+
+### stdin command grammar (`orchestrate`)
+
+When no inbound channel is configured, the `orchestrate` subcommand's inbound seam is
+the env/stdin line-oriented `MessageSource` (ADR 054 §2, task 113). It is the
+local-first testing seam the operator uses to drive the async control plane without
+Telegram. `AGENT_BUILDER_GOAL_SPEC` (if set) is delivered first as a single new goal;
+then **one message is parsed per non-blank stdin line** by the following grammar:
+
+| Input line | Message kind | `GoalID` | Payload |
+|------------|--------------|----------|---------|
+| `<any bare line>` (no known verb) | `MsgNewGoal` | auto-assigned `goal-1`, `goal-2`, … | `Goal.Spec` = the line |
+| `status` | `MsgStatus` | `""` (fleet-wide) | — |
+| `status <goalID>` | `MsgStatus` | `<goalID>` | — |
+| `info <goalID> <text…>` | `MsgInfo` | `<goalID>` | `Text` = the remaining text |
+| `cancel <goalID>` | `MsgCancel` | `<goalID>` | — |
+
+- **EOF / no-more-input** → the source returns `ok=false`; the control plane drains all
+  in-flight goal actors and the subcommand exits `0`.
+- **Malformed control line** (a `cancel` with no goalID, or `info <goalID>` with no
+  text) → a parse error wrapping `ErrMalformedInput`; the control loop reports it over
+  the Reporter and **continues** reading. A malformed control line is **never** silently
+  accepted as a new goal.
+- **Routing** (ADR 054 §2): `new-goal` spawns a goal actor (register-then-start: the
+  goal's command mailbox and registry entry are created before the actor starts);
+  `status` is answered from the live registry (handler body is task 114); `info`/`cancel`
+  are delivered to the addressed goal's per-goal command mailbox. An `info`/`cancel` for
+  an **unknown goalID** yields a graceful "no such goal" report — never a panic, and no
+  mailbox is auto-created for the unknown goal.
 
 ### Executor Registry Configuration
 

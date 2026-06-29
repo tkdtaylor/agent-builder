@@ -62,9 +62,21 @@ var ErrPlannerNotAvailable = errors.New("orchestrate: selected planner is not ye
 type orchestrateConfig struct {
 	// orch is the fully-assembled Tier-1 coordinator.
 	orch *orchestrator.Orchestrator
-	// source is the goal-intake seam the control loop reads from. The control loop
-	// is the ONLY reader of this seam (no concurrent Next() races — ADR 054 §1).
-	source supervisor.GoalSource
+	// source is the inbound message seam the control loop reads from (ADR 054 §2).
+	// The control loop is the ONLY reader of this seam (no concurrent Next() races —
+	// ADR 054 §1). It carries typed messages (new-goal/status/info/cancel), not just
+	// goals; the router dispatches each by kind.
+	source supervisor.MessageSource
+	// reporter is the outbound seam the router uses to answer status queries and
+	// graceful "no such goal" reports for an unknown goalID (ADR 054 §2). It is the
+	// SAME mutex-guarded Reporter the orchestrator core holds (single serialized
+	// stdout owner under concurrency).
+	reporter supervisor.Reporter
+	// statusHandler is the seam the router dispatches MsgStatus to. The handler BODY
+	// (registry render + immediate Reporter answer) is task 114; this task routes the
+	// kind to it. A nil handler falls back to a minimal Reporter acknowledgement so
+	// the status path is observable end-to-end before 114 lands.
+	statusHandler func(goalID string)
 	// stdout is the user-visible output destination. The per-goal summary is emitted
 	// through the orchestrator's Reporter (built from this same writer in
 	// assembleOrchestrate — the single mutex-guarded stdout owner under concurrency,
@@ -81,6 +93,10 @@ type orchestrateConfig struct {
 	// Excess goals park with Queued status until a slot frees. Enforced at the
 	// control loop, not the orchestrator core.
 	maxGoals int
+	// mailboxes is the per-goal command-mailbox map (ADR 054 §3). When nil,
+	// runControlLoop creates a fresh one; a router test injects its own so it can
+	// read the delivered MsgInfo/MsgCancel and assert addressing (TC-113-04/06).
+	mailboxes *commandMailboxes
 }
 
 // assembleOverrides lets tests inject the security-relevant collaborators that the
@@ -95,7 +111,21 @@ type assembleOverrides struct {
 	auditSink    audit.Sink
 	planStore    orchestrator.PlanStore
 	planner      orchestrator.Planner
-	source       supervisor.GoalSource
+	// source is a goal-only GoalSource override (task-112 tests inject this). When
+	// set and messageSource is nil, the control loop adapts it into a MessageSource
+	// that yields each goal as a MsgNewGoal — preserving the goal-only test path.
+	source supervisor.GoalSource
+	// messageSource is a typed MessageSource override (task-113 router tests inject
+	// this directly to script new-goal/status/info/cancel sequences). It takes
+	// precedence over source.
+	messageSource supervisor.MessageSource
+	// reporter overrides the outbound Reporter (router tests inject a spy to assert
+	// the graceful "no such goal" report). Nil falls back to the env-built reporter.
+	reporter supervisor.Reporter
+	// statusHandler overrides the MsgStatus dispatch target (router tests inject a
+	// recording handler to assert the status path is reached with empty=fleet). Nil
+	// falls back to a minimal Reporter acknowledgement (the handler body is task 114).
+	statusHandler func(goalID string)
 	// workItemCache, when non-nil, is used as the shared work-item-direction
 	// ReplayCache instead of the one assembleOrchestrator creates at startup.
 	workItemCache *envelope.ReplayCache
@@ -265,8 +295,14 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 	}
 
 	// 9. Reporter — wired to the outbound channel seam (task 098); falls back to a
-	//    stderr log reporter when no outbound channel is configured.
-	reporter := newLogReporter(config.Stdout)
+	//    stderr log reporter when no outbound channel is configured. The SAME reporter
+	//    instance is handed to the orchestrator core AND held by the control-loop
+	//    router (status answers + graceful "no such goal" reports — ADR 054 §2), so all
+	//    user-visible output flows through the one mutex-guarded stdout owner.
+	reporter := ov.reporter
+	if reporter == nil {
+		reporter = newLogReporter(config.Stdout)
+	}
 
 	// 10. Async control-plane concurrency bounds (ADR 054 §1, task 112). The worker
 	//     semaphore is shared across ALL goal actors so the bound is fleet-wide
@@ -299,18 +335,46 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		orchestrator.WithWorkerSemaphore(workerSem),
 	)
 
-	source := ov.source
-	if source == nil {
-		source = newEnvGoalSource(os.Getenv, config.Stdin)
+	// Inbound message seam (ADR 054 §2). Precedence: an explicit typed MessageSource
+	// override → a goal-only GoalSource override adapted to messages → the live
+	// env/stdin line-oriented MessageSource.
+	source := ov.messageSource
+	switch {
+	case source != nil:
+		// use the injected typed source
+	case ov.source != nil:
+		source = goalSourceAsMessages(ov.source)
+	default:
+		source = newEnvMessageSource(os.Getenv, config.Stdin)
 	}
 
 	return orchestrateConfig{
-		orch:     orch,
-		source:   source,
-		stdout:   config.Stdout,
-		registry: registry,
-		maxGoals: maxGoals,
+		orch:          orch,
+		source:        source,
+		stdout:        config.Stdout,
+		registry:      registry,
+		maxGoals:      maxGoals,
+		reporter:      reporter,
+		statusHandler: ov.statusHandler,
 	}, cleanup, nil
+}
+
+// goalSourceAsMessages adapts a goal-only GoalSource into a MessageSource that
+// yields each goal as a MsgNewGoal. It preserves the task-112 goal-only test path
+// (and any future GoalSource-only producer) under the generalized control loop
+// without disturbing the GoalSource contract.
+func goalSourceAsMessages(gs supervisor.GoalSource) supervisor.MessageSource {
+	return goalSourceAdapter{gs: gs}
+}
+
+type goalSourceAdapter struct{ gs supervisor.GoalSource }
+
+func (a goalSourceAdapter) Next() (supervisor.Message, bool, error) {
+	task, ok, err := a.gs.Next()
+	if err != nil || !ok {
+		return supervisor.Message{}, ok, err
+	}
+	return supervisor.Message{Kind: supervisor.MsgNewGoal, GoalID: task.ID, Goal: task}, true, nil
 }
 
 // envInt parses a non-negative integer env var, returning def when unset, empty,
@@ -360,55 +424,123 @@ func runControlLoop(ctx context.Context, oc orchestrateConfig) error {
 	}
 	admit := make(chan struct{}, maxGoals)
 
+	// mailboxes is the per-goal command-mailbox map (ADR 054 §3 / §6 race surface
+	// (b)). A new-goal creates its mailbox BEFORE the actor is registered/started;
+	// info/cancel are routed to it; an unknown goalID never auto-creates one. A test
+	// may inject its own map (oc.mailboxes) to observe deliveries.
+	mailboxes := oc.mailboxes
+	if mailboxes == nil {
+		mailboxes = newCommandMailboxes()
+	}
+
 	var wg sync.WaitGroup
 	var srcErr error
 
 	for {
-		goal, ok, err := oc.source.Next()
+		msg, ok, err := oc.source.Next()
 		if err != nil {
-			srcErr = fmt.Errorf("orchestrate: read goal: %w", err)
+			// A malformed control line surfaces here. It is NOT fatal to the control
+			// plane — report it gracefully and continue reading the next message
+			// (fail-loud-but-graceful, ADR 054 §2). Only a hard source error breaks.
+			if isParseError(err) {
+				oc.report(ctx, fmt.Sprintf("ignored malformed input: %v", err))
+				continue
+			}
+			srcErr = fmt.Errorf("orchestrate: read message: %w", err)
 			break
 		}
 		if !ok {
 			break
 		}
 
-		// Register the goal as Queued BEFORE spawning its actor, so a status read
-		// (or the admission check) never sees a goal that has been accepted but not
-		// yet projected (register-then-start ordering, ADR 054 §271b).
-		oc.registry.Register(goal.ID, orchestrator.StateQueued)
-
-		wg.Add(1)
-		go func(goal supervisor.Task) {
-			defer wg.Done()
-			// Acquire a goal-admission slot. While the fleet is at maxGoals live
-			// goals this blocks — the goal stays Queued in the registry (Handle has
-			// not run, so no Planning transition). When a slot frees, the actor
-			// proceeds and Handle transitions Queued → Planning → … itself.
-			select {
-			case admit <- struct{}{}:
-			case <-ctx.Done():
-				oc.registry.SetState(goal.ID, orchestrator.StateFailed)
-				return
-			}
-			defer func() { <-admit }()
-
-			// The actor owns the goal's lifecycle via Handle. A goal-level error never
-			// halts the fleet (best-effort across goals — ADR 054 §1): the registry
-			// already recorded StateFailed inside Handle, and the orchestrator's
-			// Reporter (the single serialized stdout owner — orchestrate_seams.go
-			// logReporter) emits the per-goal summary / denial. The control loop does
-			// NOT write stdout itself: M actors run concurrently and a plain io.Writer
-			// is not safe for concurrent writes; routing all user-visible output
-			// through the one mutex-guarded Reporter is what keeps stdout race-free.
-			if _, err := oc.orch.Handle(ctx, goal); err != nil {
-				_ = err // recorded in the registry as StateFailed; surfaced via status (task 114)
-			}
-		}(goal)
+		switch msg.Kind {
+		case supervisor.MsgNewGoal:
+			oc.routeNewGoal(ctx, msg.Goal, mailboxes, admit, &wg)
+		case supervisor.MsgStatus:
+			oc.routeStatus(ctx, msg.GoalID)
+		case supervisor.MsgInfo, supervisor.MsgCancel:
+			oc.routeCommand(ctx, msg, mailboxes)
+		default:
+			oc.report(ctx, fmt.Sprintf("ignored message of unknown kind: %v", msg.Kind))
+		}
 	}
 
 	wg.Wait()
 	return srcErr
+}
+
+// routeNewGoal handles a MsgNewGoal: create the goal's command mailbox, register it
+// Queued, then spawn the goal actor (register-then-start ordering — ADR 054 §6 race
+// surface (b): the mailbox and registry entry exist before the actor starts, so an
+// info/cancel arriving at actor startup is delivered, not lost).
+func (oc orchestrateConfig) routeNewGoal(ctx context.Context, goal supervisor.Task, mailboxes *commandMailboxes, admit chan struct{}, wg *sync.WaitGroup) {
+	// Mailbox BEFORE registration/start: a cancel/info for this goal that arrives
+	// while the actor is still booting must find a mailbox.
+	mailboxes.Create(goal.ID)
+
+	// Register the goal as Queued BEFORE spawning its actor, so a status read (or the
+	// admission check) never sees a goal that has been accepted but not yet projected.
+	oc.registry.Register(goal.ID, orchestrator.StateQueued)
+
+	wg.Add(1)
+	go func(goal supervisor.Task) {
+		defer wg.Done()
+		// Acquire a goal-admission slot. While the fleet is at maxGoals live goals this
+		// blocks — the goal stays Queued in the registry (Handle has not run, so no
+		// Planning transition). When a slot frees, the actor proceeds and Handle
+		// transitions Queued → Planning → … itself.
+		select {
+		case admit <- struct{}{}:
+		case <-ctx.Done():
+			oc.registry.SetState(goal.ID, orchestrator.StateFailed)
+			return
+		}
+		defer func() { <-admit }()
+
+		// The actor owns the goal's lifecycle via Handle. A goal-level error never
+		// halts the fleet (best-effort across goals — ADR 054 §1): the registry already
+		// recorded StateFailed inside Handle, and the orchestrator's Reporter (the
+		// single serialized stdout owner) emits the per-goal summary / denial. The
+		// control loop does NOT write stdout itself.
+		if _, err := oc.orch.Handle(ctx, goal); err != nil {
+			_ = err // recorded in the registry as StateFailed; surfaced via status (task 114)
+		}
+	}(goal)
+}
+
+// routeStatus dispatches a MsgStatus to the status handler (task 114's body). An
+// empty GoalID is a fleet query. With no handler injected, a minimal Reporter
+// acknowledgement keeps the status path observable end-to-end before 114 lands.
+func (oc orchestrateConfig) routeStatus(ctx context.Context, goalID string) {
+	if oc.statusHandler != nil {
+		oc.statusHandler(goalID)
+		return
+	}
+	if goalID == "" {
+		oc.report(ctx, "status: fleet (handler pending task 114)")
+		return
+	}
+	oc.report(ctx, fmt.Sprintf("status: goal %q (handler pending task 114)", goalID))
+}
+
+// routeCommand dispatches a MsgInfo/MsgCancel to the addressed goal's command
+// mailbox. An unknown goalID (no mailbox) yields a graceful "no such goal" report —
+// never a panic, and no mailbox is created for the unknown goal (ADR 054 §2).
+func (oc orchestrateConfig) routeCommand(ctx context.Context, msg supervisor.Message, mailboxes *commandMailboxes) {
+	if mailboxes.deliver(msg) {
+		return
+	}
+	oc.report(ctx, fmt.Sprintf("no such goal: %q (%s ignored)", msg.GoalID, msg.Kind))
+}
+
+// report sends a control-loop message over the shared Reporter, swallowing the
+// Reporter error (a failed report must not halt the control plane). A nil reporter
+// is a no-op.
+func (oc orchestrateConfig) report(ctx context.Context, text string) {
+	if oc.reporter == nil {
+		return
+	}
+	_ = oc.reporter.Report(ctx, text)
 }
 
 // plannerFromEnv selects the Planner per AGENT_BUILDER_PLANNER. "structured"

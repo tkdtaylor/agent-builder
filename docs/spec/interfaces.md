@@ -33,7 +33,7 @@ Subcommands:
 | Subcommand / flag | Type | Default | Effect |
 |-------------------|------|---------|--------|
 | `run` | subcommand | — | Builds the configured Phase 0 runtime pipeline from environment configuration, selects at most one ready task, dispatches it through the supervisor, and returns `0` when the run completes or idles. Returns `1` when configuration, containment, Executor, Gate, or loop execution fails. |
-| `orchestrate` | subcommand | — | Drives the Tier-1 orchestrator (ADR 042/046/048/049/050). Assembles the orchestrator stack from environment — `NewPlanStoreFromEnv` (memory-guard-backed or in-memory + warning), the worker envelope transport with **one shared `ReplayCache` per direction** (083 SEC-001), the `StructuredPlanner` (or `AGENT_BUILDER_PLANNER=llm`, pending task 100), the policy client, and **one shared `audit.Sink`** between orchestrator and dispatched workers (ADR 050 §4) — then reads goals from the inbound source and drives `Handle`/`Resume`. **Fail-closed at startup (083 SEC-003):** a missing/unreadable `AGENT_BUILDER_WORKER_SIGNING_KEY` exits non-zero with an error satisfying `errors.Is(err, worker.ErrMissingSigningKey)` **before any goal is read**. Returns `0` on a clean run, `1` on assembly or handling failure, `2` on usage error. |
+| `orchestrate` | subcommand | — | Drives the Tier-1 orchestrator (ADR 042/046/048/049/050). Assembles the orchestrator stack from environment — `NewPlanStoreFromEnv` (memory-guard-backed or in-memory + warning), the worker envelope transport with **one shared `ReplayCache` per direction** (083 SEC-001), the `StructuredPlanner` (or `AGENT_BUILDER_PLANNER=llm`, pending task 100), the policy client, and **one shared `audit.Sink`** between orchestrator and dispatched workers (ADR 050 §4) — then runs the **async control loop** (ADR 054 §1): a single goroutine reads typed messages from a `supervisor.MessageSource` (the line-oriented env/stdin source by default — see [configuration.md](configuration.md#stdin-command-grammar-orchestrate) for the grammar) and **routes each by kind** (`new-goal` → goal actor via `Handle`; `status` → status handler; `info`/`cancel` → the addressed goal's command mailbox; unknown goalID → graceful "no such goal" report). **Fail-closed at startup (083 SEC-003):** a missing/unreadable `AGENT_BUILDER_WORKER_SIGNING_KEY` exits non-zero with an error satisfying `errors.Is(err, worker.ErrMissingSigningKey)` **before any message is read**. Returns `0` on a clean run (source drains to EOF and all actors join), `1` on assembly or handling failure, `2` on usage error. |
 | `version` | subcommand | — | Prints `agent-builder <version>` to stdout and exits `0`. |
 | `verify <repo>` | subcommand + path argument | — | Constructs the production verification Gate and runs it against the target repo path. Prints each Gate step result and exits `0` only when every blocking step passes. Exits `1` when any Gate step fails. |
 | `verify-checkpoint` | subcommand | — | Verifies a signed checkpoint JSON file against an Ed25519 public key by delegating to `audit-trail checkpoint verify`. Exits `0` when valid, `1` when invalid, `2` on usage error or binary resolution failure. Writes JSON `{"valid":bool,"message":string}` to stdout. |
@@ -407,6 +407,59 @@ var ErrUnknownHarness error
   - **State persistence:** `SaveState(path)` writes current `Usage` and `Availability` for all entries as a plain-text (JSON) file. `LoadState(path)` restores that state; a corrupted or malformed file returns a descriptive error, never a silent zero value.
   - **Clock seam:** `New` uses the real wall clock (`time.Now()`). `NewWithClock` takes an explicit `Clock` so tests can inject `FakeClock` and advance time programmatically without `time.Sleep`.
   - **`ResolveExecutor`:** selects an entry via `Select`, then constructs the concrete `supervisor.Executor` for the entry's harness (`HarnessClaudeCLI` → `executor.NewClaudeCLIFromEntry`, `HarnessCodexCLI` → `executor.NewCodexCLI`, `HarnessGeminiCLI` → `executor.NewGeminiCLI`, `HarnessOllamaNative` → `executor.NewOllamaNative`), returning it alongside the selected entry so the caller can feed the entry ID back into the fallback hooks. Returns `ErrNoEligibleExecutor` when selection fails, or `ErrUnknownHarness` for an unrecognized harness driver. This is the executor-side boundary: the caller receives a `supervisor.Executor` seam, not a router.
+
+### Interface: `supervisor.MessageSource` (typed inbound seam)
+
+```go
+// In internal/supervisor — the typed inbound operator seam for the async control
+// plane (ADR 054 §2). It generalizes the goal-only GoalSource into typed messages.
+type MessageKind int
+const (
+    MsgNewGoal MessageKind = iota // a fresh goal to plan (Goal carries the Task)
+    MsgStatus                     // query lifecycle state (empty GoalID = fleet)
+    MsgInfo                       // new info for an in-flight goal (GoalID + Text)
+    MsgCancel                     // cancel a goal + tear down its workers (GoalID)
+)
+
+type Message struct {
+    Kind   MessageKind // how the control loop dispatches this message
+    GoalID string      // addresses status/info/cancel; the new goal's ID for new-goal
+    Goal   Task        // populated for MsgNewGoal
+    Text   string      // info payload / free-form
+}
+
+type MessageSource interface {
+    Next() (msg Message, ok bool, err error)
+}
+```
+
+- **Implementors:** `*cli.envMessageSource` (the env/stdin line-oriented local-test
+  source — see `docs/spec/configuration.md` for the grammar); `cli.goalSourceAdapter`
+  (adapts a goal-only `GoalSource` into a `MessageSource` yielding each goal as a
+  `MsgNewGoal`, preserving the goal-only test/producer path).
+- **Consumers:** `cli.runControlLoop` — the single control-loop goroutine is the ONLY
+  reader of the seam (no concurrent `Next()` races, ADR 054 §1). It routes each
+  `Message` by `Kind`: `MsgNewGoal` → create the goal's command mailbox, register it
+  `Queued`, spawn a goal actor (register-then-start ordering); `MsgStatus` → the status
+  handler (body is task 114; empty GoalID = fleet); `MsgInfo`/`MsgCancel` → the
+  addressed goal's per-goal command mailbox (a buffered `chan supervisor.Message` keyed
+  by goalID). An `info`/`cancel` for an unknown goalID yields a graceful "no such goal"
+  report over the `Reporter` — never a panic, and no mailbox is auto-created.
+- **Why a NEW seam, not a mutated `GoalSource`:** `GoalSource.Next() (Task, bool, error)`
+  is left intact because it is also the per-worker, in-box recipe task source
+  (`runtime.Run`'s `GoalSourceFactory` path) — a different inbound seam that must not be
+  disturbed (ADR 054 §2 / Consequences).
+- **Package:** `internal/supervisor` — the pure-stdlib signature adds no import to the
+  package, preserving F-003 / F-007 (enforced by `make fitness-supervisor-isolation`).
+  `MessageKind.String()` and `Message` carry no crypto/executor/web dependency.
+- **Malformed-input contract:** the env/stdin grammar surfaces a parse error wrapping
+  `cli.ErrMalformedInput` for a control verb missing a required argument (e.g. `cancel`
+  with no goalID). The control loop reports it gracefully and continues — a malformed
+  control line is never silently accepted as a `MsgNewGoal`. EOF / no-more-input returns
+  `ok=false`, nil error, on which the control plane drains and exits.
+- **Stability:** governed by ADR 054 §2 and task 113. The status/info/cancel handler
+  *bodies* land in tasks 114/115/116; this seam routes the kinds and delivers to the
+  mailbox.
 
 ### Interface: `supervisor.Reporter`
 

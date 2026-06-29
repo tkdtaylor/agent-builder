@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-29 (task 112 — async control-loop core: the orchestrate entry point is now a **non-blocking control loop** spawning **one goal-actor goroutine per goal**, bounded by `AGENT_BUILDER_MAX_GOALS` (admission) + `AGENT_BUILDER_MAX_WORKERS` (fleet-wide worker semaphore inside per-sub-goal dispatch), with a mutex-guarded **status registry** projection — replacing the serial `runGoalIntakeLoop`)
+**Last updated:** 2026-06-29 (task 113 — inbound message protocol: the control loop now reads a typed `supervisor.MessageSource` (NEW seam; `GoalSource` left intact) and **routes by kind** — new-goal→actor (mailbox created register-then-start), status→registry handler, info/cancel→addressed per-goal command mailbox, unknown goalID→graceful "no such goal"; built on task 112's async control-loop core)
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -295,23 +295,34 @@ sequenceDiagram
     participant Main as cmd/agent-builder
     participant CLI as cli orchestrate (assembleOrchestrate)
     participant Worker as worker.LoadSigningKey
-    participant Ctrl as runControlLoop (non-blocking, sole GoalSource reader)
+    participant Ctrl as runControlLoop (non-blocking, sole MessageSource reader)
+    participant Mbox as commandMailboxes (per-goal, keyed by goalID)
     participant Reg as StatusRegistry (mutex-guarded projection)
     participant Goal as goal-actor goroutine (one per goal)
     participant Orch as Orchestrator.Handle / Resume
 
     Main->>CLI: Main(Args{"orchestrate"})
     CLI->>Worker: LoadSigningKey() — 083 SEC-003 fail-closed
-    Note over CLI,Worker: BEFORE goal intake — missing AGENT_BUILDER_WORKER_SIGNING_KEY exits non-zero (ErrMissingSigningKey)
+    Note over CLI,Worker: BEFORE any message read — missing AGENT_BUILDER_WORKER_SIGNING_KEY exits non-zero (ErrMissingSigningKey)
     Worker-->>CLI: Ed25519 signing key (or fatal startup error)
     CLI->>CLI: NewPlanStoreFromEnv, ONE ReplayCache per direction (083 SEC-001), StructuredPlanner, ONE shared audit.Sink, PolicyClient, StatusRegistry, worker Semaphore(MAX_WORKERS)
-    CLI->>Ctrl: runControlLoop(oc) — admission cap = MAX_GOALS
-    loop until GoalSource exhausted (ok=false)
-        Ctrl->>Reg: Register(goalID, Queued) — register-then-start
-        Ctrl->>Goal: go actor(goal) — intake decoupled from processing (next goal read immediately)
-        Goal->>Goal: acquire admission slot (park Queued while fleet at MAX_GOALS)
-        Goal->>Orch: Handle(goal) — owns this goalID's lifecycle
-        Note over Goal,Orch: Handle transitions Reg Planning→(AwaitingApproval or Dispatching)→Done/Failed, and the worker semaphore is acquired INSIDE per-sub-goal dispatch (fleet-wide cap)
+    CLI->>Ctrl: runControlLoop(oc) — admission cap = MAX_GOALS, reads typed MessageSource (ADR 054 §2)
+    loop until MessageSource exhausted (ok=false)
+        Ctrl->>Ctrl: msg, ok, err := source.Next() — route by Kind
+        alt MsgNewGoal
+            Ctrl->>Mbox: Create(goalID) — mailbox BEFORE register/start (register-then-start)
+            Ctrl->>Reg: Register(goalID, Queued)
+            Ctrl->>Goal: go actor(goal) — intake decoupled from processing (next message read immediately)
+            Goal->>Goal: acquire admission slot (park Queued while fleet at MAX_GOALS)
+            Goal->>Orch: Handle(goal) — owns this goalID's lifecycle
+            Note over Goal,Orch: Handle transitions Reg Planning→(AwaitingApproval or Dispatching)→Done/Failed, worker semaphore acquired INSIDE per-sub-goal dispatch (fleet-wide cap)
+        else MsgStatus
+            Ctrl->>Reg: status handler reads registry (handler body = task 114, empty GoalID = fleet)
+        else MsgInfo / MsgCancel
+            Ctrl->>Mbox: deliver(msg) to addressed goal's mailbox (unknown goalID → graceful "no such goal", no mailbox created)
+        else malformed line
+            Ctrl->>Ctrl: ErrMalformedInput → report + continue (never a new-goal, never a panic)
+        end
     end
     Ctrl->>Ctrl: WaitGroup.Wait — join all actors, then return
 ```
@@ -321,7 +332,7 @@ Each goal-actor's `Handle`/`Resume` then drives the Tier-1 flow below (M actors 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Channel as Inbound Channel (GoalSource)
+    participant Channel as Inbound Channel (MessageSource → new-goal)
     participant Orch as Tier-1 Orchestrator (contained: exec-sandbox, default-deny egress)
     participant Planner as StructuredPlanner
     participant Policy as policy-engine (spawn-plan / spawn-worker)
@@ -395,10 +406,19 @@ partial failure (a worker failure never halts siblings), outcomes aggregated int
 pre-sized slice by index (deterministic order), and the shared audit chain + `PlanStore`
 serialized so `go test -race` is clean.
 
-**Async control plane (task 112 / ADR 054 §1/§3).** Above this per-goal flow, the
-`orchestrate` entry point runs a **non-blocking control loop** that is the sole reader
-of the `GoalSource` and spawns **one goal-actor goroutine per goal**, so M goals run the
-flow above concurrently. Two caps compose: `AGENT_BUILDER_MAX_GOALS` is a goal-admission
+**Async control plane (task 112 / ADR 054 §1/§3; inbound message protocol task 113 /
+ADR 054 §2).** Above this per-goal flow, the `orchestrate` entry point runs a
+**non-blocking control loop** that is the sole reader of the typed
+`supervisor.MessageSource` (generalized from goal-only `GoalSource` — a NEW seam,
+`GoalSource` left intact for the in-box recipe path) and **routes each message by kind**:
+`new-goal` creates the goal's command mailbox + registry entry then spawns **one
+goal-actor goroutine** (register-then-start, so an `info`/`cancel` arriving at actor
+startup is never lost); `status` reads the registry (handler body = task 114);
+`info`/`cancel` deliver to the addressed goal's per-goal **command mailbox** (a buffered
+`chan supervisor.Message` keyed by goalID), with an unknown goalID answered by a graceful
+"no such goal" report — never a panic. A malformed control line (`ErrMalformedInput`) is
+reported and skipped, never silently accepted as a goal. M goals run the flow above
+concurrently. Two caps compose: `AGENT_BUILDER_MAX_GOALS` is a goal-admission
 cap enforced at the loop (excess goals park `Queued` until a live goal terminates), and
 `AGENT_BUILDER_MAX_WORKERS` is the **fleet-wide** worker semaphore acquired **inside** the
 per-sub-goal dispatch goroutine (`Acquire(1)`→dispatch→deferred `Release(1)`), so total
@@ -409,8 +429,10 @@ plus per-sub-goal `running`/`done`/`failed`); the registry is a **projection for
 observability only**, never the source of control-flow truth (the `PlanStore` is), so a
 registry write failure never halts a goal. All user-visible output flows through the one
 mutex-guarded Reporter, keeping stdout race-free; the audit chain stays `verify`-clean
-across M goals × N workers on the single mutex-guarded `Append`. The typed message
-protocol, status query, apply-info, and cancellation are deferred to tasks 113–116.
+across M goals × N workers on the single mutex-guarded `Append`. The status-query
+*handler body*, apply-info fold, and cancellation teardown are deferred to tasks
+114–116; this task (113) wires the message protocol + the kind-dispatch router and the
+per-goal command mailbox.
 
 ---
 
