@@ -168,6 +168,13 @@ type assembleOverrides struct {
 	// one assembleOrchestrate sizes from maxWorkers — lets a test hold the SAME
 	// semaphore instance to assert "no permit leak after drain" (TC-112-07).
 	workerSem *orchestrator.Semaphore
+	// onPlanner, when non-nil, is invoked with the exact Planner value that
+	// assembleOrchestrate hands to orchestrator.New — the producer→consumer link a
+	// test needs to assert that the env-selected planner (e.g. *llmplanner.LLMPlanner
+	// under AGENT_BUILDER_PLANNER=llm) actually survives the control-plane assembly
+	// and reaches the orchestrator (TC-110-05). Production passes assembleOverrides{}
+	// so this is nil on the live path.
+	onPlanner func(orchestrator.Planner)
 }
 
 // runOrchestrate is the CLI dispatch for the orchestrate subcommand. It parses
@@ -350,6 +357,12 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 	workerSem := ov.workerSem
 	if workerSem == nil {
 		workerSem = orchestrator.NewSemaphore(maxWorkers)
+	}
+
+	// Test seam (TC-110-05): observe the exact planner the assembly feeds into
+	// orchestrator.New, proving the env-selected planner survives the control loop.
+	if ov.onPlanner != nil {
+		ov.onPlanner(planner)
 	}
 
 	orch := orchestrator.New(

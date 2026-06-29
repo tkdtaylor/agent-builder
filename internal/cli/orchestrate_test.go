@@ -906,18 +906,42 @@ func TestInvokerClosureOllamaEntryYieldsCompleter(t *testing.T) {
 // =============================================================================
 
 // TestAssembleOrchestrateWithLLMPlannerWiresLLMPlanner asserts that with
-// AGENT_BUILDER_PLANNER=llm, assembleOrchestrate (the control-plane assembly)
-// receives a *llmplanner.LLMPlanner — the planner seam survives the loop rewrite.
+// AGENT_BUILDER_PLANNER=llm, the control-plane assembly (assembleOrchestrate)
+// feeds a *llmplanner.LLMPlanner into orchestrator.New — i.e. the planner seam
+// survives the task-112 loop rewrite and reaches the orchestrator on the async
+// path. This drives the REAL assembleOrchestrate with NO planner override (so
+// plannerFromEnv runs under =llm) and captures the exact planner handed to
+// orchestrator.New via the onPlanner seam — proving the producer→consumer link,
+// not merely that plannerFromEnv returns the right type (that is TC-110-01).
 func TestAssembleOrchestrateWithLLMPlannerWiresLLMPlanner(t *testing.T) {
 	t.Setenv(EnvPlanner, "llm")
 	setBaseConfigEnv(t)
 
-	p, err := plannerFromEnv()
+	var captured orchestrator.Planner
+	var capturedCount int
+	oc, cleanup, err := assembleOrchestrate(Config{Stdout: discard(), Stderr: discard()}, assembleOverrides{
+		// No planner override → assembleOrchestrate calls plannerFromEnv() under =llm.
+		dispatch:   (&spyDispatch{}).fn, // spy so no real worker runs
+		signingKey: testSigningKey(t),   // satisfy SEC-003 without a key file
+		onPlanner: func(p orchestrator.Planner) {
+			captured = p
+			capturedCount++
+		},
+	})
 	if err != nil {
-		t.Fatalf("TC-110-05: plannerFromEnv =llm returned error: %v", err)
+		t.Fatalf("TC-110-05: assembleOrchestrate(=llm) returned error: %v", err)
 	}
-	if _, ok := p.(*llmplanner.LLMPlanner); !ok {
-		t.Fatalf("TC-110-05: assembleOrchestrate planner type = %T, want *llmplanner.LLMPlanner", p)
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if oc.orch == nil {
+		t.Fatal("TC-110-05: assembleOrchestrate returned a nil orchestrator")
+	}
+	if capturedCount != 1 {
+		t.Fatalf("TC-110-05: onPlanner invoked %d times, want exactly 1 (the planner fed to orchestrator.New)", capturedCount)
+	}
+	if _, ok := captured.(*llmplanner.LLMPlanner); !ok {
+		t.Fatalf("TC-110-05: planner fed into orchestrator.New = %T, want *llmplanner.LLMPlanner", captured)
 	}
 }
 
