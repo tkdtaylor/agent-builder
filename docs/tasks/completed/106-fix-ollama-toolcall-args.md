@@ -1,6 +1,6 @@
 # Task 106: Fix Ollama native tool-call arguments decoding (object, not string)
 
-**Status:** backlog
+**Status:** completed (🟡 — merged; L6 native-harness round-trip PASSED)
 **Priority:** must-have (blocks the native-harness L6 round-trip / task 094 closure)
 **Created:** 2026-06-28
 **Paired spec:** `docs/tasks/test-specs/106-fix-ollama-toolcall-args-test-spec.md`
