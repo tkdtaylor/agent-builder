@@ -545,10 +545,21 @@ func (oc orchestrateConfig) routeNewGoal(ctx context.Context, goal supervisor.Ta
 	// admission check) never sees a goal that has been accepted but not yet projected.
 	oc.registry.Register(goal.ID, orchestrator.StateQueued)
 
+	// Per-goal cancel context (ADR 054 §5, task 116): derive ONE context.WithCancel
+	// per goal from the control-loop ctx and register its CancelFunc BEFORE spawning
+	// the actor (register-then-start), so a `cancel <goalID>` that races actor startup
+	// still finds a cancel handle. The derived ctx threads through the actor → Handle
+	// → dispatchPlan → runtime.Run → Supervisor.Run to the run-loop's ctx.Done() arm,
+	// so cancelling it tears down ONLY this goal's in-flight workers — siblings derive
+	// independent contexts from the same parent (no blast radius).
+	goalCtx, cancel := context.WithCancel(ctx)
+	oc.registry.SetCancelFunc(goal.ID, cancel)
+
 	// The goal actor (task 115) owns the goal's lifecycle: it acquires the admission
 	// slot, runs Handle, and concurrently drains the command mailbox at checkpoint
-	// boundaries (apply-info-at-checkpoint). It does its own wg.Add(1)/Done.
-	oc.runGoalActor(ctx, goal, mailboxes, admit, wg, shutdown)
+	// boundaries (apply-info-at-checkpoint). It does its own wg.Add(1)/Done. It runs
+	// under goalCtx so a cancel propagates to its in-flight dispatch.
+	oc.runGoalActor(goalCtx, goal, mailboxes, admit, wg, shutdown)
 }
 
 // routeStatus dispatches a MsgStatus to the status handler (task 114's body). An

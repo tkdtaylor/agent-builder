@@ -88,10 +88,13 @@ func newTransportDispatch(signingKey ed25519.PrivateKey, workItemCache, resultCa
 			return fmt.Errorf("orchestrate dispatch: verify work-item for %q: %w", sub.Task.ID, err)
 		}
 		// Transport accepted the work-item — run the worker through the existing
-		// per-worker runtime assembly (the orchestrator never reimplements it).
+		// per-worker runtime assembly (the orchestrator never reimplements it). The
+		// per-goal cancel context (ADR 054 §5, task 116) is threaded into runtime.Run
+		// so a `cancel <goalID>` tears down this in-flight worker via the run-loop's
+		// case <-ctx.Done(): arm (the same box.Kill/Teardown path as the timeout).
 		cfg := base
 		cfg.RecipeName = sub.RecipeName
-		if runErr := runtimewiring.Run(cfg, io.Discard); runErr != nil {
+		if runErr := runtimewiring.Run(ctx, cfg, io.Discard); runErr != nil {
 			return runErr
 		}
 		// Replay-check the worker's result envelope against the SHARED result cache,

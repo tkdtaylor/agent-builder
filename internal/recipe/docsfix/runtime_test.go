@@ -3,6 +3,7 @@
 package docsfix_test
 
 import (
+	"context"
 	"io"
 	"testing"
 	"time"
@@ -23,16 +24,16 @@ func TestTC079_04_RuntimeGateAssertionPassesForDocsFix(t *testing.T) {
 
 	// Construct a minimal runtime.Config for recipe="docs-fix".
 	config := runtime.Config{
-		TaskRoot:       tmpDir,
-		Worktree:       tmpDir,
-		ClaudeCLI:      "claude",
+		TaskRoot:        tmpDir,
+		Worktree:        tmpDir,
+		ClaudeCLI:       "claude",
 		ExecBoxLauncher: "containment/execution-box/run.sh",
-		RunTimeout:     1 * time.Second,
-		MaxAttempts:    1,
-		PublishRemote:  "origin",
-		GitCLI:         "git",
-		GitHubCLI:      "gh",
-		RecipeName:     "docs-fix",
+		RunTimeout:      1 * time.Second,
+		MaxAttempts:     1,
+		PublishRemote:   "origin",
+		GitCLI:          "git",
+		GitHubCLI:       "gh",
+		RecipeName:      "docs-fix",
 	}
 
 	// Call the real runtime.Run with the docs-fix recipe.
@@ -44,7 +45,7 @@ func TestTC079_04_RuntimeGateAssertionPassesForDocsFix(t *testing.T) {
 	//   - "Blocks()"
 	// If the gate-existence assertion PASSES, runtime proceeds to later failures
 	// (missing sandbox, missing task, etc.) — which is fine for this test.
-	err := runtime.Run(config, io.Discard)
+	err := runtime.Run(context.Background(), config, io.Discard)
 
 	// The error SHOULD occur (missing sandbox/Claude), but it must NOT be a gate-existence error.
 	if err != nil {

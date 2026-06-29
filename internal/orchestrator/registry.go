@@ -1,15 +1,16 @@
 package orchestrator
 
 import (
+	"context"
 	"sync"
 	"time"
 )
 
 // GoalState is a goal's lifecycle state in the live status registry (ADR 054 §3).
-// The states this task drives are Queued/Planning/AwaitingApproval/Dispatching/
-// Done/Failed. Cancelled is reserved for the cancellation task (116) — it is
-// defined here so the enum is stable, but this task never transitions a goal into
-// it.
+// Queued/Planning/AwaitingApproval/Dispatching/Done/Failed are the normal lifecycle
+// states; Cancelled is the terminal state a `cancel <goalID>` drives (task 116): the
+// cancel handler fires the goal's CancelFunc, sets Cancelled, and consumes the plan
+// from the PlanStore.
 type GoalState int
 
 const (
@@ -31,7 +32,9 @@ const (
 	// StateFailed — the goal terminated with an error (planning error, deny-audit
 	// halt, or a dispatch-level failure that errored Handle).
 	StateFailed
-	// StateCancelled — reserved for task 116; never set by this task.
+	// StateCancelled — the goal was cancelled by a `cancel <goalID>` (task 116): its
+	// CancelFunc fired (tearing down in-flight workers via the run-loop ctx.Done()
+	// arm) and its plan was consumed from the PlanStore.
 	StateCancelled
 )
 
@@ -104,14 +107,22 @@ type GoalStatus struct {
 type StatusRegistry struct {
 	mu    sync.Mutex
 	goals map[string]*GoalStatus
-	nowFn func() time.Time
+	// cancels holds the per-goal CancelFunc (ADR 054 §3/§5, task 116). It is keyed by
+	// goalID and is SEPARATE from goals because a CancelFunc is a live control handle,
+	// not a clone-able projection value (cloneStatus must never copy it). The control
+	// loop derives one context.WithCancel per goal and registers its CancelFunc here
+	// (SetCancelFunc); the cancel handler calls Cancel(goalID) to fire only that goal's
+	// derived ctx — siblings' contexts are independent, so there is no blast radius.
+	cancels map[string]context.CancelFunc
+	nowFn   func() time.Time
 }
 
 // NewStatusRegistry constructs an empty registry using time.Now as the clock.
 func NewStatusRegistry() *StatusRegistry {
 	return &StatusRegistry{
-		goals: make(map[string]*GoalStatus),
-		nowFn: time.Now,
+		goals:   make(map[string]*GoalStatus),
+		cancels: make(map[string]context.CancelFunc),
+		nowFn:   time.Now,
 	}
 }
 
@@ -154,6 +165,43 @@ func (r *StatusRegistry) SetState(goalID string, state GoalState) {
 	}
 	g.State = state
 	g.UpdatedAt = r.now()
+}
+
+// SetCancelFunc registers the per-goal CancelFunc (ADR 054 §5, task 116). The
+// control loop derives one context.WithCancel per goal and calls this before
+// spawning the goal actor, so a `cancel <goalID>` that races actor startup still
+// finds a cancel handle. A nil registry or nil cancel is a no-op. Re-registering a
+// goalID overwrites the prior handle.
+func (r *StatusRegistry) SetCancelFunc(goalID string, cancel context.CancelFunc) {
+	if r == nil || cancel == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cancels[goalID] = cancel
+}
+
+// Cancel fires the goal's registered CancelFunc and reports whether one was found.
+// It cancels ONLY this goal's derived context (siblings are independent — no blast
+// radius, ADR 054 §5). The CancelFunc is removed after firing so a second cancel of
+// the same goal is a no-op (returns false). A nil registry or unknown goal returns
+// false. The state transition to Cancelled and the plan-consume are the caller's
+// responsibility (the cancel handler) — this method only fires the context.
+func (r *StatusRegistry) Cancel(goalID string) bool {
+	if r == nil {
+		return false
+	}
+	r.mu.Lock()
+	cancel, ok := r.cancels[goalID]
+	if ok {
+		delete(r.cancels, goalID)
+	}
+	r.mu.Unlock()
+	if !ok {
+		return false
+	}
+	cancel()
+	return true
 }
 
 // SetSubGoal records (or updates) the progress of one sub-goal within a goal.

@@ -135,12 +135,16 @@ func (a *seamConfigAdapter) Worktree() string      { return a.config.Worktree }
 
 // RunFromEnv builds and runs one configured Phase 0 pipeline from environment
 // variables. The optional writer receives a short user-visible run summary.
-func RunFromEnv(stdout io.Writer) error {
+//
+// ctx is threaded into Run → Supervisor.Run so a cancellation propagates to the
+// in-box loop's run-loop (ADR 054 §5, task 116). The single-task CLI path passes
+// context.Background(); the orchestrate path passes the per-goal cancel context.
+func RunFromEnv(ctx context.Context, stdout io.Writer) error {
 	config, err := ConfigFromEnv(os.Getenv)
 	if err != nil {
 		return err
 	}
-	return Run(config, stdout)
+	return Run(ctx, config, stdout)
 }
 
 // ConfigFromEnv reads the explicit run configuration contract from getenv.
@@ -532,7 +536,14 @@ func verifyGateExists(gateFactory recipe.GateFactory) error {
 }
 
 // Run dispatches at most one ready task through the concrete Phase 0 seams.
-func Run(config Config, stdout io.Writer) error {
+//
+// ctx is the per-worker cancel context (ADR 054 §5, task 116): it is threaded into
+// Supervisor.Run so a cancellation cancels the in-box loop via the run-loop's
+// case <-ctx.Done(): arm (the same box.Kill/Teardown path the wall-clock timeout
+// drives). The single-task CLI path passes context.Background() (no cancellation);
+// the orchestrate dispatch path passes the goal's derived cancel context, so a
+// `cancel <goalID>` tears down that goal's in-flight workers.
+func Run(ctx context.Context, config Config, stdout io.Writer) error {
 	if stdout == nil {
 		stdout = io.Discard
 	}
@@ -722,7 +733,7 @@ func Run(config Config, stdout io.Writer) error {
 		options = append(options, supervisor.WithCheckpointSigner(cs))
 	}
 
-	if err := supervisor.New(options...).Run(); err != nil {
+	if err := supervisor.New(options...).Run(ctx); err != nil {
 		return err
 	}
 	_, _ = fmt.Fprintf(stdout, "run completed: task %s\n", task.ID)

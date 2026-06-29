@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"io"
 	"os"
 	"path/filepath"
@@ -100,7 +101,7 @@ func TestGateExistenceThroughRunPath(t *testing.T) {
 		AuditRecordPath: auditPath, // if Run got past the gate check it would build the audit sink here
 	}
 
-	err := Run(config, io.Discard)
+	err := Run(context.Background(), config, io.Discard)
 
 	// The live Run path must reject the gateless recipe before any dispatch.
 	if err == nil {

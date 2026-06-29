@@ -38,6 +38,13 @@ var (
 
 	// ErrRunTimedOut means the in-box loop exceeded the configured wall-clock deadline.
 	ErrRunTimedOut = errors.New("supervisor: run timed out")
+
+	// ErrRunCancelled means the run's context was cancelled mid-flight (a `cancel
+	// <goalID>` reached this worker via the per-goal cancel context — ADR 054 §5).
+	// It triggers the SAME box.Kill/Teardown path as ErrRunTimedOut; the wall-clock
+	// timeout remains the backstop. The teardown error (if any) is errors.Join'd
+	// onto this so the cancel handler can surface a partial-teardown leak.
+	ErrRunCancelled = errors.New("supervisor: run cancelled")
 )
 
 // Task is one unit of work: build or modify exactly one target repo on its own
@@ -124,15 +131,15 @@ type InBoxLoop interface {
 // token-in-box risk (see docs/spec/configuration.md) — will be added here in the
 // containment task (Phase 0.3), when something actually enforces it.
 type Supervisor struct {
-	sandboxRunner     sandbox.Runner
-	box               ContainmentBox
-	loop              InBoxLoop
-	task              Task
-	logger            *slog.Logger
-	runRecordPath     string
-	sink              audit.Sink
-	checkpointSigner  *audit.CheckpointSigner
-	runTimeout        time.Duration
+	sandboxRunner    sandbox.Runner
+	box              ContainmentBox
+	loop             InBoxLoop
+	task             Task
+	logger           *slog.Logger
+	runRecordPath    string
+	sink             audit.Sink
+	checkpointSigner *audit.CheckpointSigner
+	runTimeout       time.Duration
 }
 
 // Option configures a Supervisor.
@@ -231,7 +238,17 @@ func New(options ...Option) *Supervisor {
 // guarantees deterministic lifecycle ordering, enforces the optional
 // wall-clock kill, and, when configured, streams run output to a durable
 // host-side run-record before teardown.
-func (s *Supervisor) Run() (err error) {
+//
+// ctx is the per-goal cancel context (ADR 054 §5, task 116). A cancel
+// (`cancel <goalID>`) cancels the goal's derived ctx, which fires the run-loop's
+// case <-ctx.Done(): arm — the SAME box.Kill/Teardown path the wall-clock timeout
+// already drives, returning ErrRunCancelled. The wall-clock timeout remains the
+// independent backstop. A nil-equivalent context.Background() leaves Run behaving
+// exactly as the pre-116 no-cancel path (the ctx.Done() arm never fires).
+func (s *Supervisor) Run(ctx context.Context) (err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if s.box == nil {
 		return ErrNilContainmentBox
 	}
@@ -298,39 +315,71 @@ func (s *Supervisor) Run() (err error) {
 		}
 	}
 	loopResult := s.runLoop(handle, streams)
+
+	// The run-loop select has THREE trigger arms (ADR 054 §5, task 116):
+	//   1. the loop finishing on its own (normal completion / failure),
+	//   2. the per-goal cancel context being cancelled (case <-ctx.Done():), and
+	//   3. the optional wall-clock timeout (case <-timer.C:).
+	// Arms 2 and 3 are INDEPENDENT triggers into the SAME box.Kill/Teardown path
+	// (killAndJoin) — cancel invents no new teardown mechanism; it reuses the kill
+	// path the timeout already drives, and the timeout remains the backstop even
+	// when a cancel races it. When no timeout is configured the timer arm is simply
+	// a nil channel (never fires), so the cancel arm still works unconditionally.
+	var timerC <-chan time.Time
 	if s.runTimeout > 0 {
 		timer := time.NewTimer(s.runTimeout)
 		defer timer.Stop()
+		timerC = timer.C
+	}
 
-		select {
-		case result := <-loopResult:
-			err = result.err
-		case <-timer.C:
-			outcome = RunOutcomeTimedOut
-			timeoutErr := fmt.Errorf("%w after %s", ErrRunTimedOut, s.runTimeout)
-			s.logTimeout(handle, timeoutErr)
-			killErr := s.box.Kill(handle)
-			if killErr != nil {
-				killErr = fmt.Errorf("supervisor: kill box: %w", killErr)
-				err = errors.Join(timeoutErr, killErr)
-				return err
-			}
-			err = timeoutErr
-			result := <-loopResult
-			if result.err != nil {
-				err = errors.Join(err, result.err)
-			}
-			return err
-		}
-	} else {
-		result := <-loopResult
+	select {
+	case result := <-loopResult:
 		err = result.err
+	case <-ctx.Done():
+		outcome = RunOutcomeFailed
+		cancelErr := fmt.Errorf("%w: %v", ErrRunCancelled, ctx.Err())
+		s.logCancel(handle, cancelErr)
+		err = s.killAndJoin(handle, cancelErr, loopResult)
+		return err
+	case <-timerC:
+		outcome = RunOutcomeTimedOut
+		timeoutErr := fmt.Errorf("%w after %s", ErrRunTimedOut, s.runTimeout)
+		s.logTimeout(handle, timeoutErr)
+		err = s.killAndJoin(handle, timeoutErr, loopResult)
+		return err
 	}
 
 	if err == nil {
 		outcome = RunOutcomeCompleted
 	}
 	return err
+}
+
+// killAndJoin kills the box (the cancel/timeout trigger's shared teardown path)
+// and ALWAYS joins the in-flight loop goroutine before returning. Joining is
+// load-bearing for correctness AND for race-freedom: it establishes a
+// happens-before edge between the loop goroutine's writes and the caller's reads
+// after Run returns, so neither a kill-error early return nor the cancel arm can
+// leave the loop goroutine running past Run (the pre-116 kill-error path returned
+// without joining, leaking the goroutine and racing its writes — fixed here).
+//
+// It returns triggerErr joined with any kill error and any loop error, so a
+// partial-teardown failure (a non-nil kill error) is surfaced to the cancel
+// handler as a leak rather than swallowed.
+func (s *Supervisor) killAndJoin(handle BoxHandle, triggerErr error, loopResult <-chan loopRunResult) error {
+	killErr := s.box.Kill(handle)
+	// Join the loop goroutine unconditionally — on EVERY path, including a kill
+	// error. This is the fix for the pre-116 leak/race where the kill-error path
+	// returned before reading loopResult.
+	loop := <-loopResult
+	out := triggerErr
+	if killErr != nil {
+		out = errors.Join(out, fmt.Errorf("supervisor: kill box: %w", killErr))
+	}
+	if loop.err != nil {
+		out = errors.Join(out, loop.err)
+	}
+	return out
 }
 
 type loopRunResult struct {
@@ -372,6 +421,23 @@ func (s *Supervisor) logTimeout(handle BoxHandle, err error) {
 	}
 	s.logger.Error("supervisor timeout kill",
 		"event", "box.kill.timeout",
+		"task_id", s.task.ID,
+		"box_id", handle.ID,
+		"worktree", handle.Worktree,
+		"error", err,
+	)
+}
+
+// logCancel logs the cancel-triggered kill loudly (ADR 054 §5). It mirrors
+// logTimeout: the cancel arm fires the same box.Kill/Teardown path, so the kill is
+// recorded with a distinct event=box.kill.cancel so an operator can tell a cancel
+// teardown apart from a wall-clock timeout in the logs.
+func (s *Supervisor) logCancel(handle BoxHandle, err error) {
+	if s.logger == nil {
+		return
+	}
+	s.logger.Error("supervisor cancel kill",
+		"event", "box.kill.cancel",
 		"task_id", s.task.ID,
 		"box_id", handle.ID,
 		"worktree", handle.Worktree,

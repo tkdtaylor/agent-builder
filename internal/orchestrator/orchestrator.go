@@ -514,6 +514,29 @@ func (o *Orchestrator) HasPendingPlan(goalID string) bool {
 	return ok
 }
 
+// ConsumePlanOnCancel removes a goal's plan from the PlanStore on cancellation
+// (ADR 054 §5 / §6 race (d), task 116). It uses the SAME delete path Resume uses
+// (TamperAwarePlanStore.TryDelete when available, else PlanStore.Delete), so a
+// cancel racing a Resume-approve consumes the plan exactly once — whichever wins the
+// delete dispatches/tears down; the loser finds no plan and does NOT double-dispatch.
+// It returns whether a plan was present (false when the goal had already dispatched
+// or no plan was held) and any tamper error from the delete-verify gate (surfaced by
+// the caller; a tamper signal also emits a tamper audit event, mirroring Resume).
+func (o *Orchestrator) ConsumePlanOnCancel(goalID string) (had bool, err error) {
+	if _, ok := o.store.Get(goalID); !ok {
+		return false, nil
+	}
+	if ta, ok := o.store.(TamperAwarePlanStore); ok {
+		if delErr := ta.TryDelete(goalID); delErr != nil {
+			o.emitTamperEvent(goalID)
+			return true, fmt.Errorf("orchestrator: tamper detected on cancel delete-verify for goal %q: %w", goalID, delErr)
+		}
+		return true, nil
+	}
+	o.store.Delete(goalID)
+	return true, nil
+}
+
 // decideSpawn issues the spawn-plan policy decision for a plan. It is fail-closed:
 // it routes on the response Decision, never on the error, so any transport/parse
 // error yields DecisionDeny (no dispatch).
@@ -594,10 +617,17 @@ func (o *Orchestrator) dispatchPlan(ctx context.Context, plan Plan) (PlanResult,
 	// (TC-085-03 / TC-086-05 assert completion is last).
 	o.emitFleetEvent(audit.AuditEvent{Action: audit.ActionCompletion, TaskID: plan.GoalID, RunID: plan.GoalID})
 
-	// Registry projection: terminal Done. (Per-sub-goal failures are best-effort and
-	// recorded in SubGoals[i]; an aggregate that reached this point is a completed
-	// dispatch, not a goal-level failure — only a hard halt above is Failed.)
-	o.registry.SetState(plan.GoalID, StateDone)
+	// Registry projection: terminal Done — UNLESS this dispatch was cancelled (ADR 054
+	// §5, task 116). When the per-goal ctx was cancelled, the workers were torn down via
+	// the run-loop ctx.Done() arm and the cancel handler owns the terminal state
+	// (Cancelled); overwriting it with Done here would erase the cancellation from the
+	// operator's view. ctx.Err() != nil is the cancel signal — leave the terminal state
+	// to the cancel handler. (Per-sub-goal failures on a non-cancelled run are
+	// best-effort and recorded in SubGoals[i]; an aggregate that reached this point is a
+	// completed dispatch, not a goal-level failure — only a hard halt above is Failed.)
+	if ctx.Err() == nil {
+		o.registry.SetState(plan.GoalID, StateDone)
+	}
 
 	if err := o.reporter.Report(ctx, RenderPlanResult(result)); err != nil {
 		return result, fmt.Errorf("orchestrator: report plan result: %w", err)
@@ -795,10 +825,14 @@ func (o *Orchestrator) emitFleetEventForDeny(ev audit.AuditEvent, isDeny bool) e
 // orchestrator never reimplements supervisor assembly (REQ-081-06) and never
 // references internal/executor (REQ-081-05) — the executor is reached only
 // transitively, inside the worker runtime invokes.
-func defaultDispatch(_ context.Context, sub SubGoal, base runtime.Config) error {
+func defaultDispatch(ctx context.Context, sub SubGoal, base runtime.Config) error {
 	cfg := base
 	cfg.RecipeName = sub.RecipeName
-	return runtime.Run(cfg, nil)
+	// Thread the per-goal cancel context (ADR 054 §5, task 116): a `cancel <goalID>`
+	// cancels this ctx, which propagates through runtime.Run → Supervisor.Run to the
+	// run-loop's case <-ctx.Done(): arm, tearing down the in-flight worker box. The
+	// ctx is no longer dropped here (the pre-116 behaviour).
+	return runtime.Run(ctx, cfg, nil)
 }
 
 // RenderPlanResult renders a typed PlanResult to a human-readable plain-text

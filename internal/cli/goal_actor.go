@@ -200,18 +200,56 @@ func (a *goalActor) sweep(ctx context.Context) {
 	}
 }
 
-// handleCommand dispatches one mailbox command. This task (115) acts on MsgInfo
-// (apply-info-at-checkpoint). MsgCancel teardown is task 116: the actor consumes a
-// cancel off its mailbox here but takes no teardown action yet (the case is the
-// seam 116 fills in). An unknown kind is ignored (the router already rejected
+// handleCommand dispatches one mailbox command. MsgInfo applies
+// apply-info-at-checkpoint (task 115); MsgCancel tears down the goal's in-flight
+// workers (task 116). An unknown kind is ignored (the router already rejected
 // malformed input upstream).
 func (a *goalActor) handleCommand(ctx context.Context, msg supervisor.Message) {
 	switch msg.Kind {
 	case supervisor.MsgInfo:
 		a.applyInfo(ctx, msg.Text)
 	case supervisor.MsgCancel:
-		// Cancel teardown is task 116; the actor consumes the message but does not yet
-		// tear down in-flight workers. Until 116 lands this is intentionally a no-op.
+		a.applyCancel(ctx)
+	}
+}
+
+// applyCancel stops the goal and tears down its in-flight sub-goal workers (ADR 054
+// §5, task 116). It is a SECOND trigger into the existing box.Kill/Teardown path —
+// no new teardown mechanism is invented:
+//
+//  1. Fire the goal's CancelFunc (registry.Cancel). This cancels ONLY this goal's
+//     derived ctx, which propagates through Handle → dispatchPlan → runtime.Run →
+//     Supervisor.Run to the run-loop's case <-ctx.Done(): arm, killing+tearing down
+//     each in-flight worker box. A worker parked on the worker semaphore unblocks
+//     (Acquire returns ctx.Err()); a dispatched worker's deferred Release returns its
+//     permit — so the fleet-wide cap never leaks a permit on cancel (REQ-116-04). The
+//     wall-clock timeout remains the independent backstop.
+//  2. Consume the plan from the PlanStore under the SAME delete path Resume uses, so
+//     a cancel racing a Resume-approve cannot leave a plan a late approval could
+//     resurrect (REQ-116-03 / §6 race (d)). A tamper signal on delete-verify is
+//     surfaced loudly (it already emitted a tamper audit event inside the store path).
+//  3. Project the terminal Cancelled state and report the cancellation. Partial-
+//     teardown failures are NOT swallowed: each failed worker teardown surfaces as a
+//     failed sub-goal outcome in the goal's PlanResult report (errors.Join'd kill/
+//     cancel error in the outcome Detail), which Handle's dispatchPlan emits over the
+//     Reporter — the operator sees the leak requiring attention (REQ-116-05).
+func (a *goalActor) applyCancel(ctx context.Context) {
+	// 1. Fire the per-goal cancel context — the in-flight-worker teardown trigger.
+	cancelled := a.oc.registry.Cancel(a.goal.ID)
+
+	// 2. Consume the plan under the same delete path as Resume (no double-dispatch).
+	if _, err := a.oc.orch.ConsumePlanOnCancel(a.goal.ID); err != nil {
+		a.oc.report(ctx, fmt.Sprintf("cancel for goal %q: plan-consume error: %v", a.goal.ID, err))
+	}
+
+	// 3. Terminal Cancelled projection + report. Set state regardless of whether a
+	// CancelFunc was found (a goal cancelled before it registered, or already torn
+	// down, is still Cancelled from the operator's view).
+	a.oc.registry.SetState(a.goal.ID, orchestrator.StateCancelled)
+	if cancelled {
+		a.oc.report(ctx, fmt.Sprintf("cancelled goal %q: tearing down in-flight workers", a.goal.ID))
+	} else {
+		a.oc.report(ctx, fmt.Sprintf("cancelled goal %q", a.goal.ID))
 	}
 }
 

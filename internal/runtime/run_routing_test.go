@@ -28,6 +28,7 @@ package runtime
 //     TestSupervisorIsolationExcludesRouterRegistry below (go list -deps assertion).
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -205,7 +206,7 @@ func TestRunEmptyRegistryFailsBeforeDispatchNoAudit(t *testing.T) {
 		AuditRecordPath: filepath.Join(root, "audit.ndjson"), // forces audit sink construction path
 	}
 
-	err := Run(config, nil)
+	err := Run(context.Background(), config, nil)
 	if err == nil {
 		t.Fatal("Run error = nil, want ErrNoEligibleExecutor before dispatch")
 	}

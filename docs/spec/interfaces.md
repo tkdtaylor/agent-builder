@@ -33,7 +33,7 @@ Subcommands:
 | Subcommand / flag | Type | Default | Effect |
 |-------------------|------|---------|--------|
 | `run` | subcommand | — | Builds the configured Phase 0 runtime pipeline from environment configuration, selects at most one ready task, dispatches it through the supervisor, and returns `0` when the run completes or idles. Returns `1` when configuration, containment, Executor, Gate, or loop execution fails. |
-| `orchestrate` | subcommand | — | Drives the Tier-1 orchestrator (ADR 042/046/048/049/050). Assembles the orchestrator stack from environment — `NewPlanStoreFromEnv` (memory-guard-backed or in-memory + warning), the worker envelope transport with **one shared `ReplayCache` per direction** (083 SEC-001), the planner selected by `AGENT_BUILDER_PLANNER` (`structured` default rule-based StructuredPlanner; `llm` LLM-backed LLMPlanner via router/registry — ollama-native only, cloud harnesses fail closed; task 110/ADR 053), the policy client, and **one shared `audit.Sink`** between orchestrator and dispatched workers (ADR 050 §4) — then runs the **async control loop** (ADR 054 §1): a single goroutine reads typed messages from a `supervisor.MessageSource` (the line-oriented env/stdin source by default — see [configuration.md](configuration.md#stdin-command-grammar-orchestrate) for the grammar) and **routes each by kind** (`new-goal` → goal actor via `Handle`; `status` → status handler; `info`/`cancel` → the addressed goal's command mailbox; unknown goalID → graceful "no such goal" report). **Fail-closed at startup (083 SEC-003):** a missing/unreadable `AGENT_BUILDER_WORKER_SIGNING_KEY` exits non-zero with an error satisfying `errors.Is(err, worker.ErrMissingSigningKey)` **before any message is read**. Returns `0` on a clean run (source drains to EOF and all actors join), `1` on assembly or handling failure, `2` on usage error. |
+| `orchestrate` | subcommand | — | Drives the Tier-1 orchestrator (ADR 042/046/048/049/050). Assembles the orchestrator stack from environment — `NewPlanStoreFromEnv` (memory-guard-backed or in-memory + warning), the worker envelope transport with **one shared `ReplayCache` per direction** (083 SEC-001), the planner selected by `AGENT_BUILDER_PLANNER` (`structured` default rule-based StructuredPlanner; `llm` LLM-backed LLMPlanner via router/registry — ollama-native only, cloud harnesses fail closed; task 110/ADR 053), the policy client, and **one shared `audit.Sink`** between orchestrator and dispatched workers (ADR 050 §4) — then runs the **async control loop** (ADR 054 §1): a single goroutine reads typed messages from a `supervisor.MessageSource` (the line-oriented env/stdin source by default — see [configuration.md](configuration.md#stdin-command-grammar-orchestrate) for the grammar) and **routes each by kind** (`new-goal` → goal actor via `Handle`; `status` → status handler; `info`/`cancel` → the addressed goal's command mailbox, where the goal actor applies info-at-checkpoint (task 115) or fires the goal's `CancelFunc` to tear down its in-flight workers (task 116); unknown goalID → graceful "no such goal" report). **Fail-closed at startup (083 SEC-003):** a missing/unreadable `AGENT_BUILDER_WORKER_SIGNING_KEY` exits non-zero with an error satisfying `errors.Is(err, worker.ErrMissingSigningKey)` **before any message is read**. Returns `0` on a clean run (source drains to EOF and all actors join), `1` on assembly or handling failure, `2` on usage error. |
 | `version` | subcommand | — | Prints `agent-builder <version>` to stdout and exits `0`. |
 | `verify <repo>` | subcommand + path argument | — | Constructs the production verification Gate and runs it against the target repo path. Prints each Gate step result and exits `0` only when every blocking step passes. Exits `1` when any Gate step fails. |
 | `verify-checkpoint` | subcommand | — | Verifies a signed checkpoint JSON file against an Ed25519 public key by delegating to `audit-trail checkpoint verify`. Exits `0` when valid, `1` when invalid, `2` on usage error or binary resolution failure. Writes JSON `{"valid":bool,"message":string}` to stdout. |
@@ -457,9 +457,18 @@ type MessageSource interface {
   with no goalID). The control loop reports it gracefully and continues — a malformed
   control line is never silently accepted as a `MsgNewGoal`. EOF / no-more-input returns
   `ok=false`, nil error, on which the control plane drains and exits.
-- **Stability:** governed by ADR 054 §2 and task 113. The status/info/cancel handler
-  *bodies* land in tasks 114/115/116; this seam routes the kinds and delivers to the
-  mailbox.
+- **Cancel handler body (ADR 054 §5, task 116):** a `MsgCancel` for a known goal fires
+  the goal's per-goal `CancelFunc` (registered by `routeNewGoal` from a per-goal
+  `context.WithCancel`), which propagates through the actor → `Handle` → `dispatchPlan`
+  → `runtime.Run` → `Supervisor.Run` to the run-loop's `case <-ctx.Done():` arm — tearing
+  down ONLY that goal's in-flight workers (siblings' contexts are independent; no blast
+  radius). The handler then sets the goal `Cancelled`, consumes its plan from the
+  `PlanStore` under the same delete path `Resume` uses (so a racing approval cannot
+  double-dispatch), and the fleet-wide worker permit is released on the dispatch return
+  path (no leak). Partial-teardown failures are surfaced in the goal report (not
+  swallowed); the wall-clock timeout remains the backstop.
+- **Stability:** governed by ADR 054 §2 and tasks 113–116. The status/info handler
+  bodies land in tasks 114/115; the cancel-teardown body is task 116.
 
 ### Interface: `supervisor.Reporter`
 
@@ -568,6 +577,9 @@ type PlanStore interface {
 }
 
 // Dispatch seam (ADR 046 §5). Default wires to runtime.Run; tests inject a spy.
+// The ctx is the per-goal cancel context (ADR 054 §5, task 116): defaultDispatch and
+// the transport closure now FORWARD it into runtime.Run (previously dropped past the
+// transport step), so a `cancel <goalID>` propagates to the worker's run-loop.
 type DispatchFunc func(ctx context.Context, sub SubGoal, base runtime.Config) error
 
 // Narrow policy decide seam (satisfied by *policy.PolicyClient and test fakes).
@@ -887,10 +899,18 @@ type Config struct {
 }
 
 func ConfigFromEnv(getenv func(string) string) (Config, error)
-func Run(config Config, stdout io.Writer) error
-func RunFromEnv(stdout io.Writer) error
+func Run(ctx context.Context, config Config, stdout io.Writer) error
+func RunFromEnv(ctx context.Context, stdout io.Writer) error
 ```
 
+- **`ctx` (ADR 054 §5, task 116):** the leading `context.Context` is the per-worker
+  cancel context. `Run` threads it into `Supervisor.Run(ctx)`, where the run-loop
+  `select` has a `case <-ctx.Done():` arm beside the wall-clock `case <-timer.C:` arm
+  — cancelling `ctx` triggers the **same** `box.Kill`/`Teardown` path the timeout drives
+  (`Run` returns `supervisor.ErrRunCancelled`, with any kill error `errors.Join`'d on as
+  a teardown leak). The single-task CLI path passes `context.Background()` (no cancel
+  trigger; the timeout is the only kill). The orchestrate path passes the goal's derived
+  cancel context, so a `cancel <goalID>` tears down that goal's in-flight workers.
 - **Consumers:** `internal/cli` uses `RunFromEnv` as the default implementation of `agent-builder run`.
 - **Collaborators:** `tasksource.Source`, `executor.ClaudeCLI`, production `gate.Gate`, `sandboxruntime.Runner`, supervisor dispatch seams, `loop.RetryingLoop`, and `publisher.GitHubCLI`.
 - **Required behavior:** required configuration is validated before task selection mutates status or the Executor can start. The runtime selects at most one task, gives that task to the supervisor, publishes only after Executor success plus Gate pass plus non-empty branch capture, and records pick/attempt/verify/publish/finish evidence through the supervisor RunRecord streams when configured.
