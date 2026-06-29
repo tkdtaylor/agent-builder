@@ -245,3 +245,50 @@ func TestWithStatusWriterSetsField(t *testing.T) {
 
 // TC-005-CLI: assembleOrchestrate constructs a non-nil status writer from baseConfig.TaskRoot.
 // This is tested in internal/cli tests (orchestrate_test.go).
+
+// TC-Bonus: Reevaluation bound defaults to baseConfig.MaxAttempts when WithReevaluationBound
+// is not called. This verifies the wiring that reuses AGENT_BUILDER_MAX_ATTEMPTS for
+// reevaluation, not a separate env var.
+func TestReevaluationBoundDefaultsToConfigMaxAttempts(t *testing.T) {
+	// Plan that will be denied and still need the denied recipe on replan.
+	plan := Plan{
+		Goal:   "goal text",
+		GoalID: "goal-1",
+		SubGoals: []SubGoal{
+			{RecipeName: "coding-agent", Task: supervisor.Task{ID: "goal-1-0", Spec: "do work"}},
+		},
+	}
+
+	writer := &memWriter{}
+	// Construct orchestrator with MaxAttempts=2 but DO NOT call WithReevaluationBound
+	// (so it should default to baseConfig.MaxAttempts).
+	o := New(
+		fixedPlanner{plan: plan},
+		denyingPolicy{},
+		nopReporter{},
+		runtime.Config{MaxAttempts: 2},
+		WithDispatchFunc(dispatchNoop),
+		WithAuditSink(audit.NewFakeSink()),
+		WithStatusWriter(writer),
+		// NO WithReevaluationBound call — should default to MaxAttempts=2
+	)
+
+	result, err := o.dispatchPlan(context.Background(), plan)
+	if err != nil {
+		t.Fatalf("dispatchPlan error = %v", err)
+	}
+
+	outcome := result.Outcomes[0]
+	// With MaxAttempts=2, ReevaluateBlockedSpawn should have attempted exactly 2 replans
+	// before escalating. The ReevaluationOutcome.Reevaluations field records this count.
+	if outcome.ReevaluationOutcome.Kind != loop.ReevaluationEscalated {
+		t.Fatalf("Kind = %q, want escalated (bound was exhausted)", outcome.ReevaluationOutcome.Kind)
+	}
+	if outcome.ReevaluationOutcome.Reevaluations != 2 {
+		t.Fatalf("Reevaluations = %d, want 2 (matching baseConfig.MaxAttempts)", outcome.ReevaluationOutcome.Reevaluations)
+	}
+	// memWriter should have the needs-human write after bound exhaustion.
+	if len(writer.writes) != 1 || writer.writes[0] != "goal-1:needs-human" {
+		t.Fatalf("memWriter.writes = %v, want [goal-1:needs-human]", writer.writes)
+	}
+}

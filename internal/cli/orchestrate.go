@@ -238,6 +238,13 @@ type assembleOverrides struct {
 	// and reaches the orchestrator (TC-110-05). Production passes assembleOverrides{}
 	// so this is nil on the live path.
 	onPlanner func(orchestrator.Planner)
+	// onStatusWriter, when non-nil, is invoked with the exact StatusWriter value that
+	// assembleOrchestrate constructs and hands to orchestrator.New — the producer→consumer
+	// link a test needs to assert that the status writer (e.g. *tasksource.StatusWriter
+	// constructed from baseConfig.TaskRoot) actually survives the control-plane assembly
+	// and reaches the orchestrator (TC-123 / task 123, ADR 055 seam 4). Production passes
+	// assembleOverrides{} so this is nil on the live path.
+	onStatusWriter func(loop.StatusWriter)
 }
 
 // runOrchestrate is the CLI dispatch for the orchestrate subcommand. It parses
@@ -448,6 +455,12 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 	statusWriter := ov.statusWriter
 	if statusWriter == nil && baseConfig.TaskRoot != "" {
 		statusWriter = tasksource.NewStatusWriter(baseConfig.TaskRoot, tasksource.DefaultTaskDirs...)
+	}
+
+	// Test seam (TC-123 / task 123): observe the exact StatusWriter the assembly feeds into
+	// orchestrator.New, proving the constructed status writer survives the control loop.
+	if ov.onStatusWriter != nil {
+		ov.onStatusWriter(statusWriter)
 	}
 
 	orch := orchestrator.New(
