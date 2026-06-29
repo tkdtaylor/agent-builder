@@ -360,11 +360,31 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		return orchestrateConfig{}, noop, fmt.Errorf("orchestrate: build base config: %w", err)
 	}
 
-	// 8. Dispatch seam. Both shared ReplayCaches (one per direction) are threaded in
+	// 8. Reporter — assembled BEFORE the dispatch seam (step 9) so the transport
+	//    dispatch closure can report the worker's real outcome to the operator (ADR 055
+	//    seam 3, task 120). Falls back to a log reporter when no outbound channel is
+	//    configured. The SAME reporter instance is handed to the orchestrator core AND
+	//    held by the control-loop router (status answers + graceful "no such goal"
+	//    reports — ADR 054 §2), so all user-visible output flows through the one
+	//    mutex-guarded stdout owner.
+	//
+	//    NOTE: when AGENT_BUILDER_INBOUND=telegram is selected (step 11), the reporter
+	//    is replaced with the Telegram ReplyAdapter for the orchestrator's plan-summary
+	//    and status paths. The dispatch closure retains this pre-Telegram reporter for
+	//    per-sub-goal progress reports; a future task may wire the Telegram adapter into
+	//    the dispatch closure if per-sub-goal Telegram notifications are desired.
+	reporter := ov.reporter
+	if reporter == nil {
+		reporter = newLogReporter(config.Stdout)
+	}
+
+	// 9. Dispatch seam. Both shared ReplayCaches (one per direction) are threaded in
 	//    here so the assembled live dispatch path replay-checks every work-item AND
 	//    every returned result against the ONE long-lived cache for that direction
 	//    (083 SEC-001). A nil override means the env-backed dispatch that round-trips
 	//    the work-item + result through the worker transport before declaring success.
+	//    The reporter (step 8) is threaded in so the closure can report the worker's
+	//    real outcome (ADR 055 seam 3, task 120).
 	dispatch := ov.dispatch
 	if dispatch == nil {
 		signingKey := ov.signingKey
@@ -377,22 +397,12 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 			}
 			signingKey = key
 		}
-		d, keyErr := newTransportDispatch(signingKey, workItemCache, resultCache, auditSink, logger)
+		d, keyErr := newTransportDispatch(signingKey, workItemCache, resultCache, auditSink, logger, reporter)
 		if keyErr != nil {
 			cleanup()
 			return orchestrateConfig{}, noop, fmt.Errorf("orchestrate: %w", keyErr)
 		}
 		dispatch = d
-	}
-
-	// 9. Reporter — wired to the outbound channel seam (task 098); falls back to a
-	//    stderr log reporter when no outbound channel is configured. The SAME reporter
-	//    instance is handed to the orchestrator core AND held by the control-loop
-	//    router (status answers + graceful "no such goal" reports — ADR 054 §2), so all
-	//    user-visible output flows through the one mutex-guarded stdout owner.
-	reporter := ov.reporter
-	if reporter == nil {
-		reporter = newLogReporter(config.Stdout)
 	}
 
 	// 10. Async control-plane concurrency bounds (ADR 054 §1, task 112). The worker

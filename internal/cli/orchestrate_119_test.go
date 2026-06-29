@@ -65,7 +65,7 @@ func TestTC119_01_DispatchedTaskDrivesWorker(t *testing.T) {
 	sigKey, workCache, resultCache := tc119KeyMaterial(t)
 	sink := audit.NewFakeSink()
 
-	dispatch, err := newTransportDispatch(sigKey, workCache, resultCache, sink, discardLogger())
+	dispatch, err := newTransportDispatch(sigKey, workCache, resultCache, sink, discardLogger(), nil)
 	if err != nil {
 		t.Fatalf("TC-001: newTransportDispatch: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestTC119_03_BlankTaskIDIsHardError(t *testing.T) {
 	defer restore()
 
 	sigKey, workCache, resultCache := tc119KeyMaterial(t)
-	dispatch, err := newTransportDispatch(sigKey, workCache, resultCache, audit.NewFakeSink(), discardLogger())
+	dispatch, err := newTransportDispatch(sigKey, workCache, resultCache, audit.NewFakeSink(), discardLogger(), nil)
 	if err != nil {
 		t.Fatalf("TC-003 (blank ID): newTransportDispatch: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestTC119_03_BlankTaskSpecIsHardError(t *testing.T) {
 	defer restore()
 
 	sigKey, workCache, resultCache := tc119KeyMaterial(t)
-	dispatch, err := newTransportDispatch(sigKey, workCache, resultCache, audit.NewFakeSink(), discardLogger())
+	dispatch, err := newTransportDispatch(sigKey, workCache, resultCache, audit.NewFakeSink(), discardLogger(), nil)
 	if err != nil {
 		t.Fatalf("TC-003 (blank Spec): newTransportDispatch: %v", err)
 	}

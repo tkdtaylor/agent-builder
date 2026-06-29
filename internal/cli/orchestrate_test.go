@@ -280,7 +280,7 @@ func TestSharedReplayCacheRejectsReplayOnWiredPath(t *testing.T) {
 	resultCache := envelope.NewReplayCache(0)
 	sink := audit.NewFakeSink()
 
-	dispatch, err := newTransportDispatch(signingKey, cache, resultCache, sink, discardLogger())
+	dispatch, err := newTransportDispatch(signingKey, cache, resultCache, sink, discardLogger(), nil)
 	if err != nil {
 		t.Fatalf("newTransportDispatch: %v", err)
 	}
@@ -1011,7 +1011,7 @@ func TestNewTransportDispatchKeygenFailurePropagates(t *testing.T) {
 	resultCache := envelope.NewReplayCache(0)
 	sink := audit.NewFakeSink()
 
-	fn, err := newTransportDispatch(signingKey, cache, resultCache, sink, discardLogger())
+	fn, err := newTransportDispatch(signingKey, cache, resultCache, sink, discardLogger(), nil)
 
 	// TC-111-01 assertions:
 
@@ -1094,7 +1094,7 @@ func TestNewTransportDispatchHappyPath(t *testing.T) {
 	resultCache := envelope.NewReplayCache(0)
 	sink := audit.NewFakeSink()
 
-	fn, err := newTransportDispatch(signingKey, cache, resultCache, sink, discardLogger())
+	fn, err := newTransportDispatch(signingKey, cache, resultCache, sink, discardLogger(), nil)
 
 	// TC-111-03 assertions:
 

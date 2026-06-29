@@ -280,6 +280,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Confirmation invariant:** cancellation reuses the existing `box.Kill`/`Teardown` path (B-013) — it is a second trigger, not a new mechanism. Live cancel of a real sandbox box (L6) is operator-observed; the select arm, cancel routing, permit-release accounting, the `errors.Join` leak surfacing, and the cancel/approve race are exercised at L2 (`-race`).
 - **References:** ADR 054 §5/§6; task 116; `docs/tasks/test-specs/116-cancellation-worker-teardown-test-spec.md`.
 
+### B-032: orchestrate dispatch propagates the worker's real outcome — honest success/failure, never a hardcoded OK
+
+- **Trigger:** The transport dispatch closure (`newTransportDispatch`) runs a sub-goal worker via `runWorker` (the `runtimewiring.Run` seam) and seals the result envelope for the return path (ADR 055 seam 3, task 120).
+- **Response:** The sealed `supervisor.Result` in the return-path envelope reflects the worker's **actual** outcome: `OK: true` only when `runWorker` returned `nil`; `OK: false` on any error (gate failure, executor error, or an idle/no-op run returning a non-nil error). The reporter receives a per-sub-goal progress report immediately after the worker returns: `"worker completed sub-goal <id>"` on success, `"worker failed sub-goal <id>: <reason>"` on failure. A nil reporter is a safe no-op.
+- **Side effects:** The operator sees per-sub-goal progress on the outbound reporter (stdout or Telegram) BEFORE the orchestrator's full `RenderPlanResult` summary, which still fires after all sub-goals complete. Both are user-visible outputs; the per-sub-goal report is an immediate signal, the summary is the aggregate.
+- **Failure modes:** The previous hardcoded `Result{OK: true}` is replaced: a failed or idle worker can no longer surface as `OK`. A reporter error is swallowed (a failed report must not override or mask the worker's real outcome); the dispatch function returns the worker's `runErr` regardless. The result-envelope seal and replay-check on the return path still run on BOTH success and failure paths; a seal or replay error on the return path is a transport failure, not a worker outcome, and is returned as a distinct error.
+- **References:** ADR 055 seam 3; task 120; `docs/tasks/test-specs/120-orchestrate-propagate-result-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
