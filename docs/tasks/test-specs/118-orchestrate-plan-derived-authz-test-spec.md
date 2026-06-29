@@ -11,7 +11,13 @@
 | REQ-118-01  | TC-001, TC-002        | ⏳ |
 | REQ-118-02  | TC-003, TC-004        | ⏳ |
 | REQ-118-03  | TC-005                | ⏳ |
-| REQ-118-04  | TC-006, TC-007        | ⏳ |
+
+> **Scope note (Unix split):** REQ-118-04 — feeding the policy *daemon* the dynamic
+> plan-derived resource IDs (intersected with a deployment base allow) — requires
+> per-plan daemon-lifecycle wiring in `internal/cli` and is split into **task 122**
+> (`orchestrate-policy-plan-scoped-allow`). Task 118 is the orchestrator-side
+> plan-derived authorization gate; task 122 makes the independent policy engine
+> actually allow in-plan resources so the end-to-end run dispatches.
 
 ## Unit under test
 
@@ -61,17 +67,8 @@ New surface:
 - **Setup:** in-plan resource (passes the plan gate), fake PolicyClient returns `deny`.
 - **Expected:** the effective decision is `DecisionDeny` — an in-plan resource the deployment policy denies is still denied (the policy engine remains the independent ceiling). Symmetrically, in-plan + policy `allow` → `DecisionAllow` (TC-003).
 
-### TC-006: plan-derived allow set is what the policy daemon is configured with
-
-- **Requirement:** REQ-118-04
-- **Setup:** the CLI policy wiring (`internal/cli`) given a plan and **no** deployment base allow (env unset). Capture the allow set handed to the policy daemon for that plan's decisions (via the daemon-config seam / a fake daemon launcher recording `--allow`).
-- **Expected:** the configured allow set equals `plan.AllowedResources()` (the daemon is fed the plan-derived resources — fixing the empty-allowlist denial).
-
-### TC-007: deployment base allow intersects the plan-derived set
-
-- **Requirement:** REQ-118-04
-- **Setup:** deployment base allow (env `AGENT_BUILDER_POLICY_ALLOW`) = `"coding-agent,goal-7"`. Plan `AllowedResources()` = `{goal-7, coding-agent, docs-fix, goal-7-0, goal-7-1}`.
-- **Expected:** the configured daemon allow = the **intersection** = `{goal-7, coding-agent}` (a deployment can only narrow, never widen, the plan-derived set). When the env is unset/empty, the effective allow is the full plan-derived set (no narrowing).
+> TC-006 / TC-007 (daemon configured with plan-derived allow ∩ deployment base) moved
+> to **task 122**.
 
 ## Post-implementation verification
 
