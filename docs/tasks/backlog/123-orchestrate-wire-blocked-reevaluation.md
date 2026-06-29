@@ -31,7 +31,7 @@ enables task 121's L5/L6 evidence.
 | REQ-123-01 | `dispatchPlan` iterates over aggregated outcomes after `wg.Wait()` and, for each `outcome.Blocked != nil`, invokes `o.ReevaluateBlockedSpawn`. Reevaluation runs SERIALLY after the join — never inside per-sub-goal goroutines (keeps replanning off the concurrent hot path and avoids planner races). | must have |
 | REQ-123-02 | The `loop.ReevaluationOutcome` (resolved or escalated) is folded back into `SubGoalOutcome`: a new exported `ReevaluationOutcome loop.ReevaluationOutcome` field is added to `SubGoalOutcome`. Callers of `RenderPlanResult` see the escalation text or the resolved note in the rendered output. | must have |
 | REQ-123-03 | The reevaluation bound comes from a configurable source — a new `reevaluationBound int` field on `Orchestrator` set by a new `WithReevaluationBound(int) Option`, defaulting (when zero / unset) to `AGENT_BUILDER_MAX_ATTEMPTS` (the existing `EnvMaxAttempts` env var read in `internal/runtime/run.go`). The orchestrate CLI path (`internal/cli/orchestrate.go`) reads this env var and passes it via `WithReevaluationBound`. No new env var is introduced unless `AGENT_BUILDER_MAX_ATTEMPTS` is semantically wrong for reevaluation; if a separate knob is needed, use `AGENT_BUILDER_MAX_REEVALUATIONS` (document in `docs/spec/configuration.md`). | must have |
-| REQ-123-04 | `Orchestrator` gains a `statusWriter loop.StatusWriter` field set by a new `WithStatusWriter(loop.StatusWriter) Option` (mirroring `WithWorkerSemaphore`). A nil `statusWriter` is a documented no-op: `dispatchPlan` skips the `ReevaluateBlockedSpawn` call rather than panic or return an error. The orchestrate CLI path supplies the `loop.StatusWriter` already available via `tasksource.StatusWriter` on the orchestrate path; executor must trace the exact field/constructor that provides it. | must have |
+| REQ-123-04 | `Orchestrator` gains a `statusWriter loop.StatusWriter` field set by a new `WithStatusWriter(loop.StatusWriter) Option` (mirroring `WithWorkerSemaphore`). A nil `statusWriter` is a documented no-op: `dispatchPlan` skips the `ReevaluateBlockedSpawn` call rather than panic or return an error. The orchestrate CLI path must **construct** a `loop.StatusWriter` (it does not already hold one — `run.go` is the only existing `tasksource.NewStatusWriter` site) via `tasksource.NewStatusWriter(<base config>.TaskRoot, tasksource.DefaultTaskDirs...)`, whose `*tasksource.StatusWriter` satisfies `loop.StatusWriter`. | must have |
 
 ## Pinned design decisions
 
@@ -48,10 +48,26 @@ fields are sufficient.
 `Orchestrator` currently has no status-writer field. The loop retry path (tasks 012/013)
 has its own `statusWriter` wired inside `runtime.Run` via `NewRetryingLoop`. The
 orchestrate path needs a parallel injection. Solution: add `statusWriter loop.StatusWriter`
-to the `Orchestrator` struct; supply it via `WithStatusWriter`. On the CLI path
-(`assembleOrchestrate`), the status writer is the `tasksource.StatusWriter` that the
-orchestrate config already assembles for the goal-intake loop. Executor must confirm
-the exact variable/constructor in `internal/cli/orchestrate.go` before writing code.
+to the `Orchestrator` struct; supply it via `WithStatusWriter`.
+
+**Correction (verified in source 2026-06-29):** the orchestrate path does **not**
+already assemble a status writer — `grep StatusWriter internal/cli/*.go` finds none, and
+`tasksource.NewStatusWriter` is constructed **only** in `internal/runtime/run.go` (the
+worker/run path), not on the orchestrate path. So the executor must **construct** one on
+the orchestrate path: `tasksource.NewStatusWriter(<base config>.TaskRoot,
+tasksource.DefaultTaskDirs...)` (the `*tasksource.StatusWriter` it returns satisfies
+`loop.StatusWriter` — confirmed: its `WriteStatus(taskID, WritableStatus)
+(StatusWriteResult, error)` matches the interface). Root it at the orchestrate base
+config's `TaskRoot`, the same value `run.go` uses.
+
+**Open design point for the live (L5/L6) path, not L2/L3:** `tasksource.StatusWriter.
+WriteStatus` rewrites the **Status: line of a matching task file**. On the orchestrate
+path the goal is free text and may have no backing task file, in which case the live
+needs-human write would error ("task not found"). The unit tests (TC-001/TC-005) use an
+in-memory `memWriter` spy, so L2/L3 are unaffected — but the executor must note this and
+either (a) confirm a task file exists for the dispatched sub-goal's ID, or (b) flag the
+escalation-sink-on-free-text-goal question as a follow-up rather than silently shipping a
+writer that errors at runtime. Do not paper over it.
 
 **What is the reevaluation bound?**
 Mirror the existing gate-failure retry bound. `AGENT_BUILDER_MAX_ATTEMPTS` is read in

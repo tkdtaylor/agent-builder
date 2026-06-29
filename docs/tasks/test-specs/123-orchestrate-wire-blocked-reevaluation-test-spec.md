@@ -47,8 +47,11 @@ for each `outcome` where `outcome.Blocked != nil`, `dispatchPlan` must call
 Supporting change: `(*Orchestrator)` gains a `statusWriter loop.StatusWriter` field
 populated by a new `WithStatusWriter(loop.StatusWriter) Option` functional option,
 mirroring `WithWorkerSemaphore`. The orchestrate CLI wiring (`internal/cli/orchestrate.go`)
-must supply the status writer already available on that path (`tasksource.StatusWriter`
-satisfies `loop.StatusWriter`).
+must **construct** the status writer — it does not already hold one (verified: the only
+`tasksource.NewStatusWriter` call site is `internal/runtime/run.go`, the worker path).
+The executor builds `tasksource.NewStatusWriter(<base config>.TaskRoot,
+tasksource.DefaultTaskDirs...)` on the orchestrate path; the returned
+`*tasksource.StatusWriter` satisfies `loop.StatusWriter`.
 
 ## Test cases
 
@@ -125,9 +128,11 @@ satisfies `loop.StatusWriter`).
 - **Part B** (`internal/cli/`): call `assembleOrchestrate` (or the equivalent config
   builder used in tests — the `orchestrateConfig` assembly path) with a stub task
   source that satisfies `loop.StatusWriter`. Assert the assembled `Orchestrator` was
-  constructed with a non-nil status writer. The status writer supplied is the
-  `tasksource.StatusWriter` the orchestrate path already holds (the same writer that
-  handles needs-human escalation in the loop/retry path). If `assembleOrchestrate`
+  constructed with a non-nil status writer. The status writer supplied is a
+  `tasksource.StatusWriter` the orchestrate path **constructs** via
+  `tasksource.NewStatusWriter(<base config>.TaskRoot, tasksource.DefaultTaskDirs...)`
+  (it is NOT pre-existing on this path — `run.go` is the only other construction site).
+  If `assembleOrchestrate`
   is not directly testable, assert via a spy that the orchestrator would receive a
   non-nil writer when the path is configured with a real task-source.
 
