@@ -41,8 +41,11 @@ type ToolCall struct {
 
 // ToolCallFunction is the function part of a tool call.
 type ToolCallFunction struct {
-	Name      string `json:"name"`
-	Arguments string `json:"arguments"` // raw JSON string
+	Name string `json:"name"`
+	// Arguments is the raw tool-call arguments. Ollama's native /api/chat returns
+	// this as a JSON object (e.g. {"path":"a.go","content":"..."}), so it is captured
+	// as json.RawMessage and forwarded verbatim to the tool dispatcher as a JSON string.
+	Arguments json.RawMessage `json:"arguments"`
 }
 
 // ChatRequest is the payload sent to /api/chat.

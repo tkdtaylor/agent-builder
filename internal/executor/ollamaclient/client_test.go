@@ -52,7 +52,7 @@ func TestChatWithToolCalls(t *testing.T) {
 					{
 						Function: ToolCallFunction{
 							Name:      "write_file",
-							Arguments: `{"path":"hello.txt","content":"hello"}`,
+							Arguments: json.RawMessage(`{"path":"hello.txt","content":"hello"}`),
 						},
 					},
 				},
@@ -104,7 +104,7 @@ func TestChatWithToolCalls(t *testing.T) {
 	if resp.Message.ToolCalls[0].Function.Name != "write_file" {
 		t.Fatalf("expected tool name write_file, got %s", resp.Message.ToolCalls[0].Function.Name)
 	}
-	if resp.Message.ToolCalls[0].Function.Arguments != `{"path":"hello.txt","content":"hello"}` {
+	if string(resp.Message.ToolCalls[0].Function.Arguments) != `{"path":"hello.txt","content":"hello"}` {
 		t.Fatalf("expected arguments, got %s", resp.Message.ToolCalls[0].Function.Arguments)
 	}
 	if resp.Message.Content != "" {

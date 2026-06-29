@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/tkdtaylor/agent-builder/internal/executor/ollamaclient"
@@ -167,13 +168,22 @@ func (o *OllamaNative) Run(t supervisor.Task) (supervisor.Result, error) {
 				// If extraction fails, return a result with empty branch but OK=false
 				return supervisor.Result{OK: false}, nil
 			}
+			// Capture the model's worktree edits onto the produced branch. The agentic
+			// loop (not the model) owns this commit so the published branch deterministically
+			// contains the work — finish_branch only records the name. Without this the
+			// branch is an empty label and the gate would verify uncommitted files.
+			if err := o.commitWorktree(branch, t.ID); err != nil {
+				return supervisor.Result{OK: false}, err
+			}
 			return supervisor.Result{Branch: branch, OK: true}, nil
 		}
 
 		// Dispatch each tool call
 		for _, tc := range resp.Message.ToolCalls {
 			toolName := tc.Function.Name
-			argsJSON := tc.Function.Arguments
+			// Arguments is json.RawMessage (Ollama returns an object); forward the
+			// raw object JSON as a string for the dispatcher to unmarshal.
+			argsJSON := string(tc.Function.Arguments)
 
 			// Call the tool dispatcher
 			result, err := o.toolDispatcher.Dispatch(toolName, argsJSON)
@@ -197,6 +207,32 @@ func (o *OllamaNative) Run(t supervisor.Task) (supervisor.Result, error) {
 
 	// Hard cap reached, return escalation signal
 	return supervisor.Result{OK: false}, nil
+}
+
+// commitWorktree creates (or resets) the produced branch at the current worktree
+// state and commits all changes onto it, so the branch handed to the publisher
+// actually contains the model's edits. The loop owns this step because the model's
+// finish_branch tool only records a branch name. Identity is set per-command so the
+// commit succeeds even on a repo without a configured user.
+func (o *OllamaNative) commitWorktree(branch, taskID string) error {
+	worktree := o.cfg.Worktree
+	steps := [][]string{
+		{"checkout", "-B", branch},
+		{"add", "-A"},
+		{
+			"-c", "user.name=agent-builder",
+			"-c", "user.email=agent-builder@local",
+			"commit", "-m", fmt.Sprintf("agent-builder: complete task %s", taskID),
+		},
+	}
+	for _, args := range steps {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = worktree
+		if out, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("commit worktree (git %s): %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
 }
 
 // Compile-time assertion that OllamaNative implements supervisor.Executor
