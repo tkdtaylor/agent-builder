@@ -1,7 +1,7 @@
 # Task 129: Approval-default — AGENT_BUILDER_REQUIRE_APPROVAL
 
-**Project:** agent-builder · **Created:** 2026-06-29 · **Status:** backlog
-**ADR:** 056 — Conversational human-gated orchestrate front door
+**Project:** agent-builder · **Created:** 2026-06-29 · **Status:** completed
+**ADR:** 058 — Conversational human-gated orchestrate front door
 **Test spec:** [129-approval-default-require-approval-test-spec.md](../test-specs/129-approval-default-require-approval-test-spec.md)
 
 ## Goal
@@ -15,7 +15,7 @@ auto-dispatch path is restored. Update `docs/spec/configuration.md` and
 
 ## Context
 
-Today the orchestrator auto-dispatches when policy returns `DecisionAllow`. ADR 056
+Today the orchestrator auto-dispatches when policy returns `DecisionAllow`. ADR 058
 requires a human gate by default: even a plan that policy allows should pause for
 human approval unless the operator explicitly opts out with
 `AGENT_BUILDER_REQUIRE_APPROVAL=false`. This is orthogonal to policy: the policy

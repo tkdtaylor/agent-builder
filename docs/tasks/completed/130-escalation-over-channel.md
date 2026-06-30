@@ -1,7 +1,7 @@
 # Task 130: Escalation over the channel — reporterStatusWriter
 
 **Project:** agent-builder · **Created:** 2026-06-29 · **Status:** completed
-**ADR:** 056 — Conversational human-gated orchestrate front door
+**ADR:** 058 — Conversational human-gated orchestrate front door
 **Test spec:** [130-escalation-over-channel-test-spec.md](../test-specs/130-escalation-over-channel-test-spec.md)
 
 ## Goal
@@ -90,7 +90,7 @@ After this L6 run, rows 118–123 and 124–130 can be promoted to ✅ in separa
   `loop.StatusWriter` interface on the orchestrate path — this task replaces its
   implementation, not its seam).
 - Tasks 124–129 must be merged before this task begins (the orchestrate path must
-  include the full ADR 056 stack for the L5 test to exercise the right code path).
+  include the full ADR 058 stack for the L5 test to exercise the right code path).
 
 ## Out of scope
 

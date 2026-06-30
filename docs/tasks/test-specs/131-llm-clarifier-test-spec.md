@@ -2,7 +2,7 @@
 
 **Linked task:** [`docs/tasks/backlog/131-llm-clarifier.md`](../backlog/131-llm-clarifier.md)
 **Written:** 2026-06-29
-**ADR:** 056 — Conversational human-gated orchestrate front door (extends ADR 054/055/046)
+**ADR:** 058 — Conversational human-gated orchestrate front door (extends ADR 054/055/046)
 **Priority:** could-have / deferred (do not implement before tasks 124–130 are ✅)
 
 ## Requirements coverage
