@@ -89,6 +89,7 @@ func TestTC112_03_WorkerSemaphoreCapsLiveWorkers(t *testing.T) {
 				&fakeReporter{}, runtime.Config{},
 				orchestrator.WithDispatchFunc(disp.fn),
 				orchestrator.WithWorkerSemaphore(sem), // SHARED across both goals
+				orchestrator.WithRequireApproval(false),
 			)
 		}
 		oA := mkOrch("goal-A")
@@ -188,6 +189,7 @@ func TestTC112_05_RegistryRecordsOrderedTransitions(t *testing.T) {
 		planner, pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(dispatch),
 		orchestrator.WithStatusRegistry(reg),
+		orchestrator.WithRequireApproval(false),
 	)
 	// Mirror the control loop: register Queued before Handle.
 	reg.Register("g1", orchestrator.StateQueued)
@@ -259,6 +261,7 @@ func TestTC112_05_NilRegistryNeverHaltsGoal(t *testing.T) {
 			dispatched.Add(1)
 			return nil
 		}),
+		orchestrator.WithRequireApproval(false),
 		// No WithStatusRegistry → registry is nil → every projection write is a no-op.
 	)
 
@@ -325,6 +328,7 @@ func TestTC112_06_AuditChainValidUnderConcurrency(t *testing.T) {
 			orchestrator.WithAuditSink(sink), // ONE shared mutex-guarded sink
 			orchestrator.WithWorkerSemaphore(sem),
 			orchestrator.WithStatusRegistry(reg),
+			orchestrator.WithRequireApproval(false),
 		)
 		go func(gid string) {
 			defer wg.Done()
@@ -429,6 +433,7 @@ func TestTC112_07_PermitsBalancedNoLeakAfterDrain(t *testing.T) {
 			orchestrator.WithDispatchFunc(disp.fn),
 			orchestrator.WithWorkerSemaphore(sem),
 			orchestrator.WithStatusRegistry(reg),
+			orchestrator.WithRequireApproval(false),
 		)
 		go func(gid string) {
 			defer wg.Done()

@@ -336,6 +336,7 @@ func TestTC081_03_AllowDispatchesPerSubGoal(t *testing.T) {
 		orchestrator.NewStructuredPlanner(knownRecipes...),
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(spy.fn),
+		orchestrator.WithRequireApproval(false),
 	)
 	goal := supervisor.Task{ID: "g1", Spec: "coding-agent: implement X\ndocs-fix: update Y"}
 
@@ -375,6 +376,7 @@ func TestTC081_03_UnknownRecipeIsFailedOutcomeNotDispatch(t *testing.T) {
 		orchestrator.NewStructuredPlanner("coding-agent", "no-such-recipe"),
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(spy.fn),
+		orchestrator.WithRequireApproval(false),
 	)
 	goal := supervisor.Task{ID: "g1", Spec: "coding-agent: ok\nno-such-recipe: should fail"}
 
@@ -412,6 +414,7 @@ func TestTC081_04_AggregatesSuccessAndFailure(t *testing.T) {
 		orchestrator.NewStructuredPlanner(knownRecipes...),
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(spy.fn),
+		orchestrator.WithRequireApproval(false),
 	)
 	goal := supervisor.Task{ID: "g1", Spec: "coding-agent: implement X\ndocs-fix: update Y"}
 
@@ -498,6 +501,7 @@ func TestTC116_01_HandleForwardsCancelContextToDispatch(t *testing.T) {
 		orchestrator.NewStructuredPlanner(knownRecipes...),
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(dispatch),
+		orchestrator.WithRequireApproval(false),
 	)
 	goal := supervisor.Task{ID: "g1", Spec: "coding-agent: implement X"}
 
@@ -540,6 +544,7 @@ func TestBeginGoalSetsClarifyingState(t *testing.T) {
 		pol, rep, runtime.Config{},
 		orchestrator.WithClarifier(stubClarifier),
 		orchestrator.WithStatusRegistry(reg),
+		orchestrator.WithRequireApproval(false),
 	)
 
 	goal := supervisor.Task{ID: "goal-1", Spec: "fix bug"}
@@ -628,6 +633,7 @@ func TestMsgInfoFoldedDuringClarifying(t *testing.T) {
 		pol, rep, runtime.Config{},
 		orchestrator.WithClarifier(sc),
 		orchestrator.WithStatusRegistry(reg),
+		orchestrator.WithRequireApproval(false),
 	)
 
 	goal := supervisor.Task{ID: "goal-1", Spec: "fix bug"}
@@ -706,6 +712,7 @@ func TestBeginGoal_AutoMode(t *testing.T) {
 			}
 			return ""
 		}),
+		orchestrator.WithRequireApproval(false),
 	)
 
 	goal := supervisor.Task{ID: "goal-1", Spec: "coding-agent: implement A"}
@@ -734,6 +741,136 @@ func TestBeginGoal_AutoMode(t *testing.T) {
 
 	if spy.count() != 1 {
 		t.Errorf("expected 1 dispatch in auto mode, got %d", spy.count())
+	}
+}
+
+// --- TC-129-01 ---------------------------------------------------------------
+func TestRequireApprovalDefaultIsTrueForPolicyAllow(t *testing.T) {
+	spy := newDispatchSpy()
+	rep := &fakeReporter{}
+	pol := &fakePolicy{decision: policy.DecisionAllow}
+	reg := orchestrator.NewStatusRegistry()
+	o := orchestrator.New(
+		orchestrator.NewStructuredPlanner(knownRecipes...),
+		pol, rep, runtime.Config{},
+		orchestrator.WithDispatchFunc(spy.fn),
+		orchestrator.WithStatusRegistry(reg),
+	)
+
+	goal := supervisor.Task{ID: "goal-1", Spec: "coding-agent: implement X"}
+	reg.Register(goal.ID, orchestrator.StateQueued)
+
+	res, err := o.ConfirmAndPlan(context.Background(), goal)
+	if err != nil {
+		t.Fatalf("ConfirmAndPlan: unexpected error: %v", err)
+	}
+
+	if spy.count() != 0 {
+		t.Fatalf("expected 0 dispatches before approval, got %d", spy.count())
+	}
+
+	st, ok := reg.Get("goal-1")
+	if !ok || st.State != orchestrator.StateAwaitingApproval {
+		t.Errorf("expected StateAwaitingApproval, got %v", st.State)
+	}
+
+	reported := rep.Reported()
+	if len(reported) != 1 {
+		t.Fatalf("expected 1 report, got %d", len(reported))
+	}
+	if !strings.Contains(reported[0], "Approve?") {
+		t.Errorf("report does not contain Approve?: %q", reported[0])
+	}
+	if !o.HasPendingPlan("goal-1") {
+		t.Errorf("expected pending plan held for goal-1")
+	}
+	if res.Goal != "coding-agent: implement X" {
+		t.Errorf("expected PlanResult.Goal to be the spec, got %q", res.Goal)
+	}
+}
+
+// --- TC-129-02 ---------------------------------------------------------------
+func TestRequireApprovalFalseAutoDispatchesOnPolicyAllow(t *testing.T) {
+	spy := newDispatchSpy()
+	rep := &fakeReporter{}
+	pol := &fakePolicy{decision: policy.DecisionAllow}
+	reg := orchestrator.NewStatusRegistry()
+	o := orchestrator.New(
+		orchestrator.NewStructuredPlanner(knownRecipes...),
+		pol, rep, runtime.Config{},
+		orchestrator.WithDispatchFunc(spy.fn),
+		orchestrator.WithStatusRegistry(reg),
+		orchestrator.WithRequireApproval(false),
+	)
+
+	goal := supervisor.Task{ID: "goal-1", Spec: "coding-agent: implement X"}
+	reg.Register(goal.ID, orchestrator.StateQueued)
+
+	_, err := o.ConfirmAndPlan(context.Background(), goal)
+	if err != nil {
+		t.Fatalf("ConfirmAndPlan: unexpected error: %v", err)
+	}
+
+	if spy.count() != 1 {
+		t.Fatalf("expected 1 dispatch since requireApproval is false, got %d", spy.count())
+	}
+
+	st, ok := reg.Get("goal-1")
+	if !ok || st.State != orchestrator.StateDone {
+		t.Errorf("expected StateDone, got %v", st.State)
+	}
+
+	reported := rep.Reported()
+	for _, r := range reported {
+		if strings.Contains(r, "Approve?") {
+			t.Errorf("unexpected approval request: %q", r)
+		}
+	}
+	if o.HasPendingPlan("goal-1") {
+		t.Errorf("expected no pending plan held for goal-1")
+	}
+}
+
+// --- TC-129-03 ---------------------------------------------------------------
+func TestRequireApprovalDoesNotAffectPolicyDeny(t *testing.T) {
+	spy := newDispatchSpy()
+	rep := &fakeReporter{}
+	pol := &fakePolicy{decision: policy.DecisionDeny}
+	reg := orchestrator.NewStatusRegistry()
+	o := orchestrator.New(
+		orchestrator.NewStructuredPlanner(knownRecipes...),
+		pol, rep, runtime.Config{},
+		orchestrator.WithDispatchFunc(spy.fn),
+		orchestrator.WithStatusRegistry(reg),
+		orchestrator.WithRequireApproval(false),
+	)
+
+	goal := supervisor.Task{ID: "goal-1", Spec: "coding-agent: implement X"}
+	reg.Register(goal.ID, orchestrator.StateQueued)
+
+	_, err := o.ConfirmAndPlan(context.Background(), goal)
+	if err != nil {
+		t.Fatalf("ConfirmAndPlan: unexpected error: %v", err)
+	}
+
+	if spy.count() != 0 {
+		t.Fatalf("expected 0 dispatches on policy deny, got %d", spy.count())
+	}
+
+	st, ok := reg.Get("goal-1")
+	if !ok || st.State != orchestrator.StateFailed {
+		t.Errorf("expected StateFailed, got %v", st.State)
+	}
+
+	reported := rep.Reported()
+	if len(reported) != 1 {
+		t.Fatalf("expected 1 report, got %d", len(reported))
+	}
+	if !strings.Contains(reported[0], "Plan denied") {
+		t.Errorf("expected plan denied report, got %q", reported[0])
+	}
+	if o.HasPendingPlan("goal-1") {
+		t.Errorf("expected no pending plan held for goal-1")
 	}
 }
 

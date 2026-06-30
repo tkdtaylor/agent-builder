@@ -174,6 +174,7 @@ func setBaseConfigEnv(t *testing.T) {
 	t.Setenv(runtimewiring.EnvMaxAttempts, "2")
 	t.Setenv("ANTHROPIC_API_KEY", "test-key-not-used")
 	t.Setenv("AGENT_BUILDER_INTAKE", "auto")
+	t.Setenv("AGENT_BUILDER_REQUIRE_APPROVAL", "false")
 }
 
 // twoSubGoalGoal is the canonical 2-sub-goal goal used across policy/audit tests:
@@ -1218,5 +1219,73 @@ func repoRoot(t *testing.T) string {
 			t.Fatalf("could not locate go.mod above %s", dir)
 		}
 		dir = parent
+	}
+}
+
+// --- TC-129-05 ---------------------------------------------------------------
+func TestAssembleOrchestrateReadsRequireApprovalEnv(t *testing.T) {
+	setBaseConfigEnv(t)
+	writeSigningKeyFile(t)
+
+	cases := []struct {
+		envVal      string
+		expectPause bool
+	}{
+		{envVal: "", expectPause: true}, // unset / default
+		{envVal: "true", expectPause: true},
+		{envVal: "1", expectPause: true},
+		{envVal: "yes", expectPause: true},
+		{envVal: "false", expectPause: false},
+		{envVal: "0", expectPause: false},
+		{envVal: "no", expectPause: false},
+		{envVal: "NO", expectPause: false},
+	}
+
+	for _, tc := range cases {
+		t.Run("env="+tc.envVal, func(t *testing.T) {
+			t.Setenv("AGENT_BUILDER_REQUIRE_APPROVAL", tc.envVal)
+			spy := &spyDispatch{}
+			sink := audit.NewFakeSink()
+
+			oc, cleanup, err := assembleOrchestrate(Config{Stdout: discard(), Stderr: discard()}, assembleOverrides{
+				policyClient: &perActionPolicy{spawnPlan: policy.DecisionAllow, spawnWorker: map[string]policy.Decision{}},
+				dispatch:     spy.fn,
+				auditSink:    sink,
+				planner:      twoRecipePlanner(),
+				source:       &stubGoalSource{goals: []supervisor.Task{twoSubGoalGoal()}},
+				signingKey:   testSigningKey(t),
+			})
+			if err != nil {
+				t.Fatalf("assembleOrchestrate: %v", err)
+			}
+			t.Cleanup(cleanup)
+
+			res, err := oc.orch.ConfirmAndPlan(context.Background(), twoSubGoalGoal())
+			if err != nil {
+				t.Fatalf("ConfirmAndPlan: %v", err)
+			}
+
+			if tc.expectPause {
+				if spy.count() != 0 {
+					t.Errorf("expected plan to pause (0 dispatches), got %d", spy.count())
+				}
+				if !oc.orch.HasPendingPlan("g1") {
+					t.Error("expected pending plan to be held in store")
+				}
+				if len(res.Outcomes) != 0 {
+					t.Errorf("expected 0 outcomes in pause result, got %d", len(res.Outcomes))
+				}
+			} else {
+				if spy.count() != 2 {
+					t.Errorf("expected plan to auto-dispatch (2 dispatches), got %d", spy.count())
+				}
+				if oc.orch.HasPendingPlan("g1") {
+					t.Error("expected no pending plan to be held in store")
+				}
+				if len(res.Outcomes) != 2 {
+					t.Errorf("expected 2 outcomes in auto-dispatch result, got %d", len(res.Outcomes))
+				}
+			}
+		})
 	}
 }

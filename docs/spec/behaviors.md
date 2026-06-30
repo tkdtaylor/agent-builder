@@ -308,6 +308,13 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** If the clarifier returns an error, the goal transitions to `StateFailed` in the registry and the orchestrator reports the failure.
 - **References:** ADR 056; task 128; `docs/tasks/test-specs/128-clarifier-seam-intake-state-machine-test-spec.md`.
 
+### B-035: Approval-default and require-approval opt-out
+
+- **Trigger:** The orchestrator planning phase finishes, and policy returns `allow` (`DecisionAllow`) for the plan.
+- **Response:** By default, or when `AGENT_BUILDER_REQUIRE_APPROVAL=true`, the orchestrator forces an `AwaitingApproval` checkpoint pause on the plan (identical to the pause for `DecisionRequireApproval` plans). If `AGENT_BUILDER_REQUIRE_APPROVAL=false` (lenient false: `"false"`, `"0"`, `"no"`), the orchestrator bypasses the checkpoint pause and immediately dispatches the plan's sub-goals.
+- **Side effects:** When the pause is active, the plan is written to the `PlanStore` and the goal state is set to `StateAwaitingApproval`. If the pause is bypassed, the plan is immediately dispatched and the goal state transitions directly to `StateDispatching` / `StateDone` (on success).
+- **References:** ADR 056; task 129; `docs/tasks/test-specs/129-approval-default-require-approval-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors

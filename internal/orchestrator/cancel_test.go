@@ -111,6 +111,7 @@ func TestTC116_05_LeakErrorSurfacesinOutcomeRendering(t *testing.T) {
 		orchestrator.NewStructuredPlanner(knownRecipes...),
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(dispatchWithKillErr),
+		orchestrator.WithRequireApproval(false),
 	)
 
 	// Request a goal. With DecisionAllow, Handle calls dispatchPlan immediately.

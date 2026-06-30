@@ -65,6 +65,7 @@ func TestTC085_01_OrchestratorRunRecordContainmentExecSandbox(t *testing.T) {
 		orchestrator.NewStructuredPlanner(knownRecipes...),
 		&fakePolicy{decision: policy.DecisionAllow},
 		&fakeReporter{}, runtime.Config{},
+		orchestrator.WithRequireApproval(false),
 	)
 
 	c := o.Containment()
@@ -93,6 +94,7 @@ func TestTC085_04_OrchestratorEgressDefaultDeny(t *testing.T) {
 		orchestrator.NewStructuredPlanner(knownRecipes...),
 		&fakePolicy{decision: policy.DecisionAllow},
 		&fakeReporter{}, runtime.Config{},
+		orchestrator.WithRequireApproval(false),
 	)
 
 	got := o.Containment().EgressPolicy
@@ -120,6 +122,7 @@ func TestTC085_02_SpawnWorkerDenySkipsWorkerAndReports(t *testing.T) {
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(spy.fn),
 		orchestrator.WithAuditSink(sink),
+		orchestrator.WithRequireApproval(false),
 	)
 	goal := supervisor.Task{ID: "g1", Spec: "coding-agent: implement X\ndocs-fix: update Y"}
 
@@ -194,6 +197,7 @@ func TestTC085_02_SpawnWorkerFailClosedOnPolicyError(t *testing.T) {
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(spy.fn),
 		orchestrator.WithAuditSink(sink),
+		orchestrator.WithRequireApproval(false),
 	)
 	goal := supervisor.Task{ID: "g1", Spec: "coding-agent: implement X"}
 
@@ -237,6 +241,7 @@ func TestTC085_03_FleetAuditChainCoversBothTiers(t *testing.T) {
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(spy.fn),
 		orchestrator.WithAuditSink(sink),
+		orchestrator.WithRequireApproval(false),
 	)
 	goal := supervisor.Task{ID: "g1", Spec: "coding-agent: implement X\ndocs-fix: update Y"}
 
@@ -342,6 +347,7 @@ func TestTC085_05_RuntimeSelfRepoWithRealPlanner(t *testing.T) {
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(spy.fn),
 		orchestrator.WithAuditSink(sink),
+		orchestrator.WithRequireApproval(false),
 	)
 
 	// Goal with Repo == own-repo (as the inbound channel would provide it).
@@ -455,6 +461,7 @@ func TestTC085_05_RuntimeSelfRepoDeny(t *testing.T) {
 					{RecipeName: "coding-agent", Task: supervisor.Task{ID: "g-0", Spec: "self-repo edit"}, TargetRepo: orchestrator.OwnRepo},
 				},
 			}),
+			orchestrator.WithRequireApproval(false),
 		)
 		result, err := o.Handle(context.Background(), supervisor.Task{ID: "g", Spec: "x"})
 		if err != nil {
@@ -486,6 +493,7 @@ func TestTC085_05_RuntimeSelfRepoDeny(t *testing.T) {
 					{RecipeName: "coding-agent", Task: supervisor.Task{ID: "g-0", Spec: "self-repo sink"}, Sink: orchestrator.OwnRepo},
 				},
 			}),
+			orchestrator.WithRequireApproval(false),
 		)
 		_, err := o.Handle(context.Background(), supervisor.Task{ID: "g", Spec: "x"})
 		if err != nil {
@@ -511,6 +519,7 @@ func TestTC085_05_RuntimeSelfRepoDeny(t *testing.T) {
 					{RecipeName: "coding-agent", Task: supervisor.Task{ID: "g-0", Spec: "other repo"}, TargetRepo: "github.com/tkdtaylor/some-other-repo"},
 				},
 			}),
+			orchestrator.WithRequireApproval(false),
 		)
 		if _, err := o.Handle(context.Background(), supervisor.Task{ID: "g", Spec: "x"}); err != nil {
 			t.Fatalf("Handle: %v", err)

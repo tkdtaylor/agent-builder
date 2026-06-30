@@ -107,6 +107,7 @@ func TestTC086_01_AllWorkersStartBeforeAnyCompletes(t *testing.T) {
 		newNSubGoalPlanner("g1", n, "coding-agent"),
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(bar.fn),
+		orchestrator.WithRequireApproval(false),
 	)
 
 	done := make(chan orchestrator.PlanResult, 1)
@@ -192,6 +193,7 @@ func TestTC086_02_OneWorkerFailureDoesNotHaltOthers(t *testing.T) {
 		newNSubGoalPlanner("g1", n, "coding-agent"),
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(disp.fn),
+		orchestrator.WithRequireApproval(false),
 	)
 
 	res, err := o.Handle(context.Background(), supervisor.Task{ID: "g1", Spec: "partial"})
@@ -231,6 +233,7 @@ func TestTC086_03_AggregatedMixDeliveredViaReporter(t *testing.T) {
 		newNSubGoalPlanner("g1", n, "coding-agent"),
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(disp.fn),
+		orchestrator.WithRequireApproval(false),
 	)
 
 	res, err := o.Handle(context.Background(), supervisor.Task{ID: "g1", Spec: "mix"})
@@ -297,6 +300,7 @@ func TestTC086_04_NoDataRacesUnderConcurrentDispatch(t *testing.T) {
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(disp.fn),
 		orchestrator.WithAuditSink(sink),
+		orchestrator.WithRequireApproval(false),
 	)
 
 	res, err := o.Handle(context.Background(), supervisor.Task{ID: "g1", Spec: "race"})
@@ -346,6 +350,7 @@ func TestTC086_05_FleetChainCoversAllNConcurrentWorkers(t *testing.T) {
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(disp.fn),
 		orchestrator.WithAuditSink(sink),
+		orchestrator.WithRequireApproval(false),
 	)
 
 	if _, err := o.Handle(context.Background(), supervisor.Task{ID: "g1", Spec: "fleet"}); err != nil {
@@ -480,6 +485,7 @@ func TestSEC086_01_DenyEventAuditFailureHaltsPlan(t *testing.T) {
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(disp.fn),
 		orchestrator.WithAuditSink(failingSink),
+		orchestrator.WithRequireApproval(false),
 	)
 
 	res, err := o.Handle(context.Background(), supervisor.Task{ID: "g1", Spec: "audit failure test"})
@@ -521,6 +527,7 @@ func TestSEC086_01_DenyWithNoSinkIsHardError(t *testing.T) {
 		newNSubGoalPlanner("g1", n, "coding-agent"),
 		pol, rep, runtime.Config{},
 		orchestrator.WithDispatchFunc(disp.fn),
+		orchestrator.WithRequireApproval(false),
 		// NO audit sink configured (WithAuditSink not called).
 	)
 

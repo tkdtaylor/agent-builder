@@ -54,6 +54,7 @@ const (
 // missing required vars fail-fast at assembly time before the goal-intake loop runs.
 const EnvInbound = "AGENT_BUILDER_INBOUND"
 const EnvIntake = "AGENT_BUILDER_INTAKE"
+const EnvRequireApproval = "AGENT_BUILDER_REQUIRE_APPROVAL"
 
 const (
 	inboundEnv      = "env"
@@ -483,6 +484,13 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		getenv = os.Getenv
 	}
 
+	// 10e. requireApproval selection: default true, false on lenient false values
+	requireApproval := true
+	rawRequireApproval := strings.ToLower(strings.TrimSpace(getenv(EnvRequireApproval)))
+	if rawRequireApproval == "false" || rawRequireApproval == "0" || rawRequireApproval == "no" {
+		requireApproval = false
+	}
+
 	orch := orchestrator.New(
 		planner, pol, reporter, baseConfig,
 		orchestrator.WithPlanStore(store),
@@ -493,6 +501,7 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		orchestrator.WithStatusWriter(statusWriter),
 		orchestrator.WithClarifier(clarifier),
 		orchestrator.WithGetEnv(getenv),
+		orchestrator.WithRequireApproval(requireApproval),
 	)
 
 	// Inbound message seam (ADR 054 §2). Precedence: an explicit typed MessageSource

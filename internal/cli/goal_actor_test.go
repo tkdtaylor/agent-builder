@@ -40,6 +40,9 @@ func TestTC128_06_ClarifyingLingerLoop(t *testing.T) {
 		if key == EnvIntake {
 			return ""
 		}
+		if key == EnvRequireApproval {
+			return "false"
+		}
 		return ""
 	}
 

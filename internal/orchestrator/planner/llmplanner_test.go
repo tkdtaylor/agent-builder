@@ -225,6 +225,7 @@ func TestTC100_02_SelfRepoNeverDispatched(t *testing.T) {
 		runtime.Config{},
 		orchestrator.WithDispatchFunc(spy.fn),
 		orchestrator.WithAuditSink(sink),
+		orchestrator.WithRequireApproval(false),
 	)
 
 	result, err := o.Handle(context.Background(), supervisor.Task{ID: "g", Spec: "edit self and update other"})

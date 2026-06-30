@@ -284,6 +284,7 @@ type Orchestrator struct {
 	reevaluationBound int
 	clarifier         Clarifier
 	getenv            func(string) string
+	requireApproval   bool
 }
 
 // Option configures an Orchestrator.
@@ -372,19 +373,26 @@ func WithGetEnv(getenv func(string) string) Option {
 	}
 }
 
+// WithRequireApproval configures whether a human approval gate is required even
+// when policy allows the plan (default true).
+func WithRequireApproval(require bool) Option {
+	return func(o *Orchestrator) { o.requireApproval = require }
+}
+
 // New constructs an Orchestrator. planner, pol, and reporter are required.
 func New(planner Planner, pol PolicyClient, reporter supervisor.Reporter, base runtime.Config, opts ...Option) *Orchestrator {
 	o := &Orchestrator{
-		planner:     planner,
-		policy:      pol,
-		reporter:    reporter,
-		store:       NewMemoryPlanStore(),
-		baseConfig:  base,
-		dispatch:    defaultDispatch,
-		risk:        "low",
-		containment: defaultContainment(),
-		clarifier:   NewHeuristicClarifier(),
-		getenv:      os.Getenv,
+		planner:         planner,
+		policy:          pol,
+		reporter:        reporter,
+		store:           NewMemoryPlanStore(),
+		baseConfig:      base,
+		dispatch:        defaultDispatch,
+		risk:            "low",
+		containment:     defaultContainment(),
+		clarifier:       NewHeuristicClarifier(),
+		getenv:          os.Getenv,
+		requireApproval: true,
 	}
 	for _, opt := range opts {
 		opt(o)
@@ -483,31 +491,12 @@ func (o *Orchestrator) ConfirmAndPlan(ctx context.Context, goal supervisor.Task)
 
 	switch decision {
 	case policy.DecisionAllow:
+		if o.requireApproval {
+			return o.pauseForApproval(ctx, plan)
+		}
 		return o.dispatchPlan(ctx, plan)
 	case policy.DecisionRequireApproval:
-		// Pause-and-resume (ADR 046 §4): hold the plan, report it, dispatch nothing.
-		// When the store implements TamperAwarePlanStore (MemoryGuardPlanStore), use
-		// TryPut so write-gate rejections surface as errors (REQ-084-01 / ADR 049 §2).
-		if ta, ok := o.store.(TamperAwarePlanStore); ok {
-			if err := ta.TryPut(plan); err != nil {
-				o.registry.SetState(plan.GoalID, StateFailed)
-				return PlanResult{}, fmt.Errorf("orchestrator: memory-guard write-gate rejected plan for goal %q: %w", plan.GoalID, err)
-			}
-		} else {
-			o.store.Put(plan)
-		}
-		// Registry projection: the plan is paused awaiting approval (ADR 054 §3). The
-		// Resume / ResumeWithFold path (task 115) continues from here.
-		o.registry.SetState(plan.GoalID, StateAwaitingApproval)
-		// Surface any info already queued for this goal WITH the solicitation (ADR 054
-		// §4) — an info that arrived before the goal reached the pause is folded into
-		// the operator's view at the checkpoint. Info that arrives AFTER this pause is
-		// surfaced by the actor calling SolicitApproval again.
-		info := o.registry.PendingInfo(plan.GoalID)
-		if err := o.reporter.Report(ctx, renderApprovalRequestWithInfo(plan, info)); err != nil {
-			return PlanResult{}, fmt.Errorf("orchestrator: report approval request: %w", err)
-		}
-		return PlanResult{Goal: plan.Goal}, nil
+		return o.pauseForApproval(ctx, plan)
 	default:
 		// deny and any fail-closed deny.
 		o.registry.SetState(plan.GoalID, StateFailed)
@@ -516,6 +505,36 @@ func (o *Orchestrator) ConfirmAndPlan(ctx context.Context, goal supervisor.Task)
 		}
 		return PlanResult{Goal: plan.Goal}, nil
 	}
+}
+
+// pauseForApproval halts the plan awaiting operator approval. It places the plan
+// in the PlanStore (performing memory-guard verification if the store is a
+// TamperAwarePlanStore), updates the registry state to StateAwaitingApproval,
+// and reports the approval solicitation to the operator.
+func (o *Orchestrator) pauseForApproval(ctx context.Context, plan Plan) (PlanResult, error) {
+	// Pause-and-resume (ADR 046 §4): hold the plan, report it, dispatch nothing.
+	// When the store implements TamperAwarePlanStore (MemoryGuardPlanStore), use
+	// TryPut so write-gate rejections surface as errors (REQ-084-01 / ADR 049 §2).
+	if ta, ok := o.store.(TamperAwarePlanStore); ok {
+		if err := ta.TryPut(plan); err != nil {
+			o.registry.SetState(plan.GoalID, StateFailed)
+			return PlanResult{}, fmt.Errorf("orchestrator: memory-guard write-gate rejected plan for goal %q: %w", plan.GoalID, err)
+		}
+	} else {
+		o.store.Put(plan)
+	}
+	// Registry projection: the plan is paused awaiting approval (ADR 054 §3). The
+	// Resume / ResumeWithFold path (task 115) continues from here.
+	o.registry.SetState(plan.GoalID, StateAwaitingApproval)
+	// Surface any info already queued for this goal WITH the solicitation (ADR 054
+	// §4) — an info that arrived before the goal reached the pause is folded into
+	// the operator's view at the checkpoint. Info that arrives AFTER this pause is
+	// surfaced by the actor calling SolicitApproval again.
+	info := o.registry.PendingInfo(plan.GoalID)
+	if err := o.reporter.Report(ctx, renderApprovalRequestWithInfo(plan, info)); err != nil {
+		return PlanResult{}, fmt.Errorf("orchestrator: report approval request: %w", err)
+	}
+	return PlanResult{Goal: plan.Goal}, nil
 }
 
 // Handle is the legacy goal-intake entry point. It bypasses the clarification
