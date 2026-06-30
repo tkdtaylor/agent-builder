@@ -1,6 +1,6 @@
 # Task 130: Escalation over the channel — reporterStatusWriter
 
-**Project:** agent-builder · **Created:** 2026-06-29 · **Status:** backlog
+**Project:** agent-builder · **Created:** 2026-06-29 · **Status:** completed
 **ADR:** 056 — Conversational human-gated orchestrate front door
 **Test spec:** [130-escalation-over-channel-test-spec.md](../test-specs/130-escalation-over-channel-test-spec.md)
 

@@ -315,6 +315,13 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Side effects:** When the pause is active, the plan is written to the `PlanStore` and the goal state is set to `StateAwaitingApproval`. If the pause is bypassed, the plan is immediately dispatched and the goal state transitions directly to `StateDispatching` / `StateDone` (on success).
 - **References:** ADR 056; task 129; `docs/tasks/test-specs/129-approval-default-require-approval-test-spec.md`.
 
+### B-036: Escalation over the channel
+
+- **Trigger:** An escalation event occurs on the `orchestrate` path (e.g. bounded retry exhausts or a blocked action exhausts reevaluation).
+- **Response:** The orchestrate path routes the escalation status update (`needs-human`) through a `reporterStatusWriter` instead of writing to a task file on disk. The writer validates the status, formats the message as `"needs-human: goal <taskID> escalated (<status>)"`, and calls the outbound `Reporter`'s `Report` method.
+- **Side effects:** The escalation text is reported back over the configured outbound channel (e.g., stdout or Telegram bot channel) without requiring filesystem access or a task file on disk. This enables synthetic goal IDs (e.g., `goal-N`, `tg-*`) to escalate cleanly.
+- **References:** ADR 056; task 130; `docs/tasks/test-specs/130-escalation-over-channel-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors

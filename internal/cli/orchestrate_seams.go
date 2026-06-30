@@ -16,6 +16,7 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator"
 	runtimewiring "github.com/tkdtaylor/agent-builder/internal/runtime"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
+	"github.com/tkdtaylor/agent-builder/internal/tasksource"
 )
 
 // generateSealKeyPair is the seam used to generate X25519 seal keypairs for the
@@ -199,3 +200,36 @@ const (
 func filepathJoinTemp(name string) string {
 	return filepath.Join(os.TempDir(), name)
 }
+
+// reporterStatusWriter implements loop.StatusWriter by routing status reports
+// through supervisor.Reporter instead of writing to a task file (REQ-130-01).
+type reporterStatusWriter struct {
+	reporter supervisor.Reporter
+}
+
+// WriteStatus formats a needs-human escalation report and sends it via w.reporter.
+func (w *reporterStatusWriter) WriteStatus(taskID string, status tasksource.WritableStatus) (tasksource.StatusWriteResult, error) {
+	switch status {
+	case tasksource.WritableStatusDone, tasksource.WritableStatusBlocked, tasksource.WritableStatusNeedsHuman:
+		// Valid status
+	default:
+		return tasksource.StatusWriteResult{}, fmt.Errorf("reporterStatusWriter: invalid writable status %q", status)
+	}
+
+	if w.reporter == nil {
+		return tasksource.StatusWriteResult{}, fmt.Errorf("reporterStatusWriter: nil reporter")
+	}
+
+	// Format matches "needs-human: goal <taskID> escalated (<status>)" (TC-130-01)
+	msg := fmt.Sprintf("needs-human: goal %s escalated (%s)", taskID, status)
+
+	if err := w.reporter.Report(context.Background(), msg); err != nil {
+		return tasksource.StatusWriteResult{}, fmt.Errorf("reporterStatusWriter: report failed: %w", err)
+	}
+
+	return tasksource.StatusWriteResult{
+		Path:    "", // no file backed path
+		Changed: true,
+	}, nil
+}
+

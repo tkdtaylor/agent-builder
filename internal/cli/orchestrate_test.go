@@ -6,6 +6,8 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"go/parser"
+	"go/token"
 	"io"
 	"log/slog"
 	"os"
@@ -1131,11 +1133,11 @@ func TestAssembleOrchestrateWiresStatusWriter(t *testing.T) {
 		t.Fatal("onStatusWriter seam captured nil StatusWriter; assembleOrchestrate did not construct or wire the status writer")
 	}
 
-	// 4. The captured writer is a *tasksource.StatusWriter (the concrete type
-	// constructed from baseConfig.TaskRoot).
-	_, ok := capturedWriter.(*tasksource.StatusWriter)
+	// 4. The captured writer is a *reporterStatusWriter (the concrete type
+	// constructed on the orchestrate path).
+	_, ok := capturedWriter.(*reporterStatusWriter)
 	if !ok {
-		t.Fatalf("captured StatusWriter is type %T, want *tasksource.StatusWriter", capturedWriter)
+		t.Fatalf("captured StatusWriter is type %T, want *reporterStatusWriter", capturedWriter)
 	}
 }
 
@@ -1289,3 +1291,79 @@ func TestAssembleOrchestrateReadsRequireApprovalEnv(t *testing.T) {
 		})
 	}
 }
+
+// TestAssembleOrchestrateUsesReporterStatusWriter is TC-130-04: verifies that
+// assembleOrchestrate wires reporterStatusWriter which routes needs-human
+// status writes to the spy reporter.
+func TestAssembleOrchestrateUsesReporterStatusWriter(t *testing.T) {
+	setBaseConfigEnv(t)
+	rep := &recordingReporter{}
+
+	var capturedWriter loop.StatusWriter
+	oc, cleanup, err := assembleOrchestrate(
+		Config{Stdout: discard(), Stderr: discard()},
+		assembleOverrides{
+			signingKey:     testSigningKey(t),
+			source:         &recordingGoalSource{},
+			reporter:       rep,
+			onStatusWriter: func(w loop.StatusWriter) { capturedWriter = w },
+		},
+	)
+	t.Cleanup(cleanup)
+
+	if err != nil {
+		t.Fatalf("assembleOrchestrate returned error: %v", err)
+	}
+
+	if oc.orch == nil {
+		t.Fatal("orchestrateConfig.orch is nil")
+	}
+
+	if capturedWriter == nil {
+		t.Fatal("onStatusWriter captured nil status writer")
+	}
+
+	// 1. Verify the concrete type is *reporterStatusWriter
+	w, ok := capturedWriter.(*reporterStatusWriter)
+	if !ok {
+		t.Fatalf("captured StatusWriter is type %T, want *reporterStatusWriter", capturedWriter)
+	}
+
+	// 2. Verify that WriteStatus propagates to our spy reporter
+	res, err := w.WriteStatus("goal-99", tasksource.WritableStatusNeedsHuman)
+	if err != nil {
+		t.Fatalf("WriteStatus failed: %v", err)
+	}
+	if !res.Changed {
+		t.Error("expected Changed to be true")
+	}
+
+	reports := rep.all()
+	if len(reports) != 1 {
+		t.Fatalf("expected exactly 1 report, got %d", len(reports))
+	}
+
+	expected := "needs-human: goal goal-99 escalated (needs-human)"
+	if reports[0] != expected {
+		t.Errorf("reported text = %q, want %q", reports[0], expected)
+	}
+}
+
+// TestReporterStatusWriterReplacesFileBackedWriter is TC-130-05: verifies that
+// the file-backed tasksource.StatusWriter is no longer constructed on the
+// orchestrate path and that tasksource is not directly imported in orchestrate.go.
+func TestReporterStatusWriterReplacesFileBackedWriter(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "orchestrate.go", nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("failed to parse orchestrate.go AST: %v", err)
+	}
+
+	for _, imp := range f.Imports {
+		path := strings.Trim(imp.Path.Value, `"`)
+		if path == "github.com/tkdtaylor/agent-builder/internal/tasksource" {
+			t.Error("orchestrate.go directly imports internal/tasksource; this direct dependency must be removed")
+		}
+	}
+}
+

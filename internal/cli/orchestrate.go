@@ -29,7 +29,6 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/router"
 	runtimewiring "github.com/tkdtaylor/agent-builder/internal/runtime"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
-	"github.com/tkdtaylor/agent-builder/internal/tasksource"
 )
 
 // EnvPlanner selects the Planner the orchestrate subcommand assembles. Live
@@ -451,14 +450,11 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 	}
 
 	// 10b. Status writer for blocked-action reevaluation escalation (ADR 055 seam 4,
-	//      task 123). The orchestrate path must CONSTRUCT a status writer (it does not
-	//      already have one — run.go is the only existing construction site). The writer
-	//      roots at baseConfig.TaskRoot and scans DefaultTaskDirs; it satisfies the
-	//      loop.StatusWriter interface. A nil writer is a no-op on the live path (the
-	//      reevaluation still runs but escalation writes are skipped).
+	//      task 123, updated in task 130). The orchestrate path constructs a
+	//      reporterStatusWriter routing escalation text to the reporter (REQ-130-03).
 	statusWriter := ov.statusWriter
-	if statusWriter == nil && baseConfig.TaskRoot != "" {
-		statusWriter = tasksource.NewStatusWriter(baseConfig.TaskRoot, tasksource.DefaultTaskDirs...)
+	if statusWriter == nil {
+		statusWriter = &reporterStatusWriter{reporter: reporter}
 	}
 
 	// Test seam (TC-123 / task 123): observe the exact StatusWriter the assembly feeds into
