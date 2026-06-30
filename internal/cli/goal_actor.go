@@ -210,6 +210,9 @@ func (a *goalActor) handleCommand(ctx context.Context, msg supervisor.Message) {
 		a.applyInfo(ctx, msg.Text)
 	case supervisor.MsgCancel:
 		a.applyCancel(ctx)
+	case supervisor.MsgConfirm:
+		// Accepted but not yet handled (task 128 concern).
+		// Log or note for task 128 that it is accepted.
 	}
 }
 

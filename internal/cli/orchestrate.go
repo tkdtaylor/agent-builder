@@ -625,7 +625,7 @@ func runControlLoop(ctx context.Context, oc orchestrateConfig) error {
 			oc.routeNewGoal(ctx, msg.Goal, mailboxes, admit, &wg, shutdown)
 		case supervisor.MsgStatus:
 			oc.routeStatus(ctx, msg.GoalID)
-		case supervisor.MsgInfo, supervisor.MsgCancel:
+		case supervisor.MsgInfo, supervisor.MsgCancel, supervisor.MsgConfirm:
 			oc.routeCommand(ctx, msg, mailboxes)
 		default:
 			oc.report(ctx, fmt.Sprintf("ignored message of unknown kind: %v", msg.Kind))
@@ -685,7 +685,7 @@ func (oc orchestrateConfig) routeStatus(ctx context.Context, goalID string) {
 	oc.report(ctx, fmt.Sprintf("status: goal %q (handler pending task 114)", goalID))
 }
 
-// routeCommand dispatches a MsgInfo/MsgCancel to the addressed goal's command
+// routeCommand dispatches a MsgInfo/MsgCancel/MsgConfirm to the addressed goal's command
 // mailbox. An unknown goalID (no mailbox) yields a graceful "no such goal" report —
 // never a panic, and no mailbox is created for the unknown goal (ADR 054 §2).
 func (oc orchestrateConfig) routeCommand(ctx context.Context, msg supervisor.Message, mailboxes *commandMailboxes) {

@@ -18,6 +18,8 @@ const (
 	// parked behind the goal-admission cap (AGENT_BUILDER_MAX_GOALS) until a slot
 	// frees. It has not yet entered Planning.
 	StateQueued GoalState = iota
+	// StateClarifying — the goal actor is in conversational clarification (ADR 056).
+	StateClarifying
 	// StatePlanning — the goal actor is decomposing the goal via Planner.Plan and
 	// running the spawn-plan gate.
 	StatePlanning
@@ -44,6 +46,8 @@ func (s GoalState) String() string {
 	switch s {
 	case StateQueued:
 		return "queued"
+	case StateClarifying:
+		return "clarifying"
 	case StatePlanning:
 		return "planning"
 	case StateAwaitingApproval:

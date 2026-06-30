@@ -1,6 +1,6 @@
 # Task 127: StateClarifying registry state + route MsgConfirm
 
-**Project:** agent-builder · **Created:** 2026-06-29 · **Status:** backlog
+**Project:** agent-builder · **Created:** 2026-06-29 · **Status:** completed
 **ADR:** 056 — Conversational human-gated orchestrate front door
 **Test spec:** [127-state-clarifying-route-msgconfirm-test-spec.md](../test-specs/127-state-clarifying-route-msgconfirm-test-spec.md)
 
