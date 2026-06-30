@@ -9,7 +9,8 @@ Every coding-agent harness loads this file:
 
 - **Codex** auto-loads `AGENTS.md` (this file). The Codex-specific short commands
   are at the end under *Harness notes — Codex*.
-- **Antigravity / Gemini** load it via `GEMINI.md` (a symlink to this file).
+- **Antigravity (`agy`)** loads it via `GEMINI.md` (a symlink to this file; the
+  filename is legacy from the deprecated `gemini` CLI).
 - **Claude Code** loads `CLAUDE.md`, which imports this file (`@AGENTS.md`) and adds
   the Claude-specific mechanics (skills, subagents, hooks).
 
@@ -18,23 +19,45 @@ in that harness's layer (`CLAUDE.md` for Claude Code), not here.
 
 ## What this is
 
-agent-builder is the **assembly layer of the Secure Agent Ecosystem** — it composes
-the foundational blocks (exec-sandbox, vault, policy-engine, audit-trail, guarded by
-armor) into **purpose-built, secure autonomous agents**. Its first and reference build
-is an **autonomous coding agent** that works a target repo's tasks unattended, one at a
-time, behind a machine-checkable verification gate. It composes the blocks over their
-**published contracts** and treats each block's own README `## Scope` section as the
-authoritative statement of what that block does and does not own; it does not restate
-or reimplement block responsibilities here. The authoritative design is
-**`autonomous-builder.md`** in the internal planning hub — read it before changing
-architecture (it still carries the older "builds the blocks" framing; reconcile there
-separately). The key invariants below derive from it.
+agent-builder is a **security-first general autonomous agent** — the Secure Agent
+Ecosystem's equivalent of OpenClaw / Hermes: persistent, extensible, self-improving, and
+multi-LLM. It runs a **capable existing agent (Claude Code first) as its reasoning brain
+inside the security envelope** — exec-sandbox, policy-engine + egress allowlist, vault,
+audit-trail, and armor — and itself owns the gateway, the multi-LLM router, skills/memory
+governance, and security. It **composes a brain; it does not reimplement reasoning.**
 
-**North star:** agent-builder is the ecosystem's **front door** — the tool that
-assembles secure agents from the blocks. The autonomous coding agent is the first
-reference build; the arc is from *this one agent* to *a builder of any purpose-built
-secure agent* over the same seams. Apache-2.0 licensed, part of the Secure Agent
-Ecosystem. Keep the executor / repo / verify seams clean for that end state.
+**Coding is one skill among many.** Contributing to a repo and starting a project are
+*skills*, not the definition of the agent. The **autonomous coding agent is the first
+reference build** — it works a target repo's tasks unattended, one at a time, behind a
+machine-checkable verification gate — and most of this repo's code today realizes that
+reference build. It is the proving ground for the general agent, not its boundary.
+
+It composes the blocks over their **published contracts** and treats each block's own
+README `## Scope` section as the authoritative statement of what that block does and does
+not own; it does not restate or reimplement block responsibilities here. The authoritative
+design is **`autonomous-builder.md`** in the internal planning hub — read it before
+changing architecture (it still carries the older "builds the blocks" framing; reconcile
+it against the north star above). The key invariants below derive from it.
+
+**North star:** a general, secure autonomous agent you hand a goal and it works toward it
+— composed brain, multi-LLM router, governed skills and memory, results returned over the
+channel. The arc runs from the coding reference build outward to **many skills over the
+same secure seams**, not toward an agent factory. Results and escalations flow back over
+the same channel the request arrived on (**CLI now, Telegram next**), behind two human
+gates — **plan/action approval** and **result review** — plus needs-human escalation.
+**Self-improvement is secure skill-writing:** the agent authors and refines reviewable,
+sandboxed skills; it never autonomously edits its own trusted core, gate, or escalation
+path. Apache-2.0 licensed, part of the Secure Agent Ecosystem.
+
+**The three brains** the router selects across are **local (ollama)**, **Claude**, and
+**`agy`/Antigravity** — the latter the multi-model successor to the **`gemini` CLI, which
+was deprecated 2026-06-18** (`gemini` is not a live brain; `agy` replaced it).
+
+**Known missing / not-yet-built** (the forward path, not present capability): persistent
+cross-session memory; an always-on heartbeat/daemon; a general self-extending skill
+system; the **composed-brain-as-general-executor** — a non-coding execution path for the
+cloud brains (today only the Ollama-native single-shot `Completer` answers without editing
+a repo); broader multi-LLM routing; and the secure skill-writing loop.
 
 **Origin (historical — don't reintroduce as the live purpose).** agent-builder began
 as the agent meant to *build* the blocks and bootstrapped exec-sandbox (built on rented
@@ -88,15 +111,19 @@ make check                        # lint + test + fitness (the verification gate
 
 ## Architectural invariants (from autonomous-builder.md)
 
-These are load-bearing — violating one breaks the security model, not just style:
+These are load-bearing — violating one breaks the security model, not just style.
+Reconcile them against the general-agent north star above where `autonomous-builder.md`
+still uses the older "builds the blocks" framing:
 
 - **Verification gate is the definition of done.** Unattended, the agent's only
   ground truth is machine-checkable success. No task is "done" without the gate
   passing (tests + build + lint + scanners green). Keep the gate thin — adopt `go
   test`/`golangci-lint` + scanners, don't build a framework.
-- **No unattended self-modification.** agent-builder reads from its own repo but
-  never edits it autonomously — a bad self-edit can disable its own gate/escalation.
-  It builds *blocks*, not itself. Self-edits are human-reviewed.
+- **No unattended self-modification of the trusted core.** agent-builder reads from
+  its own repo but never autonomously edits its own gate, escalation path, or control
+  plane — a bad self-edit can disable its own safety. Self-improvement happens through
+  **secure skill-writing** (reviewable, sandboxed skills), not core edits; core/gate
+  self-edits are human-reviewed.
 - **the internal planning hub is read-mostly.** The roadmap is input the agent consumes, not
   something it rewrites. It may flip task status; the human stays the author.
 - **One task = one repo = one branch.** Never sprawl a task across repos. Cross-repo
@@ -104,9 +131,11 @@ These are load-bearing — violating one breaks the security model, not just sty
 - **Substrate is rootless Podman, not Docker** (tiered runtime: `runc` → gVisor
   `runsc` → Kata/Firecracker). Container definitions in this repo are *product*
   artifacts (the execution-box profile), never a generic dev container.
-- **Executor seam = `(harness, model) → branch`.** Cloud CLIs (Claude/Gemini)
-  bundle both; local LLMs supply the harness. Route by quota + sensitivity + cost.
-  The verify gate is what makes mixing uneven-quality executors safe.
+- **Executor seam = `(harness, model) → result`.** Cloud CLIs (Claude, `agy`) bundle
+  both; local LLMs supply the harness. (`agy`/Antigravity is the multi-model successor to
+  the `gemini` CLI, deprecated 2026-06-18.) Route by quota + sensitivity + cost. For the
+  coding reference build the result is a verified branch; the seam itself is general. The
+  verify gate is what makes mixing uneven-quality executors safe.
 - **Egress allowlist is the load-bearing control for the accepted token-in-box
   risk** — keep it tight; ensure executor tokens are independently revocable + fast
   to rotate. `dep-scan`/`code-scanner` gate code that could read tokens off disk;

@@ -1,7 +1,7 @@
 # Interfaces
 
 **Project:** agent-builder
-**Last updated:** 2026-06-29 (task 134 — Antigravity executor owns branch+commit; task 133 — Antigravity CLI executor added; task 132 — GeminiCLI executor expanded: subscription/OAuth mode (empty SecretRef) alongside API-key mode (non-empty SecretRef))
+**Last updated:** 2026-06-30 (goal-alignment — gemini-cli marked deprecated (→ agy, ADR 057); antigravity-cli added to the HarnessDriver enum; Completer noted as the only non-coding path)
 
 The system's contact surface — everything that calls into the system, everything the system calls out to, and the public boundaries within the system. Each interface is a stable contract: changes here are breaking changes.
 
@@ -75,7 +75,7 @@ explicitly so failure modes and version pinning are visible.
 | Podman | `podman build`, `podman pod create`, `podman create`, `podman inspect`, `podman start`, `podman run --runtime <oci-runtime>`, `podman logs`, `podman pod rm`, and `podman rm` from `containment/execution-box/run.sh`; `podman info` for graph-driver and backing-FS detection (storage quota enforceability) | process `PATH`; rootless Podman for the current non-root user; configured OCI runtime names `runc`, `runsc`, or future `kata`; Gate scanner/linter tools mounted from `EXEC_BOX_GATE_TOOLS` / `--gate-tools` | Missing binary, failed `podman info`, unavailable selected OCI runtime, missing Gate toolchain artifact, failed image build, failed `podman create` / `podman run` (exits non-zero with a named error — never exit 0 on a non-started box), absent load-bearing CPU/memory/PID/SHM fields in TC-003 inspect, egress sidecar startup failure, or failed in-box probe exits non-zero and names the failing check. The per-container disk quota (`--storage-opt size=...`) degrades gracefully on non-XFS hosts (flag omitted, `WARNING` emitted, box still launches — see ADR 027). |
 | Claude Code CLI | `claude -p <prompt>` in the configured task worktree | process `PATH` or `executor.ClaudeCLIConfig.CLIPath`; auth supplied through `ANTHROPIC_API_KEY` | Missing binary, blank config, missing token, subprocess non-zero exit, or missing/blank produced branch file fails the executor attempt |
 | Codex CLI | `codex --model <model-id> --approval-policy never-require <prompt>` in the configured task worktree | process `PATH`; auth supplied through `OPENAI_API_KEY` resolved from `entry.SecretRef` via `secrets.SecretSource.NamedProviderToken` | Missing binary, `ErrSecretNotFound` on secret resolution, subprocess non-zero exit, or missing `BRANCH: <name>` marker in stdout fails the executor attempt |
-| Gemini CLI | `gemini --model <model-id> <prompt>` in the configured task worktree | process `PATH`; auth supplied through `GEMINI_API_KEY` resolved from `entry.SecretRef` via `secrets.SecretSource.NamedProviderToken` (API-key mode) or cached OAuth login `~/.gemini` (subscription mode when `SecretRef == ""`) | Missing binary, `ErrSecretNotFound` on secret resolution (API-key mode), subprocess non-zero exit, or missing `BRANCH: <name>` marker in stdout fails the executor attempt |
+| Gemini CLI **(DEPRECATED 2026-06-18 — superseded by Antigravity/`agy`, ADR 057; CLI backend shut down, retained as a deprecated reference)** | `gemini --model <model-id> <prompt>` in the configured task worktree | process `PATH`; auth supplied through `GEMINI_API_KEY` resolved from `entry.SecretRef` via `secrets.SecretSource.NamedProviderToken` (API-key mode) or cached OAuth login `~/.gemini` (subscription mode when `SecretRef == ""`) | Missing binary, `ErrSecretNotFound` on secret resolution (API-key mode), subprocess non-zero exit, or missing `BRANCH: <name>` marker in stdout fails the executor attempt |
 | Antigravity CLI | `agy --print "<prompt>" --model <model-id> --add-dir <worktree> --dangerously-skip-permissions` | process `PATH`; auth supplied through cached OAuth login `~/.antigravity` (subscription/self-managed Google Sign-In keyring) | Missing binary, subprocess non-zero exit, or agy-produced edits with no changes to commit fails the executor attempt. The executor owns branch creation and commit (`git checkout -B <branch> && git add -A && git commit`), not agy: agy's `BRANCH: <name>` output is advisory (preferred if present; else defaults to `task/<id>`). Isolation provided by outer exec-sandbox perimeter; `--dangerously-skip-permissions` safe only inside sandbox. |
 | armor | armor-compatible command configured by `armor.Config.Command` and invoked with JSON stdin/stdout | process `PATH` or caller-supplied command path; fakeable through `armor.Runner` | Missing command, subprocess timeout, non-zero exit, malformed JSON, malformed decision, or armor error output maps to a fail-closed `block` decision |
 | Go toolchain | `go build ./...`, `go vet ./...`, `go test ./...` in the target worktree | process `PATH`; Go version supplied by the runtime environment | Missing `go` fails the Step; non-zero exit fails the Step with combined stdout/stderr |
@@ -192,7 +192,9 @@ func (c *CodexCLI) Run(task supervisor.Task) (supervisor.Result, error)
 - **Auth contract:** the API key is resolved at dispatch time via `secretSource.NamedProviderToken(entry.SecretRef)`. The resolved key is injected as `OPENAI_API_KEY` into the subprocess env; `ErrSecretNotFound` fails the run before subprocess start. The key is redacted from subprocess failure output. It is never stored on the struct beyond the `Run` call.
 - **Supervisor isolation:** `internal/executor` imports `internal/supervisor` (for types); `internal/supervisor` never imports `internal/executor` (F-003 invariant, enforced by `make fitness-supervisor-isolation`).
 
-### Concrete executor: `executor.GeminiCLI`
+### Concrete executor: `executor.GeminiCLI` (DEPRECATED)
+
+> **Deprecated 2026-06-18 (ADR 057).** The `gemini` CLI backend was shut down; Antigravity (`agy`) is the live multi-model successor. `GeminiCLI` is retained in the codebase as a deprecated reference implementation and is documented here for completeness — it is not a live brain.
 
 ```go
 const GeminiAPIKeyEnv = "GEMINI_API_KEY"
@@ -213,6 +215,8 @@ The non-agentic counterpart to `supervisor.Executor.Run` (ADR 053 §1). Sends ON
 prompt to the model behind a registry entry and returns the raw text. No worktree,
 no tools, no verification gate, no branch. Used by the `LLMPlanner`'s `Invoker` seam
 (task 100) to decompose a goal without spinning a full agentic box.
+
+> **This is the only non-coding execution path.** Every `supervisor.Executor` harness is coding-shaped (edits a worktree, returns a gate-verified branch). The single-shot `Completer` is the sole path that answers without editing a repo, and it is **Ollama-native only** — cloud harnesses (Claude, `agy`) fail closed with `ErrSingleShotUnsupported`. A general non-coding execution path for the cloud brains is not yet built.
 
 ```go
 // ErrSingleShotUnsupported is the typed sentinel for harnesses that do not yet
@@ -242,10 +246,11 @@ func CompleterForEntry(entry registry.RegistryEntry) (Completer, error)
 type HarnessDriver string
 
 const (
-    HarnessClaudeCLI    HarnessDriver = "claude-cli"
-    HarnessCodexCLI     HarnessDriver = "codex-cli"
-    HarnessGeminiCLI    HarnessDriver = "gemini-cli"
-    HarnessOllamaNative HarnessDriver = "ollama-native"
+    HarnessClaudeCLI      HarnessDriver = "claude-cli"
+    HarnessCodexCLI       HarnessDriver = "codex-cli"
+    HarnessGeminiCLI      HarnessDriver = "gemini-cli"      // DEPRECATED 2026-06-18 → antigravity-cli (ADR 057)
+    HarnessAntigravityCLI HarnessDriver = "antigravity-cli" // live third brain (agy); successor to gemini-cli
+    HarnessOllamaNative   HarnessDriver = "ollama-native"
 )
 
 func (h HarnessDriver) String() string
@@ -301,7 +306,7 @@ func LoadFromEnv() ([]RegistryEntry, error)
 - **Consumers:** router (task 092), harness adapters (tasks 089–091), dispatcher/runtime wiring.
 - **Stability:** governed by ADR 043 and updated with any task that changes executor registration, entry structure, or env-var config surface.
 - **Required behavior:**
-  - `HarnessDriver` discriminates which harness runs the loop; four values are supported (`claude-cli`, `codex-cli`, `gemini-cli`, `ollama-native`).
+  - `HarnessDriver` discriminates which harness runs the loop; five values exist (`claude-cli`, `codex-cli`, `gemini-cli` (deprecated), `antigravity-cli`, `ollama-native`). The three live brains are `claude-cli`, `antigravity-cli` (`agy`), and `ollama-native`.
   - `String()` returns human-readable harness names.
   - `TranslationProxySeam` is a named constant identifying the local-entry pattern: local model → translation proxy (LiteLLM / claude-code-router) → Claude CLI redirected via `ANTHROPIC_BASE_URL`. Consumers may reference this constant for documentation or routing logic.
   - `QuotaBudget` with `Limit == 0` means unlimited (no cap). Non-zero limit caps dispatches over the rolling window.
@@ -408,7 +413,7 @@ var ErrUnknownHarness error
   - **Quota-free backstop:** `RecordDispatch`, `OnRateLimit`, and `OnQuotaExhausted` are all silent no-ops for an entry with `Budget.Limit == 0` (every local entry — `IsUnlimited()` true) and for an unknown entry ID. A local entry is never marked exhausted.
   - **State persistence:** `SaveState(path)` writes current `Usage` and `Availability` for all entries as a plain-text (JSON) file. `LoadState(path)` restores that state; a corrupted or malformed file returns a descriptive error, never a silent zero value.
   - **Clock seam:** `New` uses the real wall clock (`time.Now()`). `NewWithClock` takes an explicit `Clock` so tests can inject `FakeClock` and advance time programmatically without `time.Sleep`.
-  - **`ResolveExecutor`:** selects an entry via `Select`, then constructs the concrete `supervisor.Executor` for the entry's harness (`HarnessClaudeCLI` → `executor.NewClaudeCLIFromEntry`, `HarnessCodexCLI` → `executor.NewCodexCLI`, `HarnessGeminiCLI` → `executor.NewGeminiCLI`, `HarnessOllamaNative` → `executor.NewOllamaNative`), returning it alongside the selected entry so the caller can feed the entry ID back into the fallback hooks. Returns `ErrNoEligibleExecutor` when selection fails, or `ErrUnknownHarness` for an unrecognized harness driver. This is the executor-side boundary: the caller receives a `supervisor.Executor` seam, not a router.
+  - **`ResolveExecutor`:** selects an entry via `Select`, then constructs the concrete `supervisor.Executor` for the entry's harness (`HarnessClaudeCLI` → `executor.NewClaudeCLIFromEntry`, `HarnessCodexCLI` → `executor.NewCodexCLI`, `HarnessGeminiCLI` → `executor.NewGeminiCLI`, `HarnessOllamaNative` → `executor.NewOllamaNative`), returning it alongside the selected entry so the caller can feed the entry ID back into the fallback hooks. Returns `ErrNoEligibleExecutor` when selection fails, or `ErrUnknownHarness` for an unrecognized harness driver. This is the executor-side boundary: the caller receives a `supervisor.Executor` seam, not a router. **Note:** the live executor-construction path used by both `run` and `orchestrate` is `runtime.buildExecutorForEntry`, which covers all five harness drivers including `HarnessAntigravityCLI` (`agy`); `ResolveExecutor` is a secondary constructor.
 
 ### Interface: `supervisor.MessageSource` (typed inbound seam)
 

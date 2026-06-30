@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** agent-builder
-**Last updated:** 2026-06-29 (task 133 — Antigravity subscription/OAuth harness added; task 132 — Gemini subscription/OAuth auth mode added; entry can authenticate via cached `gemini` CLI login instead of API key)
+**Last updated:** 2026-06-30 (goal-alignment — `gemini` entry marked deprecated (→ `antigravity`, ADR 057); local-vs-subscription auth distinction clarified)
 
 Every knob the system exposes — env vars, config files, runtime parameters, deployment settings. Each entry is a public contract: changes to defaults or accepted values are observable.
 
@@ -171,7 +171,7 @@ The executor registry is configured via well-known env-var prefixes per entry ID
 |----------|------|---------|------------|--------|
 | `AGENT_BUILDER_REGISTRY_<ID>_ENABLED` | enum: `true`, `false` | (not set = disabled) | no | When `true`, the entry is loaded and registered into the catalog; when `false` or unset, the entry is skipped. |
 | `AGENT_BUILDER_REGISTRY_<ID>_ENDPOINT` | URL string | none | yes (if enabled) | Base URL the harness points at (cloud API, or a local model translation proxy). Blank values fail with a descriptive error. |
-| `AGENT_BUILDER_REGISTRY_<ID>_SECRET_REF` | string | none | yes for cloud entries; **optional (empty) for local entries** | Vault secret name to resolve at dispatch time (never the secret itself). For cloud entries, blank values fail with a descriptive error. For local entries (`local-qwen`, `local`, `gemini`, `antigravity`), the field is intentionally empty — no cloud API key is needed. Local entries use their own authentication patterns: Claude/Qwen entries inject `ANTHROPIC_AUTH_TOKEN=<placeholder>` and `ANTHROPIC_BASE_URL=<endpoint>` to point to the translation proxy; Gemini and Antigravity subscription entries rely on their respective CLI's cached OAuth login (`~/.gemini` or `~/.antigravity`) and require no injected env vars. |
+| `AGENT_BUILDER_REGISTRY_<ID>_SECRET_REF` | string | none | yes for API-key cloud entries; **optional (empty) for local and subscription/OAuth entries** | Vault secret name to resolve at dispatch time (never the secret itself). An empty `SecretRef` covers two distinct cases. **(1) Local entries** (`local-qwen`, `local`, `local-ollama`): no cloud auth — Claude/Qwen translation-proxy entries inject `ANTHROPIC_AUTH_TOKEN=<placeholder>` and `ANTHROPIC_BASE_URL=<endpoint>`; `local-ollama` talks native HTTP to the endpoint. **(2) Subscription/OAuth *cloud* entries** (`antigravity`; the deprecated `gemini`): these are cloud brains that authenticate via the CLI's cached OAuth login (`~/.antigravity` / `~/.gemini`), not local inference — they require no injected key. API-key cloud entries (non-empty `SecretRef`) fail with a descriptive error if blank. |
 | `AGENT_BUILDER_REGISTRY_<ID>_MODEL` | string | none | yes (if enabled) | Model identifier (e.g., `claude-opus-4-5`, `qwen-7b`). Blank values fail with a descriptive error. |
 | `AGENT_BUILDER_REGISTRY_<ID>_CAPABILITY_TIER` | non-negative integer | none | yes (if enabled) | Ordered capability ranking (higher = stronger). Non-integer values fail with a descriptive error. |
 | `AGENT_BUILDER_REGISTRY_<ID>_COST_WEIGHT` | non-negative integer | none | yes (if enabled) | Relative cost per dispatch (lower = cheaper). Non-integer values fail with a descriptive error. |
@@ -183,8 +183,8 @@ The executor registry is configured via well-known env-var prefixes per entry ID
 - `local-qwen` → `claude-cli` (Local Qwen model via translation proxy)
 - `local-ollama` → `ollama-native` (Native Ollama executor, no translation proxy)
 - `codex` → `codex-cli` (OpenAI Codex)
-- `gemini` → `gemini-cli` (Google Gemini via subscription/OAuth)
-- `antigravity` → `antigravity-cli` (Antigravity `agy` CLI via subscription/OAuth)
+- `gemini` → `gemini-cli` — **DEPRECATED 2026-06-18, superseded by `antigravity` (ADR 057); CLI backend shut down**
+- `antigravity` → `antigravity-cli` (Antigravity `agy` CLI via subscription/OAuth; multi-model — the live third brain, successor to `gemini`)
 
 **Example configuration for `claude-oauth`:**
 ```
@@ -220,7 +220,7 @@ AGENT_BUILDER_REGISTRY_LOCAL_OLLAMA_COST_WEIGHT=1
 # Budget is not set — local entries are unlimited (Budget.Limit == 0)
 ```
 
-**Example configuration for `gemini` (subscription/OAuth mode):**
+**Example configuration for `gemini` (subscription/OAuth mode) — DEPRECATED 2026-06-18 (ADR 057); use the `antigravity` example below instead. Retained for reference only:**
 ```
 AGENT_BUILDER_REGISTRY_GEMINI_ENABLED=true
 AGENT_BUILDER_REGISTRY_GEMINI_ENDPOINT=https://gemini.google.com

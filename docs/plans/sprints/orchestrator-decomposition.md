@@ -109,7 +109,7 @@ which by then has a real router to plan with.
 | I | 087 | Executor registry type + entry config (leaf) | ready ◀ NEXT |
 | I | 088 | Vault-brokered per-provider auth | ready |
 | I | 089 | Codex harness adapter | ready |
-| I | 090 | Gemini harness adapter | ready |
+| I | 090 | Gemini harness adapter (**superseded: `gemini` CLI deprecated 2026-06-18 → `agy`/Antigravity, ADR 057; tasks 133/134**) | ready |
 | I | 091 | Local entry + translation-proxy seam (proves claude-CLI-via-proxy — closes 094's gap) | ready |
 | J | 092 | Router + capability/cost model + escalation | ready |
 | J | 093 | Usage/quota tracking | ready |

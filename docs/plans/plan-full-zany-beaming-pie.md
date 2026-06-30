@@ -1,5 +1,10 @@
 # IMMEDIATE — wire Gemini via your OAuth subscription (the next build)
 
+> **SUPERSEDED (2026-06-30).** The `gemini` CLI was **deprecated 2026-06-18**; **`agy`/Antigravity is the
+> live third brain** (its multi-model successor — tasks 133/134, L6-PASSED; ADR 057). This "wire Gemini"
+> block is retained as history. Read the **"North star"** section below (still current) and substitute
+> `agy` wherever this block says "Gemini." The third brain is **built**, not pending.
+
 **Why now:** the user has a paid Gemini subscription and wants it used ASAP. We have Claude + local
 built; Gemini is the missing third brain in the multi-LLM router.
 

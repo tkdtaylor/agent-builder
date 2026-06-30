@@ -1,8 +1,8 @@
 # ADR 056 — Gemini executor accepts self-managed OAuth login (cached via CLI)
 
-**Status:** Accepted
+**Status:** Accepted — **superseded operationally by [ADR 057](057-antigravity-executor-harness.md).** The `gemini` CLI backend was shut down 2026-06-18; **`agy`/Antigravity is the live successor third brain**, and `GeminiCLI` is retained only as a deprecated reference implementation. This ADR is preserved as the record of the self-managed-OAuth auth *pattern* (which `agy` reuses); its decision/rationale below are unchanged.
 **Date:** 2026-06-29
-**Relates to:** ADR 033 (subscription OAuth as executor credential alternative), task 132 (Gemini subscription/OAuth auth path)
+**Relates to:** ADR 033 (subscription OAuth as executor credential alternative), task 132 (Gemini subscription/OAuth auth path); superseded by ADR 057 (Antigravity/`agy` harness)
 
 ## Context
 

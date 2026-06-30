@@ -1,7 +1,7 @@
 # Data Model
 
 **Project:** agent-builder
-**Last updated:** 2026-06-29 (task 133 — Antigravity harness driver added)
+**Last updated:** 2026-06-30 (goal-alignment — gemini-cli marked deprecated; agy positioned as the live third brain)
 
 What data exists, how it's structured, where it lives, and what relationships hold between entities. Covers persistent storage, in-memory state, and data-on-the-wire formats.
 
@@ -180,13 +180,15 @@ Availability     registry.Availability   available or exhausted-until ResetAt
 
 #### Value: `registry.HarnessDriver`
 
+The three live reasoning brains are **local (`ollama-native`)**, **Claude (`claude-cli`)**, and **Antigravity (`agy`, `antigravity-cli`)** — the last the multi-model successor to the deprecated `gemini-cli`.
+
 ```
 value              notes
 ──────────────────────────────────────────────────────────────────────
 claude-cli         Claude Code CLI harness (also used for local models via translation proxy)
 codex-cli          Codex CLI harness
-gemini-cli         Google Gemini CLI harness (subscription/OAuth)
-antigravity-cli    Antigravity (`agy`) CLI harness (subscription/OAuth)
+gemini-cli         Google Gemini CLI harness — DEPRECATED 2026-06-18, superseded by antigravity-cli (agy); CLI backend shut down. Type retained as a deprecated reference (ADR 057)
+antigravity-cli    Antigravity (`agy`) CLI harness (subscription/OAuth; multi-model) — the live third brain, successor to gemini-cli
 ollama-native      Native Ollama executor harness (direct /api/chat invocation; no translation proxy)
 ```
 

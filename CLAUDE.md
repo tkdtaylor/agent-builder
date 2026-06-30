@@ -91,5 +91,5 @@ spec-coverage-check.
 - **code-scanner** — scan any target repo/package/deps before the agent builds on or
   runs them. Trigger: "scan this repo for malware"
 - **code-review** — review the agent's diffs before merge. Trigger: `/code-review`
-- **deep-research** — when designing a new block, survey prior art / build-vs-adopt.
-  Trigger: "deep research on <X>"
+- **deep-research** — when designing a new skill/capability (or evaluating
+  build-vs-adopt), survey prior art. Trigger: "deep research on <X>"

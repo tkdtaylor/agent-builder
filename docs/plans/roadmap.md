@@ -1,9 +1,13 @@
 # Roadmap
 
 **Project:** agent-builder
-**Last updated:** 2026-06-27
+**Last updated:** 2026-06-30 (goal-alignment — north star + general-agent forward arc)
 
-Derived from `autonomous-builder.md` §2, §8. This roadmap doubles as the agent's own work queue once it runs — but during bootstrap it is built by hand (supervised).
+## North star
+
+agent-builder is a **security-first general autonomous agent** — the Secure Agent Ecosystem's equivalent of OpenClaw / Hermes: persistent, extensible, self-improving, multi-LLM. It runs a **composed brain** (Claude Code first) inside the security envelope and owns the gateway, the multi-LLM router (the three brains are **local ollama**, **Claude**, and **`agy`/Antigravity** — the latter the successor to the `gemini` CLI, deprecated 2026-06-18), skills/memory governance, and security. **Coding is the first reference build, not the definition** — contributing to a repo and starting a project are skills among many. Self-improvement is **secure skill-writing**, never trusted-core self-modification; results and escalations return over the channel (CLI now, Telegram next) behind two human gates.
+
+**Foundations (done).** Phases 0–2 below built and adopted the security envelope (exec-sandbox, audit-trail, vault, policy-engine, armor), the verification gate + supervised loop, the multi-LLM executor registry/router, and the conversational `orchestrate` front door. These are the proving ground; the forward arc builds *outward from* them toward the general agent — see **"Forward arc — the general agent"** below.
 
 ## Phase 0 — Bootstrap the loop (supervised, human-in-the-loop)
 
@@ -67,14 +71,23 @@ v0 (below) wired `emit` + `verify`. The block has since shipped **Ed25519 signed
 
 > **Deferred — IPC-socket transport (upgrade path).** v0 uses the block's `audit-trail emit` CLI per action event (~7/run, action layer only). The block's Unix-socket IPC (`audit-trail serve`) is the throughput upgrade; the `BlockSink` seam is shaped so CLI→socket is an adapter-internal swap (ADR 026 Option B).
 
-## Targeted (decided, decomposed into tasks)
+## Multi-LLM router (done — foundation for the brains)
 
-- **Multi-provider executor registry + router** (Claude + Gemini + Codex + local LLMs; quota/sensitivity/cost routing) — **promoted off Deferred by ADR 043.** The seam is designed: a registry of heterogeneous executors (one harness driver backs many model/endpoint/auth entries; the local LLM is the Claude CLI harness via a translation proxy) and a quota-aware, capability/cost-first router (availability as a hard filter, gate-failure escalation up the capability ladder, quota-exhaustion fallback sideways to the next available entry, local model as the quota-free backstop). Decomposed into a task cluster (registry + per-provider vault auth + Codex/Gemini adapters + local entry + router + usage/quota tracking + local-model evaluation + the recipe `RoutingSpec` amendment to ADR 041).
+**Multi-provider executor registry + router** (ADR 043) is **built and adopted (L5).** A registry of heterogeneous executors (one harness driver backs many model/endpoint/auth entries; the local LLM is either the Claude CLI harness via a translation proxy or the native Ollama harness) plus a quota-aware, capability/cost-first router (availability as a hard filter, gate-failure escalation up the capability ladder, quota-exhaustion fallback sideways, local model as the quota-free backstop). The **three live brains** are **local ollama**, **Claude**, and **`agy`/Antigravity** (tasks 133/134, L6-PASSED; the multi-model successor to the **`gemini` CLI, deprecated 2026-06-18** — `GeminiCLI` is retained only as a deprecated reference). Codex is an additional adapter, not one of the three canonical brains.
 
-## Deferred (not bootstrap-critical)
+## Forward arc — the general agent
 
-- **The "builder of purpose-built agents" product surface** — now the project's **primary forward arc** (ADR 040), with its shape decided in **ADR 041** (the agent-recipe seam) and **ADR 042** (the secure two-tier orchestrator). The foundational blocks have all shipped to v1 and are adopted, so the evolution from *the single autonomous coding agent* to *a tool that assembles any purpose-built secure agent from the blocks* is no longer gated on block readiness. **Decomposition into task clusters is now underway** (recipe seam + selectable IO seams; Telegram channel adapter + Ed25519 envelope + armor guard; orchestrator core; agent-builder worker recipe; agent-mesh + memory-guard adoption; orchestrator self-containment + policy + fleet audit; multi-worker dispatch). As a consequence, **memory-guard and agent-mesh have moved off Deferred to Targeted** in the block-adoption table above — agent-mesh becomes the orchestrator↔worker transport and memory-guard guards the orchestrator's goal/fleet state.
+The foundations above are the coding reference build. The arc from here is **outward to the general agent** — the OpenClaw/Hermes capabilities not yet built. Each is its own slice (test-spec-first, ADR where it's a real decision); the live planning is tracked in `plan-full-zany-beaming-pie.md`.
+
+1. **Composed-brain-as-general-executor** — a **non-coding execution path** for the cloud brains. Today only the Ollama-native single-shot `Completer` (ADR 053) answers without editing a repo; Claude and `agy` fail closed (`ErrSingleShotUnsupported`). This is the nearest slice: extend the `Completer` seam to the cloud brains + a general entrypoint, so a goal can be *answered* (not only turned into a branch). *(Foundation verified 2026-06-30: the local Completer answers live through the agent's own code path.)*
+2. **General self-extending skill system** — coding (contribute-to-repo, start-a-project) becomes one skill among many; the agent selects/loads skills per goal.
+3. **Secure skill-writing loop** — the agent authors and refines **reviewable, sandboxed skills** (Hermes-style self-improvement), never editing its own trusted core/gate/escalation. Reconciles with invariant 2.
+4. **Persistent cross-session memory** — durable goal/skill/context memory across runs, guarded by **memory-guard** (write-gate + delete-verify); memory-guard moves off Deferred for this.
+5. **Heartbeat / daemon (always-on)** — a persistent self-hosted daemon so the agent runs continuously, not only when invoked.
+6. **Router breadth + channel result-handling** — broaden routing across the three brains by sensitivity/quota/cost, and complete the channel/gateway path (CLI now → **Telegram next**) so results and escalations return over the same channel, behind the two human gates. **agent-mesh** (Ed25519-signed orchestrator↔worker transport) moves off Deferred where multi-worker dispatch needs it.
+
+> **Historical note (ADR 040/041/042).** An earlier framing cast the forward arc as a *"builder of purpose-built agents"* product surface (recipe seam, two-tier orchestrator). That decomposition shipped the control-plane plumbing the general agent reuses (recipe/IO seams, channel adapter, multi-goal orchestrator), but the **north star is the general agent itself, not an agent factory** — the components above, not "assemble many agents," are the arc. The two-tier orchestrator and recipe seams are foundations for it.
 
 ## Sequencing note
 
-The agent is built against block *interfaces* (specced + contract-validated in the internal design hub), and its first task *implements* exec-sandbox behind that interface — foundations-before-agent is preserved, not skipped.
+The agent was built against block *interfaces* (specced + contract-validated in the internal design hub), and its first task *implemented* exec-sandbox behind that interface — foundations-before-agent was preserved, not skipped. The forward arc continues that discipline: each general-agent slice composes existing blocks/seams behind a thin new seam, never grows the assembler per goal.

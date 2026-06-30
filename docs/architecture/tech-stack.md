@@ -33,7 +33,17 @@
 
 ## External tools & blocks
 
-agent-builder is the **assembly layer** — it composes ecosystem blocks over their published CLI contracts rather than vendoring them. Each is opt-in via an env-var-supplied binary path:
+agent-builder runs a **composed brain inside the security envelope** and composes ecosystem blocks over their published CLI contracts rather than vendoring them. Each is opt-in via an env-var-supplied binary path.
+
+### Reasoning brains (executor harnesses, routed by `internal/router` — ADR 043)
+
+| Brain | Role | Auth / opt-in |
+|-------|------|---------------|
+| Claude Code CLI | Cloud brain; default executor | `CLAUDE_CODE_OAUTH_TOKEN` (subscription) or `ANTHROPIC_API_KEY` |
+| Antigravity (`agy`) | Cloud brain; multi-model (Gemini/Claude/GPT-OSS). **Successor to the `gemini` CLI, deprecated 2026-06-18** (ADR 057) | self-managed OAuth (`~/.antigravity`); registry entry with empty `SecretRef` |
+| Ollama (native) | Local brain; quota-free backstop (e.g. `qwen3:8b`) — ADR 051 | `AGENT_BUILDER_REGISTRY_*` ollama-native entry → `localhost:11434` |
+
+### Ecosystem blocks & gate tools
 
 | Tool / block | Role | Opt-in via |
 |--------------|------|-----------|
@@ -44,7 +54,7 @@ agent-builder is the **assembly layer** — it composes ecosystem blocks over th
 | armor | LLM guard on the web-ingestion + tool-call path | wired in `internal/executorharness` |
 | code-scanner | Malware/backdoor scan in the verification gate | gate toolchain |
 | dep-scan (`gods`) | Supply-chain CVE scan of pulled modules | gate toolchain |
-| gh / git | Clone target repos, push branches, open PRs | host PATH |
+| gh / git | Clone target repos, push branches, open PRs (the coding recipe) | host PATH |
 
 ## Notes
 

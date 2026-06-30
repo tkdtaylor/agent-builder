@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-30 (task 128 — Clarifier seam + HeuristicClarifier v1 + intake state machine)
+**Last updated:** 2026-06-30 (goal-alignment — Context/Container now show the three brains (Claude · agy · local ollama), the multi-LLM router, and the channel; agy is the successor to the deprecated gemini CLI)
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -19,9 +19,12 @@ GitHub and most IDE markdown previewers render Mermaid natively — no build ste
 C4Context
     title System Context for agent-builder
 
-    Person(user, "User", "The person who interacts with the system")
-    System(system, "agent-builder", "Assembly layer that composes the secure-agent blocks into purpose-built autonomous agents; first build is an autonomous coding agent behind a verification gate")
-    System_Ext(claudeCLI, "Claude Code CLI", "Cloud executor harness/model subprocess")
+    Person(user, "User", "Hands the agent a goal and reviews its results over the channel")
+    System(system, "agent-builder", "Security-first general autonomous agent: runs a composed brain inside the secure-agent envelope, routed across multiple LLMs. The first reference build is an autonomous coding agent behind a verification gate")
+    System_Ext(channel, "Channel / gateway", "Inbound goals + outbound results/escalations: env/stdin (default) or Telegram (opt-in)")
+    System_Ext(claudeCLI, "Claude Code CLI", "Cloud brain — executor harness/model subprocess")
+    System_Ext(agyCLI, "Antigravity (agy) CLI", "Cloud brain — multi-model harness (Gemini/Claude/GPT-OSS); successor to the deprecated gemini CLI")
+    System_Ext(ollamaLocal, "local Ollama", "Local brain — native ollama-native harness (e.g. qwen3:8b), quota-free backstop")
     System_Ext(podman, "rootless Podman", "Execution-box containment substrate, driven by containment/execution-box/run.sh")
     System_Ext(execSandbox, "exec-sandbox block", "Tiered-isolation contained-command runner block (github.com/tkdtaylor/exec-sandbox); default run backend when AGENT_BUILDER_EXEC_SANDBOX_BIN is set")
     System_Ext(codeScanner, "code-scanner", "Malware/backdoor scanner used as a blocking gate step")
@@ -32,8 +35,11 @@ C4Context
     System_Ext(gitCLI, "git", "Version-control CLI used to push verified branches")
     System_Ext(ghCLI, "GitHub CLI", "CLI used to look up or create PR artifacts")
 
-    Rel(user, system, "Uses")
-    Rel(system, claudeCLI, "Runs", "process PATH")
+    Rel(user, channel, "Sends goals / reads results")
+    Rel(channel, system, "Delivers goals, returns results + escalations")
+    Rel(system, claudeCLI, "Routes to (brain)", "process PATH")
+    Rel(system, agyCLI, "Routes to (brain)", "process PATH")
+    Rel(system, ollamaLocal, "Routes to (brain)", "HTTP localhost:11434")
     Rel(system, podman, "Runs", "execution-box/run.sh")
     Rel(system, execSandbox, "Runs (default backend)", "process PATH")
     Rel(system, codeScanner, "Runs", "process PATH")
@@ -56,17 +62,27 @@ C4Container
     Person(operator, "Operator", "Starts and observes autonomous builder runs")
 
     System_Boundary(boundary, "agent-builder") {
-        Container(cli, "agent-builder CLI", "Go", "Entrypoint process for the autonomous builder scaffold")
+        Container(cli, "agent-builder CLI", "Go", "Entrypoint process; run (coding) + orchestrate (general goal intake) subcommands")
+        Container(channelAdapter, "channel adapter", "Go", "MessageSource (inbound goals) + Reporter (outbound results/escalations); env/stdin default, Telegram opt-in")
+        Container(router, "multi-LLM router + registry", "Go", "Selects a brain entry by capability/cost/quota; constructs the harness executor (Claude · agy · ollama-native)")
         Container(execBox, "execution-box profile", "Rootless Podman / OCI image + selectable OCI runtime", "Product containment artifact for one target repo worktree plus mounted Gate tools")
         Container(egressSidecar, "execution-box egress sidecar", "Rootless Podman / nftables", "Trusted default-deny egress filter for the execution-box pod namespace")
     }
 
+    System_Ext(claudeCLI, "Claude Code CLI", "Cloud brain harness")
+    System_Ext(agyCLI, "Antigravity (agy) CLI", "Cloud brain harness (multi-model; successor to deprecated gemini)")
+    System_Ext(ollamaLocal, "local Ollama", "Local brain harness")
     System_Ext(execSandbox, "exec-sandbox block", "Default contained-command run backend binary (opt-in via AGENT_BUILDER_EXEC_SANDBOX_BIN)")
     System_Ext(vaultBlock, "vault block", "Opt-in token-brokering daemon")
     System_Ext(policyBlock, "policy-engine block", "Opt-in AuthZEN authorization daemon")
     System_Ext(auditTrail, "audit-trail block", "Hash-chained forensic log block")
 
     Rel(operator, cli, "Runs")
+    Rel(cli, channelAdapter, "Receives goals / returns results")
+    Rel(cli, router, "Selects + builds brain executor")
+    Rel(router, claudeCLI, "Routes to", "process")
+    Rel(router, agyCLI, "Routes to", "process")
+    Rel(router, ollamaLocal, "Routes to", "HTTP")
     Rel(operator, execBox, "Runs probe")
     Rel(execBox, egressSidecar, "Starts before workload")
     Rel(cli, execSandbox, "Runs (default backend)", "process")
@@ -105,7 +121,7 @@ C4Component
         Component(ingestion, "Ingestion Boundary", "internal/ingestion", "Typed content/tool-call candidates plus guard/broker release seam")
         Component(armorAdapter, "Armor Guard Adapter", "internal/armor", "External armor invocation adapter for ingestion decisions")
         Component(executorHarness, "Executor Ingestion Harness", "internal/executorharness", "Executor-facing event wrapper that emits broker-reviewed release values")
-        Component(executor, "Claude CLI Executor", "internal/executor", "Concrete supervisor.Executor adapter with explicit web/tool policy")
+        Component(executor, "Brain Executors", "internal/executor", "Concrete supervisor.Executor harness adapters — Claude CLI, Antigravity (agy), and native Ollama (plus the deprecated gemini CLI) — each with explicit web/tool policy; built by runtime.buildExecutorForEntry")
         Component(modelRouter, "Model Router", "internal/router", "Capability/cost-first router (ADR 043); Select() picks the cheapest eligible registry entry per dispatch and resolves it to a supervisor.Executor")
         Component(executorRegistry, "Executor Registry", "internal/registry", "In-process catalog of executor entries + env-var loader (LoadFromEnv); holds SecretRef, never a secret")
         Component(sandbox, "exec-sandbox Run Adapter", "internal/sandbox", "Typed contained-command seam and test fake")
@@ -180,6 +196,8 @@ C4Component
 ---
 
 ## 4. Primary runtime flow
+
+> This is the **coding reference build** recipe (`run`): one task → brain → worktree edit → verify gate → branch + PR. The general goal-intake path (`orchestrate`: goal → clarify → plan → approval → policy-gated dispatch → result over the channel) is Section 5.
 
 ```mermaid
 sequenceDiagram

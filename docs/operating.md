@@ -5,13 +5,17 @@ runbook; the exhaustive configuration reference is [spec/configuration.md](spec/
 and the host-provisioning specifics (rootless runsc wrapper, gate-tools population, sandbox remote)
 live in [plans/l6-operator-runbook.md](plans/l6-operator-runbook.md).
 
+> This runbook documents the **coding reference build** — the `run` subcommand. It is one skill of a
+> general autonomous agent (see [architecture/overview.md](architecture/overview.md) for the north
+> star); the general goal-intake path is the `orchestrate` subcommand.
+
 ## What `agent-builder run` does
 
 One invocation dispatches **exactly one ready task** through the Phase-0 loop:
 
 ```
-pick next ready task  →  launch sandbox box (rootless Podman)  →  Claude executor edits the
-worktree  →  verification gate (build · vet · test · gofmt · golangci-lint · dep-scan ·
+pick next ready task  →  launch sandbox box (rootless Podman)  →  brain executor (Claude · agy · local
+ollama) edits the worktree  →  verification gate (build · vet · test · gofmt · golangci-lint · dep-scan ·
 code-scanner)  →  on PASS: push branch + open PR;  on FAIL: retry up to MAX_ATTEMPTS, then escalate
 ```
 
@@ -19,7 +23,8 @@ It is **supervised**: you review and merge each PR, then run again for the next 
 multi-task autopilot in Phase 0 — the verification gate is the safety net, the human is the merge
 gate. One task = one repo = one branch.
 
-The agent never edits its **own** repo autonomously (`agent-builder` builds *blocks*, not itself).
+The agent never edits its **own** trusted core autonomously (self-improvement is reviewable
+skill-writing, not core self-modification).
 
 ## Prerequisites (one-time per host)
 
@@ -28,11 +33,11 @@ The agent never edits its **own** repo autonomously (`agent-builder` builds *blo
 | Rootless Podman + runtime | `podman` rootless; a registered OCI runtime (`runc`, or `runsc`/gVisor for the agent tier). See the [L6 runbook §1a](plans/l6-operator-runbook.md) for the rootless `runsc` cgroup wrapper. |
 | Gate toolchain | `containment/execution-box/gate-tools/` must contain executables `golangci-lint`, `dep-scan` (**≥ 1.3.1** — earlier versions false-block every Go dependency), and `code-scanner`. These are gitignored; populate them per host. `go`/`gofmt` come from the box image. |
 | Git + GitHub | `git` and `gh`, authenticated (`gh auth status`). Publication uses `gh pr create`. |
-| Claude credential | **Subscription (preferred):** `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token`. **Or** a metered `ANTHROPIC_API_KEY`. Supply exactly one; if both are set the OAuth token wins (ADR 033). Keep it in a gitignored `.env`. |
+| Brain credential | One per brain you route to. **Claude:** `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` (preferred) **or** a metered `ANTHROPIC_API_KEY` — supply exactly one; OAuth wins if both set (ADR 033). **`agy`/Antigravity** (the multi-model third brain; successor to the deprecated `gemini` CLI): self-managed OAuth via Google Sign-In cached in `~/.antigravity`, registered with an **empty `SecretRef`** — no key in env (ADR 057). **Local ollama:** no credential (see "Driving local models" below). Keep secrets in a gitignored `.env`. |
 
 ## The target repository
 
-The target is the block you're building (e.g. a clone of `exec-sandbox`). It must:
+The target is the repo you're working (for the coding skill — e.g. a clone of `exec-sandbox`). It must:
 
 - be a **git clone with a remote** (the branch the agent produces descends from the remote's default
   branch so `gh pr create` can resolve a base);
