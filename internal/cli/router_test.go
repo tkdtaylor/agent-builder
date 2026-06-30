@@ -476,3 +476,115 @@ func waitMailbox(m *commandMailboxes, goalID string, timeout time.Duration) (cha
 	}
 	return m.Lookup(goalID)
 }
+
+// --- Tests for task 125 — CLI confirm grammar -------------------------------
+
+func TestParseConfirmLine(t *testing.T) {
+	// TC-125-01: confirm <goalID> -> MsgConfirm
+	var seq int
+	msg, ok, err := parseMessageLine("confirm goal-7", &seq)
+	if err != nil {
+		t.Fatalf("TC-125-01: parseMessageLine(\"confirm goal-7\") failed: %v", err)
+	}
+	if !ok {
+		t.Fatalf("TC-125-01: parseMessageLine(\"confirm goal-7\") returned ok=false, want true")
+	}
+	if msg.Kind != supervisor.MsgConfirm {
+		t.Errorf("TC-125-01: Kind = %v, want MsgConfirm", msg.Kind)
+	}
+	if msg.GoalID != "goal-7" {
+		t.Errorf("TC-125-01: GoalID = %q, want \"goal-7\"", msg.GoalID)
+	}
+	if msg.Goal != (supervisor.Task{}) {
+		t.Errorf("TC-125-01: Goal = %+v, want zero value Task", msg.Goal)
+	}
+	if msg.Text != "" {
+		t.Errorf("TC-125-01: Text = %q, want empty string", msg.Text)
+	}
+	if seq != 0 {
+		t.Errorf("TC-125-01: seq = %d, want 0 (seq must not increment on control verb)", seq)
+	}
+}
+
+func TestParseConfirmMissingGoalID(t *testing.T) {
+	// TC-125-02: confirm missing goalID -> ErrMalformedInput wrapping
+	var seq int
+	msg, ok, err := parseMessageLine("confirm", &seq)
+	if err == nil {
+		t.Fatal("TC-125-02: expected error for confirm with no goalID")
+	}
+	if !errors.Is(err, ErrMalformedInput) {
+		t.Errorf("TC-125-02: err = %v, want it to wrap ErrMalformedInput", err)
+	}
+	if ok {
+		t.Error("TC-125-02: ok = true, want false")
+	}
+	if msg.Kind != supervisor.MsgConfirm {
+		t.Errorf("TC-125-02: Kind = %v, want MsgConfirm", msg.Kind)
+	}
+	if seq != 0 {
+		t.Errorf("TC-125-02: seq = %d, want 0", seq)
+	}
+}
+
+func TestParseConfirmNotNewGoal(t *testing.T) {
+	// TC-125-03: confirm with missing goalID is not MsgNewGoal
+	var seq int
+	msg, ok, _ := parseMessageLine("confirm", &seq)
+	if ok {
+		t.Error("TC-125-03: ok = true, want false")
+	}
+	if msg.Kind == supervisor.MsgNewGoal {
+		t.Errorf("TC-125-03: Kind = %v, must not be MsgNewGoal", msg.Kind)
+	}
+}
+
+func TestExistingVerbsUnchangedAfterConfirm(t *testing.T) {
+	// TC-125-04: existing control verbs and bare goals unaffected
+	tests := []struct {
+		line     string
+		wantKind supervisor.MessageKind
+		wantID   string
+		wantSpec string
+		wantText string
+		wantSeq  int
+	}{
+		{"status", supervisor.MsgStatus, "", "", "", 0},
+		{"status goal-3", supervisor.MsgStatus, "goal-3", "", "", 0},
+		{"info goal-3 some text", supervisor.MsgInfo, "goal-3", "", "some text", 0},
+		{"cancel goal-3", supervisor.MsgCancel, "goal-3", "", "", 0},
+		{"build the thing", supervisor.MsgNewGoal, "goal-1", "build the thing", "", 1},
+	}
+
+	for _, tc := range tests {
+		var seq int
+		msg, ok, err := parseMessageLine(tc.line, &seq)
+		if err != nil {
+			t.Fatalf("TC-125-04: parseMessageLine(%q) failed: %v", tc.line, err)
+		}
+		if !ok {
+			t.Fatalf("TC-125-04: parseMessageLine(%q) returned ok=false, want true", tc.line)
+		}
+		if msg.Kind != tc.wantKind {
+			t.Errorf("TC-125-04: %q Kind = %v, want %v", tc.line, msg.Kind, tc.wantKind)
+		}
+		if tc.wantKind == supervisor.MsgNewGoal {
+			if msg.Goal.Spec != tc.wantSpec {
+				t.Errorf("TC-125-04: %q Goal.Spec = %q, want %q", tc.line, msg.Goal.Spec, tc.wantSpec)
+			}
+			if msg.GoalID != tc.wantID {
+				t.Errorf("TC-125-04: %q GoalID = %q, want %q", tc.line, msg.GoalID, tc.wantID)
+			}
+		} else {
+			if msg.GoalID != tc.wantID {
+				t.Errorf("TC-125-04: %q GoalID = %q, want %q", tc.line, msg.GoalID, tc.wantID)
+			}
+			if msg.Text != tc.wantText {
+				t.Errorf("TC-125-04: %q Text = %q, want %q", tc.line, msg.Text, tc.wantText)
+			}
+		}
+		if seq != tc.wantSeq {
+			t.Errorf("TC-125-04: %q seq = %d, want %d", tc.line, seq, tc.wantSeq)
+		}
+	}
+}

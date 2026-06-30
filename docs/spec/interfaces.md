@@ -426,7 +426,7 @@ const (
 
 type Message struct {
     Kind   MessageKind // how the control loop dispatches this message
-    GoalID string      // addresses status/info/cancel; the new goal's ID for new-goal
+    GoalID string      // addresses status/info/cancel/confirm; the new goal's ID for new-goal
     Goal   Task        // populated for MsgNewGoal
     Text   string      // info payload / free-form
 }
@@ -444,9 +444,9 @@ type MessageSource interface {
   reader of the seam (no concurrent `Next()` races, ADR 054 §1). It routes each
   `Message` by `Kind`: `MsgNewGoal` → create the goal's command mailbox, register it
   `Queued`, spawn a goal actor (register-then-start ordering); `MsgStatus` → the status
-  handler (body is task 114; empty GoalID = fleet); `MsgInfo`/`MsgCancel` → the
+  handler (body is task 114; empty GoalID = fleet); `MsgInfo`/`MsgCancel`/`MsgConfirm` → the
   addressed goal's per-goal command mailbox (a buffered `chan supervisor.Message` keyed
-  by goalID). An `info`/`cancel` for an unknown goalID yields a graceful "no such goal"
+  by goalID). An `info`/`cancel`/`confirm` for an unknown goalID yields a graceful "no such goal"
   report over the `Reporter` — never a panic, and no mailbox is auto-created.
 - **Why a NEW seam, not a mutated `GoalSource`:** `GoalSource.Next() (Task, bool, error)`
   is left intact because it is also the per-worker, in-box recipe task source
@@ -456,7 +456,7 @@ type MessageSource interface {
   package, preserving F-003 / F-007 (enforced by `make fitness-supervisor-isolation`).
   `MessageKind.String()` and `Message` carry no crypto/executor/web dependency.
 - **Malformed-input contract:** the env/stdin grammar surfaces a parse error wrapping
-  `cli.ErrMalformedInput` for a control verb missing a required argument (e.g. `cancel`
+  `cli.ErrMalformedInput` for a control verb missing a required argument (e.g. `cancel`/`confirm`
   with no goalID). The control loop reports it gracefully and continues — a malformed
   control line is never silently accepted as a `MsgNewGoal`. EOF / no-more-input returns
   `ok=false`, nil error, on which the control plane drains and exits.

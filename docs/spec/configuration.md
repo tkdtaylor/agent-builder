@@ -146,16 +146,17 @@ then **one message is parsed per non-blank stdin line** by the following grammar
 | `status <goalID>` | `MsgStatus` | `<goalID>` | — |
 | `info <goalID> <text…>` | `MsgInfo` | `<goalID>` | `Text` = the remaining text |
 | `cancel <goalID>` | `MsgCancel` | `<goalID>` | — |
+| `confirm <goalID>` | `MsgConfirm` | `<goalID>` | — |
 
 - **EOF / no-more-input** → the source returns `ok=false`; the control plane drains all
   in-flight goal actors and the subcommand exits `0`.
-- **Malformed control line** (a `cancel` with no goalID, or `info <goalID>` with no
+- **Malformed control line** (a `cancel`/`confirm` with no goalID, or `info <goalID>` with no
   text) → a parse error wrapping `ErrMalformedInput`; the control loop reports it over
   the Reporter and **continues** reading. A malformed control line is **never** silently
   accepted as a new goal.
 - **Routing** (ADR 054 §2): `new-goal` spawns a goal actor (register-then-start: the
   goal's command mailbox and registry entry are created before the actor starts);
-  `status` is answered from the live registry (handler body is task 114); `info`/`cancel`
+  `status` is answered from the live registry (handler body is task 114); `info`/`cancel`/`confirm`
   are delivered to the addressed goal's per-goal command mailbox. An `info`/`cancel` for
   an **unknown goalID** yields a graceful "no such goal" report — never a panic, and no
   mailbox is auto-created for the unknown goal.
