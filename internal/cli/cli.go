@@ -85,6 +85,8 @@ func Main(config Config) int {
 		return runVerifyCheckpoint(config, config.Args[1:])
 	case "orchestrate":
 		return runOrchestrate(config, config.Args[1:])
+	case "ask":
+		return runAsk(config, config.Args[1:])
 	default:
 		writef(config.Stderr, "usage error: unknown subcommand %q\n\n", config.Args[0])
 		printUsage(config.Stderr)
@@ -236,6 +238,7 @@ func printUsage(w io.Writer) {
 	write(w, `Usage:
   agent-builder run
   agent-builder orchestrate
+  agent-builder ask [--entry <id>] <prompt>
   agent-builder version
   agent-builder verify <repo>
   agent-builder verify-checkpoint --checkpoint <path> --public-key <path> [--logfile <path>]
@@ -243,6 +246,7 @@ func printUsage(w io.Writer) {
 Subcommands:
   run                   dispatch one supervisor loop
   orchestrate           drive the Tier-1 orchestrator: goal-intake -> plan -> N workers
+  ask                   ask a brain a question (single-shot, non-coding) and print the answer
   version               print the agent-builder version
   verify <repo>         run the verification gate against a repo
   verify-checkpoint     verify a signed checkpoint against an Ed25519 public key

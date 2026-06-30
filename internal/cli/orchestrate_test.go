@@ -896,12 +896,14 @@ func TestInvokerClosureOllamaEntryYieldsCompleter(t *testing.T) {
 		t.Errorf("TC-110-04A: Invoker result = %q, want %q", result, "ok")
 	}
 
-	// TC-110-04B: cloud entry → ErrSingleShotUnsupported propagated through Invoker.
-	cloudEntry := registry.RegistryEntry{
-		ID:      "claude-oauth",
-		Harness: registry.HarnessClaudeCLI,
+	// TC-110-04B: a still-unsupported harness → ErrSingleShotUnsupported propagated
+	// through the Invoker. (Claude/agy are now supported single-shot — ADR 059 — so
+	// this propagation check uses codex, which remains fail-closed.)
+	unsupportedEntry := registry.RegistryEntry{
+		ID:      "codex-gpt",
+		Harness: registry.HarnessCodexCLI,
 	}
-	_, err = invoke(context.Background(), cloudEntry, "ping")
+	_, err = invoke(context.Background(), unsupportedEntry, "ping")
 	if !errors.Is(err, executor.ErrSingleShotUnsupported) {
 		t.Errorf("TC-110-04B: err = %v, want errors.Is(err, executor.ErrSingleShotUnsupported)", err)
 	}

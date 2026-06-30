@@ -11,6 +11,7 @@ import (
 
 	"github.com/tkdtaylor/agent-builder/internal/executor/ollamaclient"
 	"github.com/tkdtaylor/agent-builder/internal/registry"
+	"github.com/tkdtaylor/agent-builder/internal/secrets"
 )
 
 // ErrSingleShotUnsupported is the typed sentinel returned by CompleterForEntry when
@@ -80,8 +81,13 @@ func CompleterForEntry(entry registry.RegistryEntry) (Completer, error) {
 		return &ollamaCompleter{chatter: client}, nil
 
 	case registry.HarnessClaudeCLI:
-		return nil, fmt.Errorf("harness %q single-shot completion not yet supported: %w",
-			entry.Harness, ErrSingleShotUnsupported)
+		// ADR 059: Claude single-shot via `claude -p`. Credentials come from the env
+		// secret source (cloud) or the translation-proxy endpoint (local entry).
+		return newClaudeCompleter(entry, secrets.NewEnvSecretSource()), nil
+
+	case registry.HarnessAntigravityCLI:
+		// ADR 059: agy single-shot via `agy --print`. Subscription/OAuth (~/.antigravity).
+		return newAntigravityCompleter(entry), nil
 
 	case registry.HarnessCodexCLI:
 		return nil, fmt.Errorf("harness %q single-shot completion not yet supported: %w",

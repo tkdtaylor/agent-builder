@@ -183,20 +183,16 @@ func TestTC10904_CompleterForEntryOllama(t *testing.T) {
 
 // --- TC-109-05: CompleterForEntry fails closed for cloud harnesses + unknown ---
 
-// TestTC10905_CompleterForEntryFailsClosed verifies each cloud harness and an unknown
-// harness return nil Completer, non-nil error, errors.Is(err, ErrSingleShotUnsupported),
-// and a message naming the harness.
+// TestTC10905_CompleterForEntryFailsClosed verifies the still-unsupported harnesses
+// (codex, the deprecated gemini, and an unknown driver) return nil Completer, non-nil
+// error, errors.Is(err, ErrSingleShotUnsupported), and a message naming the harness.
+// Claude and agy are now supported single-shot (ADR 059) — see TC-135-01 / TC-136-01.
 func TestTC10905_CompleterForEntryFailsClosed(t *testing.T) {
 	cases := []struct {
 		name    string
 		harness registry.HarnessDriver
 		wantMsg string // substring that must appear in the error message
 	}{
-		{
-			name:    "claude-cli",
-			harness: registry.HarnessClaudeCLI,
-			wantMsg: "claude-cli",
-		},
 		{
 			name:    "codex-cli",
 			harness: registry.HarnessCodexCLI,
