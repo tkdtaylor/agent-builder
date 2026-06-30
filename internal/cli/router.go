@@ -35,6 +35,7 @@ func isParseError(err error) bool {
 //	status <goalID>        → MsgStatus, GoalID=<goalID>
 //	info <goalID> <text>   → MsgInfo, GoalID=<goalID>, Text=<text>
 //	cancel <goalID>        → MsgCancel, GoalID=<goalID>
+//	confirm <goalID>       → MsgConfirm, GoalID=<goalID>
 //
 // A control verb with a missing required argument (e.g. `cancel` with no goalID,
 // `info goal-7` with no text) is a malformed control line: it does NOT silently
@@ -121,7 +122,7 @@ func (s *envMessageSource) Next() (supervisor.Message, bool, error) {
 }
 
 // parseMessageLine maps one non-empty line to a typed Message per the ADR 054 §2
-// grammar. A control verb (status/info/cancel) with a missing required argument
+// grammar. A control verb (status/info/cancel/confirm) with a missing required argument
 // returns a parse error — it never silently degrades to a new-goal. A bare line is
 // a new-goal whose ID is auto-assigned ("goal-N") so multiple stdin goals stay
 // addressable and collision-free.
@@ -150,6 +151,12 @@ func parseMessageLine(line string, autoSeq *int) (supervisor.Message, bool, erro
 			return supervisor.Message{}, false, fmt.Errorf("%w: %q (want: cancel <goalID>)", ErrMalformedInput, line)
 		}
 		return supervisor.Message{Kind: supervisor.MsgCancel, GoalID: fields[1]}, true, nil
+	case "confirm":
+		// `confirm <goalID>` — goalID required.
+		if len(fields) < 2 {
+			return supervisor.Message{Kind: supervisor.MsgConfirm}, false, fmt.Errorf("%w: %q (want: confirm <goalID>)", ErrMalformedInput, line)
+		}
+		return supervisor.Message{Kind: supervisor.MsgConfirm, GoalID: fields[1]}, true, nil
 	default:
 		// Bare line → a new goal. Auto-assign a collision-free ID.
 		*autoSeq++
