@@ -1,7 +1,7 @@
 # Task 126: Telegram confirm derivation
 
 **Project:** agent-builder · **Created:** 2026-06-29 · **Status:** backlog
-**ADR:** 056 — Conversational human-gated orchestrate front door
+**ADR:** 058 — Conversational human-gated orchestrate front door
 **Test spec:** [126-telegram-confirm-derivation-test-spec.md](../test-specs/126-telegram-confirm-derivation-test-spec.md)
 
 ## Goal
@@ -16,7 +16,7 @@ the goal spec). Update `docs/spec/interfaces.md` with the derivation table entry
 ## Context
 
 The Telegram adapter already threads `info` and `cancel` reply-to commands to goal
-mailboxes via the `goalIDCache` (task 117). ADR 056 adds the confirm tokens:
+mailboxes via the `goalIDCache` (task 117). ADR 058 adds the confirm tokens:
 - `confirm` — the explicit channel-neutral confirm keyword.
 - `go` — convenience alias for Telegram (natural UX).
 - `proceed` — second alias.
@@ -26,7 +26,7 @@ threading is the discriminator, not the keyword alone.
 
 This task is independent of task 125 (CLI grammar): the Telegram derivation code
 is entirely separate from `parseMessageLine`. Both are required to close the
-channel-abstract confirm contract from ADR 056.
+channel-abstract confirm contract from ADR 058.
 
 ## Requirements
 
@@ -75,7 +75,7 @@ Envelope crypto is bypassed in unit tests using the existing fake-update pattern
 `make check` — lint + build + fitness green.
 
 **L5/L6:** the L6 Telegram round-trip (`confirm` → `MsgConfirm` → planning → approval)
-is the acceptance path for the full ADR 056 feature. It requires tasks 127 + 128 to
+is the acceptance path for the full ADR 058 feature. It requires tasks 127 + 128 to
 be merged and a live Telegram bot configured with the operator keys.
 
 ## Dependencies

@@ -1,7 +1,7 @@
 # Task 127: StateClarifying registry state + route MsgConfirm
 
 **Project:** agent-builder · **Created:** 2026-06-29 · **Status:** completed
-**ADR:** 056 — Conversational human-gated orchestrate front door
+**ADR:** 058 — Conversational human-gated orchestrate front door
 **Test spec:** [127-state-clarifying-route-msgconfirm-test-spec.md](../test-specs/127-state-clarifying-route-msgconfirm-test-spec.md)
 
 ## Goal
@@ -15,7 +15,7 @@ with the new state in the lifecycle table.
 ## Context
 
 The goal lifecycle currently has: `StateQueued → StateDispatching → StateDone/Failed/Cancelled`,
-with `StateAwaitingApproval` as a pause state. ADR 056 inserts `StateClarifying`
+with `StateAwaitingApproval` as a pause state. ADR 058 inserts `StateClarifying`
 between `StateQueued` and `StateDispatching` (the intake phase runs before planning).
 The control-loop router already delivers `MsgInfo` and `MsgCancel` to goal mailboxes;
 this task extends it to cover `MsgConfirm` with the same routing logic and "no such
