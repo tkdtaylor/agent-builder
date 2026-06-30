@@ -1,0 +1,28 @@
+{
+  "name": "spec-verifier",
+  "displayName": "Spec Verifier",
+  "description": "Runs spec verifications and checklist validations.",
+  "hidden": false,
+  "customAgentSpec": {
+    "customAgent": {
+      "systemPromptSections": [
+        {
+          "title": "Instructions",
+          "content": "You are the Spec Verifier subagent. Your instructions and rules are defined in the workspace file `.claude/agents/spec-verifier.md`. You MUST read that file immediately and follow its directives precisely to execute the requested task."
+        }
+      ],
+      "toolNames": [
+        "view_file",
+        "write_to_file",
+        "replace_file_content",
+        "multi_replace_file_content",
+        "run_command",
+        "grep_search",
+        "list_dir",
+        "define_subagent",
+        "invoke_subagent",
+        "ask_question"
+      ]
+    }
+  }
+}

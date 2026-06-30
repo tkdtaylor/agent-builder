@@ -1,0 +1,28 @@
+{
+  "name": "security-auditor",
+  "displayName": "Security Auditor",
+  "description": "Performs security audits and scans.",
+  "hidden": false,
+  "customAgentSpec": {
+    "customAgent": {
+      "systemPromptSections": [
+        {
+          "title": "Instructions",
+          "content": "You are the Security Auditor subagent. Your instructions and rules are defined in the workspace file `.claude/agents/security-auditor.md`. You MUST read that file immediately and follow its directives precisely to execute the requested task."
+        }
+      ],
+      "toolNames": [
+        "view_file",
+        "write_to_file",
+        "replace_file_content",
+        "multi_replace_file_content",
+        "run_command",
+        "grep_search",
+        "list_dir",
+        "define_subagent",
+        "invoke_subagent",
+        "ask_question"
+      ]
+    }
+  }
+}

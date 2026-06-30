@@ -1,0 +1,131 @@
+{
+  "agent-builder-hooks": {
+    "enabled": true,
+    "PreToolUse": [
+      {
+        "matcher": "write_to_file|replace_file_content|multi_replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/protect-secrets.py",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/config-protection.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/block-no-verify.py",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/protect-checkout.py",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/no-commit-on-main.py",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/spec-coverage-check.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/session-lock.py",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/inject-retros.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "write_to_file|replace_file_content|multi_replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/edit-tracker.py",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "run_command",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/auto-cleanup-merge.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/session-lock-touch.py",
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/periodic-checkpoint.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/strategic-compact.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/scope-drift-summary.py",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/detect-smoke-tests.py",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/batch-format-typecheck.py",
+            "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/check-fitness.py",
+            "timeout": 120
+          },
+          {
+            "type": "command",
+            "command": "python3 .claude/scripts/desktop-notify.py",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
