@@ -2,7 +2,7 @@
 
 **Linked task:** [`docs/tasks/backlog/128-clarifier-seam-intake-state-machine.md`](../backlog/128-clarifier-seam-intake-state-machine.md)
 **Written:** 2026-06-29
-**ADR:** 056 — Conversational human-gated orchestrate front door (extends ADR 054/055/046)
+**ADR:** 058 — Conversational human-gated orchestrate front door (extends ADR 054/055/046)
 
 ## Requirements coverage
 

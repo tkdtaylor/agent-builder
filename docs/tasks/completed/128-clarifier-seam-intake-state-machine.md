@@ -1,7 +1,7 @@
 # Task 128: Clarifier seam + HeuristicClarifier v1 + intake state machine
 
-**Project:** agent-builder · **Created:** 2026-06-29 · **Status:** backlog
-**ADR:** 056 — Conversational human-gated orchestrate front door
+**Project:** agent-builder · **Created:** 2026-06-29 · **Status:** completed
+**ADR:** 058 — Conversational human-gated orchestrate front door
 **Test spec:** [128-clarifier-seam-intake-state-machine-test-spec.md](../test-specs/128-clarifier-seam-intake-state-machine-test-spec.md)
 
 ## Goal
@@ -15,7 +15,7 @@ hatch. Also create `scripts/validate-orchestrate-intake.sh`.
 
 ## Context
 
-This is the substantive rework of the ADR 056 series. Tasks 124–127 laid the
+This is the substantive rework of the ADR 058 series. Tasks 124–127 laid the
 protocol/routing groundwork; this task delivers the actual conversational behavior.
 The design mandate is **extraction, not rewrite**: `ConfirmAndPlan` is the current
 body of `Handle` from `planner.Plan` onward, moved verbatim. The risk is accidentally
