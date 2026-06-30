@@ -287,7 +287,7 @@ func (a *Adapter) deriveMessage(update Update, plaintext []byte) supervisor.Mess
 	// Parse command verb (first word) from plaintext.
 	verb, rest := splitVerb(text)
 
-	switch verb {
+	switch strings.ToLower(verb) {
 	case "status":
 		// "status" → MsgStatus; reply-to threads goalID (bare "status" → fleet, GoalID="").
 		goalID := replyToGoalID
@@ -304,6 +304,15 @@ func (a *Adapter) deriveMessage(update Update, plaintext []byte) supervisor.Mess
 	case "cancel":
 		// "cancel" → MsgCancel; reply-to provides the goalID.
 		return supervisor.Message{Kind: supervisor.MsgCancel, GoalID: replyToGoalID}
+
+	case "confirm", "go", "proceed":
+		// "confirm", "go", "proceed" → MsgConfirm; reply-to provides the goalID.
+		// If sent without a reply-to (or with an unknown cache entry), it is treated
+		// as MsgNewGoal (falls through to default).
+		if replyToGoalID != "" {
+			return supervisor.Message{Kind: supervisor.MsgConfirm, GoalID: replyToGoalID}
+		}
+		fallthrough
 
 	default:
 		// Any other plaintext (including multi-word goals) → MsgNewGoal.

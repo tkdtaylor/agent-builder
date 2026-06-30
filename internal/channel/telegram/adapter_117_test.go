@@ -270,6 +270,92 @@ func TestTC117_02_KindDerivation(t *testing.T) {
 		}
 	})
 
+	t.Run("confirm/go/proceed reply-to → MsgConfirm with threaded goalID (case-insensitive)", func(t *testing.T) {
+		opEdPub5, opEdPriv5, opXPub5, opXPriv5, orchXPub5, orchXPriv5 := tc117KeyMaterial(t)
+
+		// We will test 'Confirm', 'go', and 'PROCEED'
+		update1 := tc117MakeUpdateJSON(t, opEdPriv5, opXPriv5, orchXPub5, 100, 40, 66, nil, "do chore A")
+		replyTo := map[string]interface{}{"message_id": 40}
+		update2 := tc117MakeUpdateJSON(t, opEdPriv5, opXPriv5, orchXPub5, 101, 41, 66, replyTo, "Confirm")
+		update3 := tc117MakeUpdateJSON(t, opEdPriv5, opXPriv5, orchXPub5, 102, 42, 66, replyTo, "go")
+		update4 := tc117MakeUpdateJSON(t, opEdPriv5, opXPriv5, orchXPub5, 103, 43, 66, replyTo, "PROCEED")
+
+		srv := tc117GetUpdatesServerMulti(t, update1, update2, update3, update4)
+		adapter := telegram.NewAdapter(telegram.Config{
+			BotToken:          "test-token-117-confirm",
+			BaseURL:           srv.URL,
+			HTTPClient:        srv.Client(),
+			TrustedSigningKey: opEdPub5,
+			TrustedX25519Pub:  opXPub5,
+			OrchestratorPriv:  orchXPriv5,
+			ContentGuard:      &tc117AllowGuard{},
+			ReplayCache:       envelope.NewReplayCache(60 * time.Second),
+			AuditSink:         audit.NewFakeSink(),
+		})
+
+		msg1, ok1, _ := adapter.Next()
+		if !ok1 || msg1.Kind != supervisor.MsgNewGoal {
+			t.Fatalf("first msg: ok=%v kind=%v", ok1, msg1.Kind)
+		}
+		wantGoalID := "tg-66-40"
+
+		// Test 'Confirm'
+		msg2, ok2, err2 := adapter.Next()
+		if err2 != nil || !ok2 {
+			t.Fatalf("second Next() failed: ok=%v err=%v", ok2, err2)
+		}
+		if msg2.Kind != supervisor.MsgConfirm {
+			t.Errorf("Kind = %v, want MsgConfirm", msg2.Kind)
+		}
+		if msg2.GoalID != wantGoalID {
+			t.Errorf("GoalID = %q, want %q", msg2.GoalID, wantGoalID)
+		}
+
+		// Test 'go'
+		msg3, ok3, err3 := adapter.Next()
+		if err3 != nil || !ok3 {
+			t.Fatalf("third Next() failed: ok=%v err=%v", ok3, err3)
+		}
+		if msg3.Kind != supervisor.MsgConfirm {
+			t.Errorf("Kind = %v, want MsgConfirm", msg3.Kind)
+		}
+		if msg3.GoalID != wantGoalID {
+			t.Errorf("GoalID = %q, want %q", msg3.GoalID, wantGoalID)
+		}
+
+		// Test 'PROCEED'
+		msg4, ok4, err4 := adapter.Next()
+		if err4 != nil || !ok4 {
+			t.Fatalf("fourth Next() failed: ok=%v err=%v", ok4, err4)
+		}
+		if msg4.Kind != supervisor.MsgConfirm {
+			t.Errorf("Kind = %v, want MsgConfirm", msg4.Kind)
+		}
+		if msg4.GoalID != wantGoalID {
+			t.Errorf("GoalID = %q, want %q", msg4.GoalID, wantGoalID)
+		}
+	})
+
+	t.Run("confirm/go/proceed bare (no reply-to) → MsgNewGoal", func(t *testing.T) {
+		// Bare 'confirm', 'go', or 'proceed' without a reply-to should fall back to MsgNewGoal.
+		opEdPub6, opEdPriv6, opXPub6, opXPriv6, orchXPub6, orchXPriv6 := tc117KeyMaterial(t)
+
+		msgConfirm := tc117OneUpdate(t, opEdPub6, opEdPriv6, opXPub6, opXPriv6, orchXPub6, orchXPriv6,
+			201, 51, 88, nil, "confirm")
+		if msgConfirm.Kind != supervisor.MsgNewGoal {
+			t.Errorf("confirm no reply-to: Kind = %v, want MsgNewGoal", msgConfirm.Kind)
+		}
+
+		msgGo := tc117OneUpdate(t, opEdPub6, opEdPriv6, opXPub6, opXPriv6, orchXPub6, orchXPriv6,
+			202, 52, 88, nil, "go build standard-agent")
+		if msgGo.Kind != supervisor.MsgNewGoal {
+			t.Errorf("go no reply-to: Kind = %v, want MsgNewGoal", msgGo.Kind)
+		}
+		if msgGo.Goal.Spec != "go build standard-agent" {
+			t.Errorf("go no reply-to spec: Spec = %q, want 'go build standard-agent'", msgGo.Goal.Spec)
+		}
+	})
+
 	t.Run("no panic on empty text (falls back to MsgNewGoal)", func(t *testing.T) {
 		// Edge case: empty plaintext — derivation must not panic; falls back to MsgNewGoal.
 		msg := tc117OneUpdate(t, opEdPub, opEdPriv, opXPub, opXPriv, orchXPub, orchXPriv,
