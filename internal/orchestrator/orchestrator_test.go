@@ -685,3 +685,56 @@ func (s *stepClarifier) Clarify(_ supervisor.Task) (orchestrator.Clarification, 
 	return res, nil
 }
 
+func TestBeginGoal_AutoMode(t *testing.T) {
+	rep := &fakeReporter{}
+	pol := &fakePolicy{decision: policy.DecisionAllow}
+	stubClarifier := &stubClarifier{
+		ready:     false,
+		questions: []string{"What repo?"},
+	}
+	reg := orchestrator.NewStatusRegistry()
+	spy := newDispatchSpy()
+	o := orchestrator.New(
+		orchestrator.NewStructuredPlanner(knownRecipes...),
+		pol, rep, runtime.Config{},
+		orchestrator.WithClarifier(stubClarifier),
+		orchestrator.WithStatusRegistry(reg),
+		orchestrator.WithDispatchFunc(spy.fn),
+		orchestrator.WithGetEnv(func(key string) string {
+			if key == "AGENT_BUILDER_INTAKE" {
+				return "auto"
+			}
+			return ""
+		}),
+	)
+
+	goal := supervisor.Task{ID: "goal-1", Spec: "coding-agent: implement A"}
+	reg.Register(goal.ID, orchestrator.StateQueued)
+
+	err := o.BeginGoal(context.Background(), goal)
+	if err != nil {
+		t.Fatalf("BeginGoal: unexpected error: %v", err)
+	}
+
+	st, ok := reg.Get("goal-1")
+	if !ok {
+		t.Fatal("goal-1 not found in registry")
+	}
+	// In auto mode, we bypass clarification state and proceed straight to planning/dispatching
+	if st.State == orchestrator.StateClarifying {
+		t.Errorf("expected state not to be StateClarifying, got %v", st.State)
+	}
+
+	reported := rep.Reported()
+	for _, msg := range reported {
+		if strings.Contains(msg, "What repo?") {
+			t.Errorf("expected no clarifying question reported, got: %q", msg)
+		}
+	}
+
+	if spy.count() != 1 {
+		t.Errorf("expected 1 dispatch in auto mode, got %d", spy.count())
+	}
+}
+
+
