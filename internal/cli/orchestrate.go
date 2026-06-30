@@ -23,7 +23,7 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/ingestion"
 	"github.com/tkdtaylor/agent-builder/internal/loop"
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator"
-	"github.com/tkdtaylor/agent-builder/internal/orchestrator/planner"
+	llmplanner "github.com/tkdtaylor/agent-builder/internal/orchestrator/planner"
 	"github.com/tkdtaylor/agent-builder/internal/policy"
 	"github.com/tkdtaylor/agent-builder/internal/registry"
 	"github.com/tkdtaylor/agent-builder/internal/router"
@@ -42,6 +42,13 @@ const EnvPlanner = "AGENT_BUILDER_PLANNER"
 const (
 	plannerStructured = "structured"
 	plannerLLM        = "llm"
+)
+
+const EnvClarifier = "AGENT_BUILDER_CLARIFIER"
+
+const (
+	clarifierHeuristic = "heuristic"
+	clarifierLLM       = "llm"
 )
 
 // EnvInbound selects the inbound channel for the orchestrate subcommand (ADR 054 §2,
@@ -463,21 +470,33 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		ov.onStatusWriter(statusWriter)
 	}
 
-	// 10c. Clarifier selection (default: HeuristicClarifier)
+	// 10c. getenv selection
+	getenv := ov.getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+
+	// 10d. Clarifier selection (default: HeuristicClarifier) (REQ-131-03)
 	clarifier := ov.clarifier
 	if clarifier == nil {
-		clar, err := clarifierFromEnv()
+		choice := strings.TrimSpace(getenv(EnvClarifier))
+		var resolver llmplanner.ExecutorResolver
+		var invoke llmplanner.Invoker
+		if choice == clarifierLLM {
+			res, inv, err := buildLLMSeams()
+			if err != nil {
+				cleanup()
+				return orchestrateConfig{}, noop, err
+			}
+			resolver = res
+			invoke = inv
+		}
+		clar, err := clarifierFromEnv(getenv, resolver, invoke)
 		if err != nil {
 			cleanup()
 			return orchestrateConfig{}, noop, err
 		}
 		clarifier = clar
-	}
-
-	// 10d. getenv selection
-	getenv := ov.getenv
-	if getenv == nil {
-		getenv = os.Getenv
 	}
 
 	// 10e. requireApproval selection: default true, false on lenient false values
@@ -732,9 +751,21 @@ func (oc orchestrateConfig) report(ctx context.Context, text string) {
 	_ = oc.reporter.Report(ctx, text)
 }
 
-// clarifierFromEnv selects the Clarifier (default: HeuristicClarifier).
-func clarifierFromEnv() (orchestrator.Clarifier, error) {
-	return orchestrator.NewHeuristicClarifier(), nil
+// clarifierFromEnv selects the Clarifier (default: HeuristicClarifier) (REQ-131-03).
+func clarifierFromEnv(getenv func(string) string, resolver llmplanner.ExecutorResolver, invoke llmplanner.Invoker) (orchestrator.Clarifier, error) {
+	choice := strings.TrimSpace(getenv(EnvClarifier))
+	switch choice {
+	case "", clarifierHeuristic:
+		return orchestrator.NewHeuristicClarifier(), nil
+	case clarifierLLM:
+		if resolver == nil || invoke == nil {
+			return nil, fmt.Errorf("clarifierFromEnv: LLM seams not configured")
+		}
+		return llmplanner.NewLLMClarifier(resolver, invoke), nil
+	default:
+		// Wrap errUsageConfig so runOrchestrate returns ExitUsage instead of ExitGeneric.
+		return nil, fmt.Errorf("%w: %s=%q is not a known clarifier (want %q or %q)", errUsageConfig, EnvClarifier, choice, clarifierHeuristic, clarifierLLM)
+	}
 }
 
 // plannerFromEnv selects the Planner per AGENT_BUILDER_PLANNER (ADR 053 §3,
@@ -757,30 +788,13 @@ func plannerFromEnv() (orchestrator.Planner, error) {
 	}
 }
 
-// buildLLMPlanner assembles the LLM-backed planner: catalog → router →
-// ExecutorResolver adapter + Invoker closure → planner.NewPlannerFromEnv.
-//
-// Catalog-build option (b) (ADR 053 §3): the CLI builds its own *registry.Catalog
-// from registry.LoadFromEnv() with the same synthetic-default fallback as
-// internal/runtime.buildCatalog (CapabilityTier=1, CostWeight=1,
-// HarnessClaudeCLI). This keeps internal/runtime unchanged and avoids exporting
-// its unexported buildCatalog. Both sites must NOT diverge in the default-entry
-// shape; see defaultCLIClaudeEntryID comment above.
-//
-// ExecutorResolver adapter: Resolve(ctx, spec) drops the ctx and calls
-// r.Select(spec). router.Select takes NO ctx — the router's entry selection is
-// not context-cancellable today. Dropping ctx is a documented, deliberate
-// limitation; a future cancellable Select can add ctx without changing the
-// adapter's external contract.
-//
-// Invoker closure: closes over executor.CompleterForEntry in internal/cli (where
-// internal/executor is already a transitive import via internal/runtime), so
-// internal/orchestrator/planner never sees the executor import — F-014 stays green.
-func buildLLMPlanner() (orchestrator.Planner, error) {
+// buildLLMSeams constructs the shared resolver and invoker for LLM-backed planning
+// and clarification.
+func buildLLMSeams() (llmplanner.ExecutorResolver, llmplanner.Invoker, error) {
 	// 1. Build catalog from env, with synthetic-default fallback.
 	entries, err := registry.LoadFromEnv()
 	if err != nil {
-		return nil, fmt.Errorf("plannerFromEnv: load registry: %w", err)
+		return nil, nil, fmt.Errorf("load registry: %w", err)
 	}
 	cat := registry.NewCatalog()
 	if len(entries) == 0 {
@@ -813,7 +827,7 @@ func buildLLMPlanner() (orchestrator.Planner, error) {
 	// internal/cli (where internal/executor is already imported transitively via
 	// internal/runtime), so internal/orchestrator/planner never imports executor
 	// directly — F-010/F-014 stay green (ADR 053 §"Why F-010 and F-014 stay green").
-	invoke := planner.Invoker(func(ctx context.Context, entry registry.RegistryEntry, prompt string) (string, error) {
+	invoke := llmplanner.Invoker(func(ctx context.Context, entry registry.RegistryEntry, prompt string) (string, error) {
 		c, err := executor.CompleterForEntry(entry)
 		if err != nil {
 			return "", err
@@ -821,16 +835,27 @@ func buildLLMPlanner() (orchestrator.Planner, error) {
 		return c.Complete(ctx, entry, prompt)
 	})
 
-	return planner.NewPlannerFromEnv(routerResolver, invoke)
+	return routerResolver, invoke, nil
 }
 
-// routerResolverAdapter implements planner.ExecutorResolver by wrapping
+// buildLLMPlanner assembles the LLM-backed planner: catalog → router →
+// ExecutorResolver adapter + Invoker closure → planner.NewPlannerFromEnv.
+func buildLLMPlanner() (orchestrator.Planner, error) {
+	resolver, invoke, err := buildLLMSeams()
+	if err != nil {
+		return nil, fmt.Errorf("plannerFromEnv: %w", err)
+	}
+
+	return llmplanner.NewPlannerFromEnv(resolver, invoke)
+}
+
+// routerResolverAdapter implements llmplanner.ExecutorResolver by wrapping
 // *router.Router.Select. Resolve drops the ctx argument because router.Select
 // takes no context — selection is not context-cancellable today. This is a
 // deliberate, documented limitation (ADR 053 §3 / TC-110-03): a cancelled ctx
 // does not change the result; the router still returns the selected entry (or
 // ErrNoEligibleExecutor). A future cancellable Select can add ctx here without
-// changing the planner.ExecutorResolver contract.
+// changing the llmplanner.ExecutorResolver contract.
 type routerResolverAdapter struct {
 	r *router.Router
 }

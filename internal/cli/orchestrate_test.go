@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -1366,4 +1367,78 @@ func TestReporterStatusWriterReplacesFileBackedWriter(t *testing.T) {
 		}
 	}
 }
+
+// TestAssembleOrchestrateSelectsLLMClarifierWhenEnvSet is TC-131-04: verifies that
+// assembleOrchestrate selects LLMClarifier when AGENT_BUILDER_CLARIFIER=llm,
+// HeuristicClarifier when unset, and fails fast on unknown clarifier values.
+func TestAssembleOrchestrateSelectsLLMClarifierWhenEnvSet(t *testing.T) {
+	setBaseConfigEnv(t)
+
+	// Sub-case A: Default/heuristic clarifier
+	t.Run("Default", func(t *testing.T) {
+		t.Setenv("AGENT_BUILDER_CLARIFIER", "")
+		oc, cleanup, err := assembleOrchestrate(
+			Config{Stdout: discard(), Stderr: discard()},
+			assembleOverrides{
+				signingKey: testSigningKey(t),
+				source:     &recordingGoalSource{},
+			},
+		)
+		if err != nil {
+			t.Fatalf("assembleOrchestrate failed: %v", err)
+		}
+		t.Cleanup(cleanup)
+
+		clarField := reflect.ValueOf(oc.orch).Elem().FieldByName("clarifier")
+		if !clarField.IsValid() {
+			t.Fatal("could not find 'clarifier' field on orchestrator")
+		}
+		clarType := clarField.Elem().Type().String()
+		if clarType != "*orchestrator.HeuristicClarifier" {
+			t.Errorf("expected *orchestrator.HeuristicClarifier, got %s", clarType)
+		}
+	})
+
+	// Sub-case B: llm clarifier
+	t.Run("LLM", func(t *testing.T) {
+		t.Setenv("AGENT_BUILDER_CLARIFIER", "llm")
+		oc, cleanup, err := assembleOrchestrate(
+			Config{Stdout: discard(), Stderr: discard()},
+			assembleOverrides{
+				signingKey: testSigningKey(t),
+				source:     &recordingGoalSource{},
+			},
+		)
+		if err != nil {
+			t.Fatalf("assembleOrchestrate failed: %v", err)
+		}
+		t.Cleanup(cleanup)
+
+		clarField := reflect.ValueOf(oc.orch).Elem().FieldByName("clarifier")
+		if !clarField.IsValid() {
+			t.Fatal("could not find 'clarifier' field on orchestrator")
+		}
+		clarType := clarField.Elem().Type().String()
+		if clarType != "*planner.LLMClarifier" {
+			t.Errorf("expected *planner.LLMClarifier, got %s", clarType)
+		}
+	})
+
+	// Sub-case C: Unknown clarifier value fails fast
+	t.Run("Unknown", func(t *testing.T) {
+		t.Setenv("AGENT_BUILDER_CLARIFIER", "invalid-clarifier")
+		_, cleanup, err := assembleOrchestrate(
+			Config{Stdout: discard(), Stderr: discard()},
+			assembleOverrides{
+				signingKey: testSigningKey(t),
+				source:     &recordingGoalSource{},
+			},
+		)
+		t.Cleanup(cleanup)
+		if err == nil {
+			t.Error("expected assembleOrchestrate to fail with unknown clarifier, got nil")
+		}
+	})
+}
+
 

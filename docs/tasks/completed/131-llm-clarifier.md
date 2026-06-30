@@ -1,6 +1,6 @@
 # Task 131: LLM clarifier (deferred — could-have)
 
-**Project:** agent-builder · **Created:** 2026-06-29 · **Status:** backlog
+**Project:** agent-builder · **Created:** 2026-06-29 · **Status:** 🟡
 **ADR:** 056 — Conversational human-gated orchestrate front door
 **Test spec:** [131-llm-clarifier-test-spec.md](../test-specs/131-llm-clarifier-test-spec.md)
 **Priority:** could-have — do NOT begin implementation until tasks 124–130 are all ✅

@@ -614,6 +614,9 @@ func (o *Orchestrator) ResumeWithFold(ctx context.Context, approval Approval, go
 func FoldGoalText(original string, info []string) string
 
 // Clarifier interface (ADR 056):
+// Implementations:
+//   - HeuristicClarifier (rule-based static regexes; local-test default)
+//   - LLMClarifier (sends prompt via planner.Invoker to check if goal has sufficient context; enabled by AGENT_BUILDER_CLARIFIER=llm)
 type Clarifier interface {
     Clarify(goal supervisor.Task) (Clarification, error)
 }
