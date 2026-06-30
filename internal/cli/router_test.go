@@ -588,3 +588,96 @@ func TestExistingVerbsUnchangedAfterConfirm(t *testing.T) {
 		}
 	}
 }
+
+// --- Tests for task 127 — routing MsgConfirm ---------------------------------
+
+func TestRouteMsgConfirmDeliveredToGoalMailbox(t *testing.T) {
+	// TC-127-02: MsgConfirm is delivered to the goal mailbox by the router
+	mboxes := newCommandMailboxes()
+	mailbox := mboxes.Create("goal-5")
+
+	oc := orchestrateConfig{
+		reporter: &spyReporter{},
+	}
+
+	msg := supervisor.Message{
+		Kind:   supervisor.MsgConfirm,
+		GoalID: "goal-5",
+	}
+
+	oc.routeCommand(context.Background(), msg, mboxes)
+
+	// Verify that the message is in the mailbox channel
+	select {
+	case received := <-mailbox:
+		if received.Kind != supervisor.MsgConfirm {
+			t.Errorf("TC-127-02: received Kind = %v, want MsgConfirm", received.Kind)
+		}
+		if received.GoalID != "goal-5" {
+			t.Errorf("TC-127-02: received GoalID = %q, want \"goal-5\"", received.GoalID)
+		}
+	default:
+		t.Fatal("TC-127-02: message was not delivered to mailbox channel")
+	}
+}
+
+func TestRouteMsgConfirmUnknownGoalIDGraceful(t *testing.T) {
+	// TC-127-03: MsgConfirm for an unknown goalID -> graceful "no such goal" report
+	mboxes := newCommandMailboxes()
+	rep := &spyReporter{}
+
+	oc := orchestrateConfig{
+		reporter: rep,
+	}
+
+	msg := supervisor.Message{
+		Kind:   supervisor.MsgConfirm,
+		GoalID: "unknown-99",
+	}
+
+	oc.routeCommand(context.Background(), msg, mboxes)
+
+	// Verify no mailbox was created
+	if _, ok := mboxes.Lookup("unknown-99"); ok {
+		t.Error("TC-127-03: mailbox was created for unknown goalID")
+	}
+
+	// Verify report is generated with "no such goal" or "unknown-99"
+	reports := rep.all()
+	if len(reports) != 1 {
+		t.Fatalf("TC-127-03: expected 1 report, got %d", len(reports))
+	}
+	if !strings.Contains(reports[0], "no such goal") || !strings.Contains(reports[0], "unknown-99") {
+		t.Errorf("TC-127-03: report = %q, expected it to contain 'no such goal' and 'unknown-99'", reports[0])
+	}
+}
+
+func TestHandleCommandAcceptsMsgConfirmWhenClarifying(t *testing.T) {
+	// TC-127-04: the actor's drain loop accepts MsgConfirm from the mailbox
+	mailbox := make(chan supervisor.Message, 1)
+	mailbox <- supervisor.Message{Kind: supervisor.MsgConfirm, GoalID: "goal-5"}
+
+	oc := orchestrateConfig{
+		reporter: &spyReporter{},
+	}
+
+	a := &goalActor{
+		oc:      oc,
+		mailbox: mailbox,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	// Call sweep (the final non-blocking command drain loop) which processes msg
+	a.sweep(ctx)
+
+	// Mailbox should be empty (message successfully consumed without panicking/stalling)
+	select {
+	case msg := <-mailbox:
+		t.Errorf("TC-127-04: mailbox still contains message: %+v", msg)
+	default:
+		// success
+	}
+}
+
