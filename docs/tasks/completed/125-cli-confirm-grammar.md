@@ -1,7 +1,7 @@
 # Task 125: CLI confirm grammar
 
 **Project:** agent-builder · **Created:** 2026-06-29 · **Status:** backlog
-**ADR:** 056 — Conversational human-gated orchestrate front door
+**ADR:** 058 — Conversational human-gated orchestrate front door
 **Test spec:** [125-cli-confirm-grammar-test-spec.md](../test-specs/125-cli-confirm-grammar-test-spec.md)
 
 ## Goal
@@ -14,7 +14,7 @@ deferred (not in scope for this task).
 ## Context
 
 `parseMessageLine` currently handles four control verbs: `status`, `info`, `cancel`,
-and (implicitly) bare lines as `MsgNewGoal`. ADR 056 adds `confirm <goalID>` as the
+and (implicitly) bare lines as `MsgNewGoal`. ADR 058 adds `confirm <goalID>` as the
 fifth verb — the user signals that clarification is complete and planning should
 proceed. The implementation mirrors the `cancel <goalID>` case: both require exactly
 one argument (goalID); both return `ErrMalformedInput` when the argument is missing.

@@ -1,7 +1,7 @@
 # Task 124: MsgConfirm message kind (protocol only)
 
 **Project:** agent-builder · **Created:** 2026-06-29 · **Status:** backlog
-**ADR:** 056 — Conversational human-gated orchestrate front door (to be authored by this executor — see below)
+**ADR:** 058 — Conversational human-gated orchestrate front door (to be authored by this executor — see below)
 **Test spec:** [124-msgconfirm-message-kind-test-spec.md](../test-specs/124-msgconfirm-message-kind-test-spec.md)
 
 ## Goal
@@ -12,10 +12,10 @@ files (`docs/spec/interfaces.md`, `docs/spec/data-model.md`). Nothing reads or r
 `MsgConfirm` yet — this task is protocol-only; it creates the token that tasks
 125–127 will route.
 
-## ADR 056 must be authored first
+## ADR 058 must be authored first
 
 **Before writing any implementation code**, the executor must author
-`docs/architecture/decisions/056-conversational-human-gated-front-door.md`. ADR 056
+`docs/architecture/decisions/058-conversational-human-gated-front-door.md`. ADR 058
 records the five sub-decisions from the plan:
 1. `StateClarifying` precedes `StatePlanning`; `Handle` splits into intake (`BeginGoal`) + plan-onward (`ConfirmAndPlan`).
 2. `MsgConfirm` is a first-class, channel-abstract message kind (not a magic string).
@@ -23,13 +23,13 @@ records the five sub-decisions from the plan:
 4. `AGENT_BUILDER_REQUIRE_APPROVAL` (default true) is operator config orthogonal to policy risk.
 5. All human touchpoints (clarifying questions, approval requests, needs-human escalations) flow over the Reporter; escalation moves off the file-backed `tasksource.StatusWriter`.
 The ADR extends ADR 054 (control plane), ADR 055 (dispatch authorization), and ADR 046 (approval gate).
-Commit the ADR under `docs: add ADR 056 — conversational human-gated front door` before the implementation commit.
+Commit the ADR under `docs: add ADR 058 — conversational human-gated front door` before the implementation commit.
 
 ## Context
 
 The async control plane (`internal/supervisor/message.go`) currently defines four
 `MessageKind` constants: `MsgNewGoal` (0), `MsgStatus` (1), `MsgInfo` (2), `MsgCancel` (3).
-ADR 056 introduces `MsgConfirm` (4) as the token the user sends to signal that
+ADR 058 introduces `MsgConfirm` (4) as the token the user sends to signal that
 clarification is complete and the orchestrator should proceed to planning. It is
 channel-abstract: the CLI grammar maps `confirm <goalID>` to it (task 125); the
 Telegram adapter derives it from `confirm`/`go`/`proceed` reply-to keywords (task 126).
@@ -55,7 +55,7 @@ This task creates the constant and nothing else.
 5. `docs/spec/interfaces.md` has the `MsgConfirm` entry in the `MessageSource`
    interface block (grammar: `confirm <goalID>` → `MsgConfirm, GoalID=<goalID>`).
 6. `docs/spec/data-model.md` `Message.Kind` description notes `MsgConfirm`.
-7. ADR 056 is committed before the implementation commit.
+7. ADR 058 is committed before the implementation commit.
 8. `make check` passes.
 9. `git status` clean on commit.
 
@@ -64,7 +64,7 @@ This task creates the constant and nothing else.
 - `internal/supervisor/message.go` — append `MsgConfirm` constant + extend `String()`.
 - `docs/spec/interfaces.md` — add `MsgConfirm` to the grammar table.
 - `docs/spec/data-model.md` — note `MsgConfirm` in the `Message.Kind` description.
-- `docs/architecture/decisions/056-conversational-human-gated-front-door.md` (new) — ADR 056.
+- `docs/architecture/decisions/058-conversational-human-gated-front-door.md` (new) — ADR 058.
 - `internal/supervisor/message_test.go` — three new test cases.
 
 ## Verification plan
@@ -83,7 +83,7 @@ lands in task 128 (intake state machine) + the downstream tasks.
 
 ## Dependencies
 
-None (first task in the ADR 056 series). Task 123 must be merged to `main` before
+None (first task in the ADR 058 series). Task 123 must be merged to `main` before
 this task begins, per the plan's prerequisite note.
 
 ## Out of scope

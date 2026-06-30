@@ -2,7 +2,7 @@
 
 **Linked task:** [`docs/tasks/backlog/124-msgconfirm-message-kind.md`](../backlog/124-msgconfirm-message-kind.md)
 **Written:** 2026-06-29
-**ADR:** 056 — Conversational human-gated orchestrate front door (to be authored by the task 124 executor before implementation; extends ADR 054/055/046)
+**ADR:** 058 — Conversational human-gated orchestrate front door (to be authored by the task 124 executor before implementation; extends ADR 054/055/046)
 
 ## Requirements coverage
 
@@ -85,7 +85,7 @@ are manually verified via the spec diff in the review step.
 - [ ] `docs/spec/data-model.md` updated: `Message.Kind` description notes `MsgConfirm`
   and the `Clarifying` lifecycle state that will consume it (forward reference) in
   the same commit
-- [ ] ADR 056 authored (see task file — the executor writes it before any implementation)
+- [ ] ADR 058 authored (see task file — the executor writes it before any implementation)
 
 ## Test framework notes
 
