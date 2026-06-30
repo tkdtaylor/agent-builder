@@ -17,6 +17,9 @@ const (
 	// MsgCancel cancels a goal and tears down its in-flight workers (GoalID). The
 	// teardown body is task 116.
 	MsgCancel
+	// MsgConfirm signals that clarification is complete and the orchestrator should
+	// proceed to planning (ADR 058).
+	MsgConfirm
 )
 
 // String renders a MessageKind as its lowercase grammar name for reports and
@@ -31,6 +34,8 @@ func (k MessageKind) String() string {
 		return "info"
 	case MsgCancel:
 		return "cancel"
+	case MsgConfirm:
+		return "confirm"
 	default:
 		return "unknown"
 	}
