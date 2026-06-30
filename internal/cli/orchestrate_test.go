@@ -173,6 +173,7 @@ func setBaseConfigEnv(t *testing.T) {
 	t.Setenv(runtimewiring.EnvRunTimeout, "5m")
 	t.Setenv(runtimewiring.EnvMaxAttempts, "2")
 	t.Setenv("ANTHROPIC_API_KEY", "test-key-not-used")
+	t.Setenv("AGENT_BUILDER_INTAKE", "auto")
 }
 
 // twoSubGoalGoal is the canonical 2-sub-goal goal used across policy/audit tests:

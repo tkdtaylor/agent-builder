@@ -525,3 +525,163 @@ func TestTC116_01_HandleForwardsCancelContextToDispatch(t *testing.T) {
 		t.Fatal("TC-116-01: Handle did not return after dispatch saw cancellation")
 	}
 }
+
+// --- TC-128-03 ---------------------------------------------------------------
+func TestBeginGoalSetsClarifyingState(t *testing.T) {
+	rep := &fakeReporter{}
+	pol := &fakePolicy{decision: policy.DecisionAllow}
+	stubClarifier := &stubClarifier{
+		ready:     false,
+		questions: []string{"What repo?"},
+	}
+	reg := orchestrator.NewStatusRegistry()
+	o := orchestrator.New(
+		orchestrator.NewStructuredPlanner(knownRecipes...),
+		pol, rep, runtime.Config{},
+		orchestrator.WithClarifier(stubClarifier),
+		orchestrator.WithStatusRegistry(reg),
+	)
+
+	goal := supervisor.Task{ID: "goal-1", Spec: "fix bug"}
+	reg.Register(goal.ID, orchestrator.StateQueued)
+
+	err := o.BeginGoal(context.Background(), goal)
+	if err != nil {
+		t.Fatalf("BeginGoal: unexpected error: %v", err)
+	}
+
+	st, ok := reg.Get("goal-1")
+	if !ok {
+		t.Fatal("goal-1 not found in registry")
+	}
+	if st.State != orchestrator.StateClarifying {
+		t.Errorf("expected state StateClarifying, got %v", st.State)
+	}
+
+	reported := rep.Reported()
+	if len(reported) != 1 {
+		t.Fatalf("expected 1 reported question, got %d", len(reported))
+	}
+	if !strings.Contains(reported[0], "What repo?") {
+		t.Errorf("reported message %q does not contain 'What repo?'", reported[0])
+	}
+}
+
+// --- TC-128-04 ---------------------------------------------------------------
+func TestConfirmAndPlanInvokesExistingHandleBody(t *testing.T) {
+	spy := newDispatchSpy()
+	rep := &fakeReporter{}
+	pol := &fakePolicy{decision: policy.DecisionRequireApproval}
+	reg := orchestrator.NewStatusRegistry()
+	o := orchestrator.New(
+		orchestrator.NewStructuredPlanner(knownRecipes...),
+		pol, rep, runtime.Config{},
+		orchestrator.WithDispatchFunc(spy.fn),
+		orchestrator.WithStatusRegistry(reg),
+	)
+
+	goal := supervisor.Task{ID: "goal-1", Spec: "coding-agent: implement X"}
+	reg.Register(goal.ID, orchestrator.StateQueued)
+
+	res, err := o.ConfirmAndPlan(context.Background(), goal)
+	if err != nil {
+		t.Fatalf("ConfirmAndPlan: unexpected error: %v", err)
+	}
+
+	if spy.count() != 0 {
+		t.Fatalf("expected 0 dispatches before approval, got %d", spy.count())
+	}
+
+	st, ok := reg.Get("goal-1")
+	if !ok || st.State != orchestrator.StateAwaitingApproval {
+		t.Errorf("expected StateAwaitingApproval, got %v", st.State)
+	}
+
+	reported := rep.Reported()
+	if len(reported) != 1 {
+		t.Fatalf("expected 1 report, got %d", len(reported))
+	}
+	if !strings.Contains(reported[0], "Approve?") {
+		t.Errorf("report does not contain Approve?: %q", reported[0])
+	}
+
+	if res.Goal != "coding-agent: implement X" {
+		t.Errorf("expected PlanResult.Goal to be the spec, got %q", res.Goal)
+	}
+}
+
+// --- TC-128-05 ---------------------------------------------------------------
+func TestMsgInfoFoldedDuringClarifying(t *testing.T) {
+	rep := &fakeReporter{}
+	pol := &fakePolicy{decision: policy.DecisionAllow}
+	reg := orchestrator.NewStatusRegistry()
+
+	sc := &stepClarifier{
+		steps: []orchestrator.Clarification{
+			{Ready: false, Questions: []string{"Which repo?"}},
+			{Ready: true},
+		},
+	}
+
+	o := orchestrator.New(
+		orchestrator.NewStructuredPlanner(knownRecipes...),
+		pol, rep, runtime.Config{},
+		orchestrator.WithClarifier(sc),
+		orchestrator.WithStatusRegistry(reg),
+	)
+
+	goal := supervisor.Task{ID: "goal-1", Spec: "fix bug"}
+	reg.Register(goal.ID, orchestrator.StateQueued)
+
+	if err := o.BeginGoal(context.Background(), goal); err != nil {
+		t.Fatalf("BeginGoal: %v", err)
+	}
+
+	reported := rep.Reported()
+	if len(reported) != 1 || reported[0] != "Which repo?" {
+		t.Fatalf("first reported: %v", reported)
+	}
+
+	reg.EnqueueInfo("goal-1", "github.com/tkdtaylor/exec-sandbox")
+	info := reg.DrainInfo("goal-1")
+	goal.Spec = orchestrator.FoldGoalText(goal.Spec, info)
+
+	if err := o.ClarifyAndReport(context.Background(), goal); err != nil {
+		t.Fatalf("ClarifyAndReport: %v", err)
+	}
+
+	reported = rep.Reported()
+	if len(reported) != 2 {
+		t.Fatalf("expected 2 reports, got %d: %v", len(reported), reported)
+	}
+	if !strings.Contains(reported[1], "clear") {
+		t.Errorf("second report does not contain 'clear': %q", reported[1])
+	}
+}
+
+type stubClarifier struct {
+	ready     bool
+	questions []string
+}
+
+func (s *stubClarifier) Clarify(_ supervisor.Task) (orchestrator.Clarification, error) {
+	return orchestrator.Clarification{Ready: s.ready, Questions: s.questions}, nil
+}
+
+type stepClarifier struct {
+	mu    sync.Mutex
+	idx   int
+	steps []orchestrator.Clarification
+}
+
+func (s *stepClarifier) Clarify(_ supervisor.Task) (orchestrator.Clarification, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.idx >= len(s.steps) {
+		return orchestrator.Clarification{Ready: true}, nil
+	}
+	res := s.steps[s.idx]
+	s.idx++
+	return res, nil
+}
+

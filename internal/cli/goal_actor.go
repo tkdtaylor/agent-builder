@@ -94,36 +94,39 @@ func (oc orchestrateConfig) runGoalActor(ctx context.Context, goal supervisor.Ta
 	}()
 }
 
-// run drives Handle while a sibling goroutine drains the command mailbox at
-// checkpoint boundaries (apply-info-at-checkpoint). Lifecycle of the drain goroutine
-// depends on where Handle leaves the goal:
-//
-//   - Handle returns having DISPATCHED or FAILED the goal (the allow / deny path):
-//     the goal is terminal, there is no further checkpoint, so the drain stops after
-//     a final non-blocking sweep of anything buffered.
-//   - Handle returns with the goal AwaitingApproval (the require_approval pause): the
-//     goal is still live with an upcoming checkpoint (the approve/reject), so the
-//     drain KEEPS RUNNING — folding each arriving info into the queue + re-soliciting
-//     — until the control loop cancels the context (source exhausted) or a cancel
-//     lands. This is what makes info-during-AwaitingApproval work on the live path.
+// run drives BeginGoal (and then ConfirmAndPlan if not auto-intake or completed clarification)
+// while a sibling goroutine drains the command mailbox at checkpoint boundaries
+// (apply-info-at-checkpoint).
 func (a *goalActor) run(ctx context.Context) {
 	handleDone := make(chan struct{})
+	confirmChan := make(chan struct{})
 
 	var drainWG sync.WaitGroup
 	if a.mailbox != nil {
 		drainWG.Add(1)
 		go func() {
 			defer drainWG.Done()
-			a.drainCommands(ctx, handleDone)
+			a.drainCommands(ctx, handleDone, confirmChan)
 		}()
 	}
 
-	// The actor owns the goal's lifecycle via Handle. A goal-level error never halts
-	// the fleet (best-effort across goals — ADR 054 §1): the registry already recorded
-	// StateFailed inside Handle, and the orchestrator's Reporter emits the per-goal
-	// summary / denial. The control loop does NOT write stdout itself.
-	if _, err := a.oc.orch.Handle(ctx, a.goal); err != nil {
-		_ = err // recorded in the registry as StateFailed; surfaced via status (task 114)
+	// BeginGoal initiates the goal. If AGENT_BUILDER_INTAKE=auto, it plans/dispatches directly.
+	if err := a.oc.orch.BeginGoal(ctx, a.goal); err != nil {
+		_ = err // registry state will be set to StateFailed inside BeginGoal
+	}
+
+	// Check if the goal was paused in StateClarifying
+	st, ok := a.oc.registry.Get(a.goal.ID)
+	if ok && st.State == orchestrator.StateClarifying {
+		select {
+		case <-confirmChan:
+			// Proceed to planning/dispatching on the augmented goal.
+			if _, err := a.oc.orch.ConfirmAndPlan(ctx, a.goal); err != nil {
+				_ = err
+			}
+		case <-ctx.Done():
+			// Cancelled
+		}
 	}
 
 	close(handleDone)
@@ -136,7 +139,7 @@ func (a *goalActor) run(ctx context.Context) {
 // (a pending plan held in the store) it keeps draining until the context is
 // cancelled or a cancel lands; otherwise it makes a final non-blocking sweep and
 // returns (the goal is terminal — no further checkpoint).
-func (a *goalActor) drainCommands(ctx context.Context, handleDone <-chan struct{}) {
+func (a *goalActor) drainCommands(ctx context.Context, handleDone <-chan struct{}, confirmChan chan struct{}) {
 	// While Handle is still running the actor keeps draining regardless of shutdown:
 	// a goal actively planning/dispatching has in-flight work, and an info arriving
 	// now must still be queued/amended (shutdown only stops a POST-handle lingering
@@ -144,7 +147,7 @@ func (a *goalActor) drainCommands(ctx context.Context, handleDone <-chan struct{
 	for {
 		select {
 		case msg := <-a.mailbox:
-			a.handleCommand(ctx, msg)
+			a.handleCommand(ctx, msg, confirmChan)
 		case <-handleDone:
 			a.drainPostHandle(ctx)
 			return
@@ -171,7 +174,7 @@ func (a *goalActor) drainPostHandle(ctx context.Context) {
 		for {
 			select {
 			case msg := <-a.mailbox:
-				a.handleCommand(ctx, msg)
+				a.handleCommand(ctx, msg, nil)
 			case <-ctx.Done():
 				a.sweep(ctx)
 				return
@@ -193,7 +196,7 @@ func (a *goalActor) sweep(ctx context.Context) {
 	for {
 		select {
 		case msg := <-a.mailbox:
-			a.handleCommand(ctx, msg)
+			a.handleCommand(ctx, msg, nil)
 		default:
 			return
 		}
@@ -204,15 +207,30 @@ func (a *goalActor) sweep(ctx context.Context) {
 // apply-info-at-checkpoint (task 115); MsgCancel tears down the goal's in-flight
 // workers (task 116). An unknown kind is ignored (the router already rejected
 // malformed input upstream).
-func (a *goalActor) handleCommand(ctx context.Context, msg supervisor.Message) {
+func (a *goalActor) handleCommand(ctx context.Context, msg supervisor.Message, confirmChan chan struct{}) {
 	switch msg.Kind {
 	case supervisor.MsgInfo:
 		a.applyInfo(ctx, msg.Text)
 	case supervisor.MsgCancel:
 		a.applyCancel(ctx)
 	case supervisor.MsgConfirm:
-		// Accepted but not yet handled (task 128 concern).
-		// Log or note for task 128 that it is accepted.
+		a.applyConfirm(ctx, confirmChan)
+	}
+}
+
+func (a *goalActor) applyConfirm(ctx context.Context, confirmChan chan struct{}) {
+	st, ok := a.oc.registry.Get(a.goal.ID)
+	if ok && st.State == orchestrator.StateClarifying {
+		if confirmChan != nil {
+			select {
+			case <-confirmChan:
+				// already closed
+			default:
+				close(confirmChan)
+			}
+		}
+	} else {
+		a.oc.report(ctx, fmt.Sprintf("confirm ignored: goal %q is not in clarifying state", a.goal.ID))
 	}
 }
 
@@ -278,6 +296,13 @@ func (a *goalActor) applyInfo(ctx context.Context, text string) {
 	}
 
 	switch state {
+	case orchestrator.StateClarifying:
+		// Conversational intake pause: drain the info, fold it, and re-clarify!
+		info := a.oc.registry.DrainInfo(a.goal.ID)
+		a.goal.Spec = orchestrator.FoldGoalText(a.goal.Spec, info)
+		if err := a.oc.orch.ClarifyAndReport(ctx, a.goal); err != nil {
+			a.oc.report(ctx, fmt.Sprintf("info for goal %q: re-clarify failed: %v", a.goal.ID, err))
+		}
 	case orchestrator.StateAwaitingApproval:
 		// Paused at the approval checkpoint: surface the queued info WITH the approval
 		// solicitation (TC-115-02). The drain/fold happens on approve via

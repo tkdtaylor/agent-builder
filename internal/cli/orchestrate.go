@@ -53,6 +53,7 @@ const (
 // (ExitUsage). Telegram requires the full set of AGENT_BUILDER_TELEGRAM_* env vars;
 // missing required vars fail-fast at assembly time before the goal-intake loop runs.
 const EnvInbound = "AGENT_BUILDER_INBOUND"
+const EnvIntake = "AGENT_BUILDER_INTAKE"
 
 const (
 	inboundEnv      = "env"
@@ -245,6 +246,8 @@ type assembleOverrides struct {
 	// and reaches the orchestrator (TC-123 / task 123, ADR 055 seam 4). Production passes
 	// assembleOverrides{} so this is nil on the live path.
 	onStatusWriter func(loop.StatusWriter)
+	clarifier      orchestrator.Clarifier
+	getenv         func(string) string
 }
 
 // runOrchestrate is the CLI dispatch for the orchestrate subcommand. It parses
@@ -463,6 +466,23 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		ov.onStatusWriter(statusWriter)
 	}
 
+	// 10c. Clarifier selection (default: HeuristicClarifier)
+	clarifier := ov.clarifier
+	if clarifier == nil {
+		clar, err := clarifierFromEnv()
+		if err != nil {
+			cleanup()
+			return orchestrateConfig{}, noop, err
+		}
+		clarifier = clar
+	}
+
+	// 10d. getenv selection
+	getenv := ov.getenv
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+
 	orch := orchestrator.New(
 		planner, pol, reporter, baseConfig,
 		orchestrator.WithPlanStore(store),
@@ -471,6 +491,8 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		orchestrator.WithStatusRegistry(registry),
 		orchestrator.WithWorkerSemaphore(workerSem),
 		orchestrator.WithStatusWriter(statusWriter),
+		orchestrator.WithClarifier(clarifier),
+		orchestrator.WithGetEnv(getenv),
 	)
 
 	// Inbound message seam (ADR 054 §2). Precedence: an explicit typed MessageSource
@@ -703,6 +725,11 @@ func (oc orchestrateConfig) report(ctx context.Context, text string) {
 		return
 	}
 	_ = oc.reporter.Report(ctx, text)
+}
+
+// clarifierFromEnv selects the Clarifier (default: HeuristicClarifier).
+func clarifierFromEnv() (orchestrator.Clarifier, error) {
+	return orchestrator.NewHeuristicClarifier(), nil
 }
 
 // plannerFromEnv selects the Planner per AGENT_BUILDER_PLANNER (ADR 053 §3,

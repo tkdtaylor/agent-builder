@@ -602,6 +602,9 @@ type Approval struct {
 func New(planner Planner, pol PolicyClient, reporter supervisor.Reporter,
     base runtime.Config, opts ...Option) *Orchestrator
 func (o *Orchestrator) Handle(ctx context.Context, goal supervisor.Task) (PlanResult, error)
+func (o *Orchestrator) BeginGoal(ctx context.Context, goal supervisor.Task) error
+func (o *Orchestrator) ConfirmAndPlan(ctx context.Context, goal supervisor.Task) (PlanResult, error)
+func (o *Orchestrator) ClarifyAndReport(ctx context.Context, goal supervisor.Task) error
 func (o *Orchestrator) Resume(ctx context.Context, approval Approval) (PlanResult, error)
 func (o *Orchestrator) HasPendingPlan(goalID string) bool
 func (o *Orchestrator) Containment() Containment // task 085 — L2 containment posture
@@ -609,6 +612,16 @@ func (o *Orchestrator) Containment() Containment // task 085 — L2 containment 
 func (o *Orchestrator) SolicitApproval(ctx context.Context, goalID string) error
 func (o *Orchestrator) ResumeWithFold(ctx context.Context, approval Approval, goal supervisor.Task) (PlanResult, error)
 func FoldGoalText(original string, info []string) string
+
+// Clarifier interface (ADR 056):
+type Clarifier interface {
+    Clarify(goal supervisor.Task) (Clarification, error)
+}
+
+type Clarification struct {
+    Ready     bool
+    Questions []string
+}
 
 // Self-containment posture (task 085 / ADR 050 §3): the L2-assertable evidence the
 // orchestrator runs under the SAME exec-sandbox profile as its workers.

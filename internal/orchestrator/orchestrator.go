@@ -34,6 +34,7 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -281,6 +282,8 @@ type Orchestrator struct {
 	// action (ADR 055 seam 4, task 123). It defaults to AGENT_BUILDER_MAX_ATTEMPTS
 	// when unset (zero). Set via WithReevaluationBound.
 	reevaluationBound int
+	clarifier         Clarifier
+	getenv            func(string) string
 }
 
 // Option configures an Orchestrator.
@@ -351,6 +354,24 @@ func WithReevaluationBound(bound int) Option {
 	return func(o *Orchestrator) { o.reevaluationBound = bound }
 }
 
+// WithClarifier overrides the Clarifier seam.
+func WithClarifier(c Clarifier) Option {
+	return func(o *Orchestrator) {
+		if c != nil {
+			o.clarifier = c
+		}
+	}
+}
+
+// WithGetEnv overrides the getenv seam.
+func WithGetEnv(getenv func(string) string) Option {
+	return func(o *Orchestrator) {
+		if getenv != nil {
+			o.getenv = getenv
+		}
+	}
+}
+
 // New constructs an Orchestrator. planner, pol, and reporter are required.
 func New(planner Planner, pol PolicyClient, reporter supervisor.Reporter, base runtime.Config, opts ...Option) *Orchestrator {
 	o := &Orchestrator{
@@ -362,6 +383,8 @@ func New(planner Planner, pol PolicyClient, reporter supervisor.Reporter, base r
 		dispatch:    defaultDispatch,
 		risk:        "low",
 		containment: defaultContainment(),
+		clarifier:   NewHeuristicClarifier(),
+		getenv:      os.Getenv,
 	}
 	for _, opt := range opts {
 		opt(o)
@@ -375,15 +398,51 @@ func New(planner Planner, pol PolicyClient, reporter supervisor.Reporter, base r
 	return o
 }
 
-// Handle is the goal-intake entry point. It decomposes the goal into a plan,
-// gates the plan on the spawn-plan policy decision, and on allow dispatches the
-// plan immediately. On require_approval it pauses: reports the plan, holds it in
-// the store, and dispatches nothing — Resume continues once approval returns. On
-// deny it reports and stops without dispatching.
-func (o *Orchestrator) Handle(ctx context.Context, goal supervisor.Task) (PlanResult, error) {
-	// Fleet-audit (task 085 / ADR 050 §4): record goal intake on the shared chain.
+// BeginGoal is the goal-intake entry point (conversational intake phase, ADR 056).
+// If AGENT_BUILDER_INTAKE=auto is configured, it skips clarification and calls
+// ConfirmAndPlan immediately. Otherwise, it sets StateClarifying, runs the clarifier,
+// reports any questions, and returns.
+func (o *Orchestrator) BeginGoal(ctx context.Context, goal supervisor.Task) error {
 	o.emitFleetEvent(audit.AuditEvent{Action: audit.ActionGoalIntake, TaskID: goal.ID, RunID: goal.ID})
 
+	intakeMode := strings.TrimSpace(o.getenv("AGENT_BUILDER_INTAKE"))
+	if intakeMode == "auto" {
+		_, err := o.ConfirmAndPlan(ctx, goal)
+		return err
+	}
+
+	o.registry.SetState(goal.ID, StateClarifying)
+	return o.ClarifyAndReport(ctx, goal)
+}
+
+// ClarifyAndReport runs the clarifier on the goal and reports questions or ready prompt.
+func (o *Orchestrator) ClarifyAndReport(ctx context.Context, goal supervisor.Task) error {
+	res, err := o.clarifier.Clarify(goal)
+	if err != nil {
+		o.registry.SetState(goal.ID, StateFailed)
+		return fmt.Errorf("orchestrator: clarify goal %q: %w", goal.ID, err)
+	}
+
+	if res.Ready {
+		prompt := fmt.Sprintf("Goal %q is clear — reply 'confirm %s' when ready.", goal.ID, goal.ID)
+		if err := o.reporter.Report(ctx, prompt); err != nil {
+			return fmt.Errorf("orchestrator: report ready prompt: %w", err)
+		}
+		return nil
+	}
+
+	for _, q := range res.Questions {
+		if err := o.reporter.Report(ctx, q); err != nil {
+			return fmt.Errorf("orchestrator: report clarifying question: %w", err)
+		}
+	}
+	return nil
+}
+
+// ConfirmAndPlan decomposes the goal into a plan, gates it on policy, and
+// dispatches or pauses for approval. It is the verbatim body of the original
+// Handle from planner.Plan onward (the extraction invariant).
+func (o *Orchestrator) ConfirmAndPlan(ctx context.Context, goal supervisor.Task) (PlanResult, error) {
 	// Registry projection (ADR 054 §3): the actor owns its goalID's state. Intake →
 	// Planning. A nil registry is a no-op; this never gates control flow.
 	o.registry.SetState(goal.ID, StatePlanning)
@@ -457,6 +516,13 @@ func (o *Orchestrator) Handle(ctx context.Context, goal supervisor.Task) (PlanRe
 		}
 		return PlanResult{Goal: plan.Goal}, nil
 	}
+}
+
+// Handle is the legacy goal-intake entry point. It bypasses the clarification
+// pause and runs planning and dispatch immediately.
+func (o *Orchestrator) Handle(ctx context.Context, goal supervisor.Task) (PlanResult, error) {
+	o.emitFleetEvent(audit.AuditEvent{Action: audit.ActionGoalIntake, TaskID: goal.ID, RunID: goal.ID})
+	return o.ConfirmAndPlan(ctx, goal)
 }
 
 // Resume continues a paused plan when an explicit approval message returns over

@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-29 (task 117 — Telegram wired as optional inbound channel: `telegram.Adapter` now satisfies `supervisor.MessageSource` (derives `MessageKind`/`GoalID` at adapter edge after envelope-verify+armor); `telegram.ReplyAdapter` wired as outbound `Reporter`; both selected by `AGENT_BUILDER_INBOUND=telegram` in `assembleOrchestrate`; env/stdin remains the default. The control-plane diagram updated to show the Telegram inbound path alongside the default env/stdin path.)
+**Last updated:** 2026-06-30 (task 128 — Clarifier seam + HeuristicClarifier v1 + intake state machine)
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -346,6 +346,15 @@ sequenceDiagram
 
     Channel-->>Orch: goal (supervisor.Task, envelope-verified + armor-guarded)
     Orch->>Audit: goal-intake
+    alt AGENT_BUILDER_INTAKE=auto
+        Orch->>Orch: ConfirmAndPlan(goal)
+    else Interactive
+        Orch->>Orch: StateClarifying pause
+        Orch->>Orch: Clarifier.Clarify(goal)
+        Orch->>Reporter: Report(Questions or Ready Prompt)
+        Note over Orch: Wait for MsgConfirm (via Mbox → Actor)
+        Orch->>Orch: ConfirmAndPlan(goal)
+    end
     Orch->>Planner: Plan(goal)
     Planner-->>Orch: Plan{ ordered SubGoals } (>=1)
     Orch->>Policy: Decide(spawn-plan, plan)

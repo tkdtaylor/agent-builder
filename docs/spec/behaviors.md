@@ -298,6 +298,16 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** `MaxReevaluations == 0` escalates immediately with no replan (mirrors `RetryPolicy` `MaxAttempts == 0`); a negative bound is `ErrNegativeMaxReevaluations`; a blocked action with no resource/action/reason is `ErrEmptyBlockedAction` (an empty "something was denied" signal never escalates). **The never-self-grant invariant is structural:** the allow set applied on a retry is EXACTLY the freshly re-derived `Plan.AllowedResources` returned by the replanner — `loop.ReevaluateBlocked` exposes no parameter and contains no code path that unions the previous allow set with the denied resource. The denied resource can re-appear on a retry ONLY if the new plan independently re-derived it, in which case the path leads to human escalation, never to the policy granting it on its own authority.
 - **References:** ADR 055 seam 4; task 121; `docs/tasks/test-specs/121-orchestrate-blocked-action-feedback-test-spec.md`.
 
+### B-034: Conversational goal intake and clarification pause
+
+- **Trigger:** A goal is admitted to the orchestrator via `BeginGoal`.
+- **Response:** The system determines the intake mode via the `AGENT_BUILDER_INTAKE` environment variable. If set to `auto`, the system immediately transitions to `StatePlanning` and dispatches the goal via `ConfirmAndPlan`. Otherwise (interactive mode), it projects `StateClarifying` in the status registry and runs the `HeuristicClarifier` on the goal spec.
+  - If the clarifier determines the goal is vague, the system reports the clarifying questions over the outbound `Reporter` and waits.
+  - If the clarifier determines the goal is specific/ready, the system reports a ready prompt (`"Goal <id> is clear — reply 'confirm <id>' when ready."`) and waits.
+- **Side effects:** The status registry is updated to `StateClarifying` on intake pause, and the outbound `Reporter` receives the clarifying questions or the ready prompt. If an info command (`MsgInfo`) arrives while in `StateClarifying`, the info is folded into the goal specification and the system re-clarifies. When a confirm command (`MsgConfirm`) is received, the loop resumes and dispatches the goal via `ConfirmAndPlan`.
+- **Failure modes:** If the clarifier returns an error, the goal transitions to `StateFailed` in the registry and the orchestrator reports the failure.
+- **References:** ADR 056; task 128; `docs/tasks/test-specs/128-clarifier-seam-intake-state-machine-test-spec.md`.
+
 ---
 
 ## Edge cases and error behaviors
