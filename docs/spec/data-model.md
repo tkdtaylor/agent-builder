@@ -315,6 +315,30 @@ timed-out     configured wall-clock timeout expired and the supervisor attempted
 - **Lifecycle:** produced by `Supervisor.Run()` when the terminal run record is written and then consumed by humans, tests, and future audit tooling.
 - **Relationships:** `timed-out` is distinct from `failed`; a fast in-box loop error before the deadline is recorded as `failed`, not `timed-out`.
 
+#### Value: `supervisor.Message`
+
+```
+field       type                     notes
+────────────────────────────────────────────────────────────
+Kind        supervisor.MessageKind   how the control loop dispatches this message
+GoalID      string                   addresses status/info/cancel/confirm; the new goal's ID for new-goal
+Goal        supervisor.Task          populated for MsgNewGoal
+Text        string                   info payload / free-form
+```
+
+- **Identity:** a single inbound command message.
+- **Lifecycle:** read from `MessageSource` by the orchestrator control loop.
+- **Relationships:** `Kind` determines how the control loop handles this message.
+
+#### Value: `supervisor.MessageKind`
+
+An int enum representing the type of inbound operator message:
+- `MsgNewGoal` (0): a fresh goal to plan
+- `MsgStatus` (1): queries lifecycle state
+- `MsgInfo` (2): carries new information for an in-flight goal
+- `MsgCancel` (3): cancels a goal and tears down in-flight workers
+- `MsgConfirm` (4): signals that clarification is complete and the orchestrator should proceed to planning (ADR 058)
+
 ### State: Default Run Wiring
 
 - **Shape:** `runtime.Config` stores the task root, target worktree, Claude CLI executable, Claude token, sandbox-runtime executable, optional RunRecord path, supervisor timeout, max-attempt bound, publish remote, git/GitHub CLI paths, and optional publication tokens for one `agent-builder run` invocation.
