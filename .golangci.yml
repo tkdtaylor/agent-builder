@@ -1,4 +1,7 @@
 version: "2"
+run:
+  skip-dirs:
+    - .claude
 linters:
   enable:
     - errcheck
