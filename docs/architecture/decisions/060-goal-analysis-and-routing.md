@@ -69,6 +69,25 @@ router (ADR 043) still makes the final cost/quota/availability choice within tha
 built in `internal/cli` from the completer seams (router-selected entry → `CompleterForEntry`
 → `Complete`). Keeps `internal/executor` out of `internal/orchestrator`.
 
+**6. Multi-turn conversation.** A `KindAnswer` goal is a **conversation, not a one-shot**. After
+the first reply the goal actor does **not** terminate: it enters `StateConversing` and lingers on
+its command mailbox (the same actor-lingering the clarifier already uses — tasks 115/116/128),
+holding the conversation history `[(user,Q1),(assistant,A1), …]`. Routing of follow-ups reuses the
+existing message protocol:
+
+- **`info <goalID> <text>`** delivered to a conversing goal is a **follow-up question**: append
+  `(user, text)`, compose the running transcript into the single prompt the `Answerer` takes
+  (`User: …\nAssistant: …\nUser: <follow-up>\nAssistant:`), invoke, report the reply, append
+  `(assistant, reply)`, stay `StateConversing`.
+- **`cancel <goalID>`** (or source EOF) ends the conversation → `StateDone`.
+
+The single-prompt transcript composition lives in the orchestrator, so multi-turn works uniformly
+across all three brains — `claude -p` / `agy --print` / ollama-native are each stateless single-shot,
+so carrying the transcript in the prompt is the portable way to hold context. Each turn is
+independently sensitivity/complexity-routed and audited. (The clarifier already interprets `info`
+during `StateClarifying`; a conversing answer-goal interprets `info` as a follow-up — the state
+disambiguates.)
+
 ## Why this shape
 
 - **The agent decides, not the operator.** A generic analyzer at the front door is what makes
@@ -82,7 +101,8 @@ built in `internal/cli` from the completer seams (router-selected entry → `Com
 ## Consequences
 
 - `orchestrate` now answers general questions over the channel (the L6 target: send
-  *"what is the capital of France?"* with no repo → an answer, not *"which repository?"*).
+  *"what is the capital of France?"* with no repo → an answer, not *"which repository?"*), and
+  **holds a multi-turn conversation** (follow-up: *"what about Germany?"* → *"Berlin"* with context).
 - **Approval bypass for the answer route** is a deliberate, documented security decision: the
   route takes no action (single-shot, no tools, no worker, no repo write), so the action-approval
   gate has nothing to authorize. It remains audited and sensitivity-routed. The two human gates
