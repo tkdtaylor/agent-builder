@@ -24,18 +24,23 @@ import (
 const TranslationProxySeam = "litellm/claude-code-router"
 
 // localHarnessEntries lists entry IDs that can have empty SecretRef (local authentication):
-// - "local-qwen", "local", "local-ollama": use the translation-proxy pattern (Harness = HarnessClaudeCLI or HarnessOllamaNative, SecretRef = "", Budget.Limit = 0).
-//   These entries set ANTHROPIC_BASE_URL (or use native local inference) instead of injecting cloud auth.
-// - "gemini": uses Gemini subscription/OAuth login (Harness = HarnessGeminiCLI, SecretRef = "").
-//   The gemini CLI uses its own cached OAuth login (~/.gemini) and does not require an API key injected.
-// - "antigravity": uses Antigravity subscription/OAuth login (Harness = HarnessAntigravityCLI, SecretRef = "").
-//   The agy CLI uses its own cached OAuth login (~/.antigravity) and does not require an API key injected.
+//   - "local-qwen", "local", "local-ollama": use the translation-proxy pattern (Harness = HarnessClaudeCLI or HarnessOllamaNative, SecretRef = "", Budget.Limit = 0).
+//     These entries set ANTHROPIC_BASE_URL (or use native local inference) instead of injecting cloud auth.
+//   - "gemini": uses Gemini subscription/OAuth login (Harness = HarnessGeminiCLI, SecretRef = "").
+//     The gemini CLI uses its own cached OAuth login (~/.gemini) and does not require an API key injected.
+//   - "antigravity", "agy-gemini-flash", "agy-gemini-pro": use Antigravity subscription/OAuth login
+//     (Harness = HarnessAntigravityCLI, SecretRef = ""). The agy CLI uses its own cached OAuth login
+//     (~/.antigravity) and does not require an API key injected. The two "agy-gemini-*" IDs are
+//     per-Gemini-level entries (ADR 061) — same OAuth login, different declared CapabilityTier/
+//     CostWeight/MODEL so the router can pick the cheapest sufficient Gemini level.
 var localHarnessEntries = map[string]struct{}{
-	"local-qwen":   {},
-	"local":        {},
-	"local-ollama": {},
-	"gemini":       {},
-	"antigravity":  {},
+	"local-qwen":       {},
+	"local":            {},
+	"local-ollama":     {},
+	"gemini":           {},
+	"antigravity":      {},
+	"agy-gemini-flash": {},
+	"agy-gemini-pro":   {},
 }
 
 // LoadFromEnv reads well-known env-var prefixes and constructs enabled entries.
@@ -43,13 +48,18 @@ var localHarnessEntries = map[string]struct{}{
 func LoadFromEnv() ([]RegistryEntry, error) {
 	// Known entry IDs and their corresponding harness drivers
 	knownEntries := map[string]HarnessDriver{
-		"claude-oauth":  HarnessClaudeCLI,
-		"local-qwen":    HarnessClaudeCLI,
-		"local":         HarnessClaudeCLI,
-		"local-ollama":  HarnessOllamaNative,
-		"codex":         HarnessCodexCLI,
-		"gemini":        HarnessGeminiCLI,
-		"antigravity":   HarnessAntigravityCLI,
+		"claude-oauth":     HarnessClaudeCLI,
+		"claude-haiku":     HarnessClaudeCLI,
+		"claude-sonnet":    HarnessClaudeCLI,
+		"claude-opus":      HarnessClaudeCLI,
+		"local-qwen":       HarnessClaudeCLI,
+		"local":            HarnessClaudeCLI,
+		"local-ollama":     HarnessOllamaNative,
+		"codex":            HarnessCodexCLI,
+		"gemini":           HarnessGeminiCLI,
+		"antigravity":      HarnessAntigravityCLI,
+		"agy-gemini-flash": HarnessAntigravityCLI,
+		"agy-gemini-pro":   HarnessAntigravityCLI,
 	}
 
 	var entries []RegistryEntry
