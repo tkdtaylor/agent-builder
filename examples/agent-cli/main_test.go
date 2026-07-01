@@ -529,30 +529,24 @@ func TestMain_KeygenNoSecretLeakage(t *testing.T) {
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 
-	config := Config{
-		Args:   []string{"keygen", "--keyfile", keyfilePath},
-		Stdout: stdout,
-		Stderr: stderr,
-		Stdin:  nil,
-	}
+	// CRITICAL: Call runKeygenCore ONCE with the real output buffers.
+	// This single invocation generates ONE key set and writes it to stdout/stderr.
+	// We then assert against the SAME keys that were actually printed.
+	keys, exitCode := runKeygenCore(stdout, stderr, keyfilePath)
 
-	exitCode := Main(config)
 	if exitCode != ExitOK {
-		t.Fatalf("keygen failed: exit code %d", exitCode)
+		t.Fatalf("runKeygenCore failed: exit code %d", exitCode)
+	}
+	if keys == nil {
+		t.Fatal("runKeygenCore returned nil keys")
 	}
 
 	stdoutStr := stdout.String()
 	stderrStr := stderr.String()
 	combinedOutput := stdoutStr + stderrStr
 
-	// Get the actual keys via runKeygenLogic so we can check REAL generated key material
-	// (Run it a second time to get fresh keys for comparison)
-	keys, envBlock, err := runKeygenLogic(filepath.Join(tmpDir, "test-keys.json"))
-	if err != nil {
-		t.Fatalf("runKeygenLogic failed: %v", err)
-	}
-
 	// ASSERTION (a): operator privates NEVER appear anywhere in stdout+stderr
+	// (these are the keys that were ACTUALLY generated and printed in the invocation above)
 	opEdPrivHex := hexEncode(keys.OperatorEdPriv)
 	opXPrivHex := hexEncode(keys.OperatorXPriv[:])
 
@@ -564,24 +558,27 @@ func TestMain_KeygenNoSecretLeakage(t *testing.T) {
 	}
 
 	// ASSERTION (b): orchestrator privates appear ONLY in the env block (stdout),
-	// NOT in stderr confirmation line
+	// NOT in stderr confirmation line.
+	// These are the REAL orchestrator privates from the same invocation.
 	orchEdPrivHex := hexEncode(keys.OrchEdPriv)
 	orchXPrivHex := hexEncode(keys.OrchXPriv[:])
 
-	// These MUST appear in the env block (on stdout)
-	if !strings.Contains(envBlock, orchEdPrivHex) {
-		t.Error("orchestrator Ed25519 private key missing from env block")
+	// These MUST appear in stdout (in the env block)
+	if !strings.Contains(stdoutStr, orchEdPrivHex) {
+		t.Error("orchestrator Ed25519 private key missing from stdout (env block)")
 	}
-	if !strings.Contains(envBlock, orchXPrivHex) {
-		t.Error("orchestrator X25519 private key missing from env block")
+	if !strings.Contains(stdoutStr, orchXPrivHex) {
+		t.Error("orchestrator X25519 private key missing from stdout (env block)")
 	}
 
-	// But these MUST NOT appear in stderr
+	// But these MUST NOT appear in stderr (the confirmation line)
+	// This is the load-bearing assertion: if someone accidentally echoed
+	// an orch private into the confirmation line, this would catch it.
 	if strings.Contains(stderrStr, orchEdPrivHex) {
-		t.Error("orchestrator Ed25519 private key appears in stderr confirmation line")
+		t.Error("orchestrator Ed25519 private key appears in stderr confirmation line (LEAKAGE)")
 	}
 	if strings.Contains(stderrStr, orchXPrivHex) {
-		t.Error("orchestrator X25519 private key appears in stderr confirmation line")
+		t.Error("orchestrator X25519 private key appears in stderr confirmation line (LEAKAGE)")
 	}
 
 	// ASSERTION (c): banner separator present

@@ -79,40 +79,41 @@ func runKeygen(config Config, args []string) int {
 		return ExitUsage
 	}
 
-	// Run the keygen logic (extracted for testability)
-	_, envBlock, err := runKeygenLogic(keyfilePath)
-	if err != nil {
-		writef(config.Stderr, "error: %v\n", err)
-		return 1
-	}
-
-	// Emit env block to stdout
-	_, _ = fmt.Fprint(config.Stdout, envBlock)
-
-	// Emit confirmation to stderr
-	writef(config.Stderr, "\n--- paste into orchestrator environment ---\n\nkeyfile written to %s (mode 0600)\n", keyfilePath)
-
-	return ExitOK
+	// Run the keygen command core (generates keys, writes files, writes output)
+	// Return value is discarded here; tests use runKeygenCore directly for inspection
+	_, exitCode := runKeygenCore(config.Stdout, config.Stderr, keyfilePath)
+	return exitCode
 }
 
-// runKeygenLogic generates keys, writes keyfile, and returns the keys and env block.
-// Extracted for testability so tests can inspect the actual generated key material.
-func runKeygenLogic(keyfilePath string) (*KeyMaterial, string, error) {
+// runKeygenCore executes the keygen command: generates keys, writes the keyfile,
+// prints the env block to stdout and the banner+confirmation to stderr.
+// Returns the generated KeyMaterial (for test inspection) and an exit code.
+// This is the load-bearing seam for tests that need to inspect the exact keys
+// that were printed to the output buffers.
+func runKeygenCore(stdout, stderr io.Writer, keyfilePath string) (*KeyMaterial, int) {
 	// Generate keys
 	keys, err := GenerateKeys()
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to generate keys: %w", err)
+		writef(stderr, "error: failed to generate keys: %v\n", err)
+		return nil, 1
 	}
 
 	// Write keyfile
 	if err := WriteKeyfile(keyfilePath, keys); err != nil {
-		return nil, "", fmt.Errorf("failed to write keyfile: %w", err)
+		writef(stderr, "error: failed to write keyfile: %v\n", err)
+		return nil, 1
 	}
 
 	// Render env block
 	envBlock := RenderEnvBlock(keys)
 
-	return keys, envBlock, nil
+	// Emit env block to stdout
+	_, _ = fmt.Fprint(stdout, envBlock)
+
+	// Emit confirmation to stderr
+	writef(stderr, "\n--- paste into orchestrator environment ---\n\nkeyfile written to %s (mode 0600)\n", keyfilePath)
+
+	return keys, ExitOK
 }
 
 func writef(w io.Writer, format string, args ...interface{}) {
