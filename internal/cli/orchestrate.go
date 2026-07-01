@@ -132,6 +132,12 @@ const (
 	// sender IDs seeded into the store at startup in allowlist mode (ADR 063 Decision 4).
 	// Seeding is additive (union), never a destructive overwrite of an existing store.
 	EnvTelegramApprovedIDs = "AGENT_BUILDER_TELEGRAM_APPROVED_IDS"
+	// EnvTelegramOwnerID is the numeric Telegram sender ID of the owner who can approve/deny
+	// pending senders in pairing mode (ADR 063 Decision 3). REQUIRED (fail-fast ExitUsage)
+	// when AUTH_MODE=pairing — an owner-less pairing mode has no one who can ever approve a
+	// sender. It is normalized to the same canonical numeric form as approved-store entries.
+	// Ignored by every other mode.
+	EnvTelegramOwnerID = "AGENT_BUILDER_TELEGRAM_OWNER_ID"
 )
 
 // defaultTelegramBaseURL is the Telegram Bot API base URL used when
@@ -1183,6 +1189,31 @@ func assembleTelegramAuthMode(getenv func(string) string) (authz.Mode, *authz.St
 	return mode, store, nil
 }
 
+// assembleTelegramOwnerID resolves the pairing-mode owner sender ID (ADR 063 Decision 3).
+// It is REQUIRED (fail-fast ExitUsage) only when mode == pairing: an owner-less pairing
+// mode has no one who can ever approve a sender, which is a footgun the config layer
+// catches rather than silently shipping an un-onboardable channel.
+//
+//   - non-pairing modes: the owner ID is irrelevant → returns (0, nil), value ignored.
+//   - pairing, unset/blank OWNER_ID: fail-fast error.
+//   - pairing, non-numeric OWNER_ID: fail-fast error (normalized to the same canonical
+//     numeric form as approved-store entries — task 151's Normalize rule).
+//   - pairing, valid numeric OWNER_ID: returns the normalized int64.
+func assembleTelegramOwnerID(getenv func(string) string, mode authz.Mode) (int64, error) {
+	if mode != authz.ModePairing {
+		return 0, nil
+	}
+	raw := strings.TrimSpace(getenv(EnvTelegramOwnerID))
+	if raw == "" {
+		return 0, fmt.Errorf("%w: %s is required when %s=%s", errUsageConfig, EnvTelegramOwnerID, EnvTelegramAuthMode, mode)
+	}
+	ownerID, err := authz.Normalize(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s: %v", errUsageConfig, EnvTelegramOwnerID, err)
+	}
+	return ownerID, nil
+}
+
 // assembleTelegramInbound constructs the telegram.Adapter (inbound MessageSource)
 // and telegram.ReplyAdapter (outbound Reporter) from AGENT_BUILDER_TELEGRAM_* env vars.
 // All required vars must be set; absence is a fail-fast assembly error (never a
@@ -1195,6 +1226,13 @@ func assembleTelegramInbound(getenv func(string) string, sink audit.Sink, logger
 	// the persisted approved-sender store. Fail-fast on an unknown mode / blank-or-bad
 	// store path before decoding any crypto key material.
 	authMode, authStore, err := assembleTelegramAuthMode(getenv)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Pairing mode requires a configured owner sender ID (ADR 063 Decision 3). Fail-fast
+	// here so an owner-less pairing config never ships an un-onboardable channel.
+	ownerID, err := assembleTelegramOwnerID(getenv, authMode)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1283,6 +1321,22 @@ func assembleTelegramInbound(getenv func(string) string, sink audit.Sink, logger
 	// NewArmorGuarded binding) before production use of AGENT_BUILDER_INBOUND=telegram.
 	var guard telegram.ContentGuard = allowAllContentGuard{}
 
+	// Pairing mode (ADR 063 Decision 3) needs a PLAINTEXT outbound notifier for the
+	// "pending" reply to an unknown sender and the approve/deny notification to the owner
+	// — distinct from the envelope-sealing ReplyAdapter (an unknown sender holds no
+	// envelope key). Wired only in pairing mode; nil (and the owner chat blank) otherwise.
+	var notifier telegram.PairingNotifier
+	ownerChatID := ""
+	if authMode == authz.ModePairing {
+		notifier = telegram.NewPlaintextNotifier(telegram.PlaintextNotifierConfig{
+			BotToken: botToken,
+			BaseURL:  baseURL,
+			Logger:   logger,
+		})
+		// In a 1:1 owner DM, the owner's chat ID equals the owner sender ID.
+		ownerChatID = strconv.FormatInt(ownerID, 10)
+	}
+
 	adapter := telegram.NewAdapter(telegram.Config{
 		BotToken:          botToken,
 		BaseURL:           baseURL,
@@ -1294,6 +1348,9 @@ func assembleTelegramInbound(getenv func(string) string, sink audit.Sink, logger
 		Logger:            logger,
 		AuthMode:          authMode,
 		AuthStore:         authStore,
+		OwnerID:           ownerID,
+		OwnerChatID:       ownerChatID,
+		Notifier:          notifier,
 	})
 
 	replyAdapter := telegram.NewReplyAdapter(telegram.ReplyConfig{
@@ -1356,5 +1413,6 @@ Optional inbound auth mode (ADR 063; default "envelope" = today's behavior):
   AGENT_BUILDER_TELEGRAM_AUTH_MODE      "envelope" (default) | "allowlist" | "pairing" | "open" | "disabled"
   AGENT_BUILDER_TELEGRAM_APPROVED_STORE path to 0600 JSON approved-sender store (required for allowlist/pairing)
   AGENT_BUILDER_TELEGRAM_APPROVED_IDS   comma-separated numeric sender IDs seeded into the store (allowlist)
+  AGENT_BUILDER_TELEGRAM_OWNER_ID       numeric owner sender ID who approves/denies pending senders (required for pairing)
 `)
 }

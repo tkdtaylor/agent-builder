@@ -38,12 +38,16 @@ const (
 	ReasonPlaintextAccepted AuditReason = "plaintext_accepted"
 )
 
-// Decision is the result of Decide: the Action the adapter takes, plus the AuditReason
-// to emit. For ActionRouteEnvelope the Reason is empty (the envelope path emits its own
-// reasons via the existing classifier).
+// Decision is the result of Decide/DecidePairing: the Action the adapter takes, plus the
+// AuditReason to emit. For ActionRouteEnvelope the Reason is empty (the envelope path
+// emits its own reasons via the existing classifier).
 type Decision struct {
 	Action Action
 	Reason AuditReason
+	// TargetID is the normalized sender ID an owner approve/deny acts on. It is
+	// meaningful only for ActionPairingApprove and ActionPairingDeny (pairing.go);
+	// zero for every other action.
+	TargetID int64
 }
 
 // Decide is the mode-decision seam (ADR 063 Decision 5). Given the selected mode, the
