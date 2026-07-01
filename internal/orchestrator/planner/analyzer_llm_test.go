@@ -169,8 +169,28 @@ func TestLLMGoalAnalyzerFallbackOnMalformed(t *testing.T) {
 			}
 
 			// All cases should succeed (no error propagated).
-			// For genuinely unparseable cases, the fallback took effect.
-			_ = res // Use res to satisfy linter (the result is valid either way)
+			// For expectFallback cases, verify the result matches the heuristic.
+			if tc.expectFallback {
+				// Build the expected heuristic result to compare against.
+				heuristic := orchestrator.NewHeuristicGoalAnalyzer()
+				expected, err := heuristic.Analyze(supervisor.Task{ID: "g1", Spec: tc.goalSpec})
+				if err != nil {
+					t.Fatalf("heuristic fallback produced error: %v", err)
+				}
+
+				// Assert the LLM result matches the heuristic (fallback worked).
+				if res.Kind != expected.Kind {
+					t.Errorf("fallback Kind = %q, want %q (heuristic result)", res.Kind, expected.Kind)
+				}
+				if res.Complexity != expected.Complexity {
+					t.Errorf("fallback Complexity = %q, want %q (heuristic result)", res.Complexity, expected.Complexity)
+				}
+			} else {
+				// For non-fallback cases, just verify we got valid results.
+				if res.Kind == "" || res.Complexity == "" {
+					t.Errorf("expected valid Kind/Complexity, got Kind=%q Complexity=%q", res.Kind, res.Complexity)
+				}
+			}
 		})
 	}
 }
@@ -201,14 +221,25 @@ func TestLLMGoalAnalyzerFallbackOnError(t *testing.T) {
 			}
 			analyzer := planner.NewLLMGoalAnalyzer(seams, seams.Invoke)
 
-			res, err := analyzer.Analyze(supervisor.Task{ID: "g1", Spec: "What is the capital of France?"})
+			goalText := "What is the capital of France?"
+			res, err := analyzer.Analyze(supervisor.Task{ID: "g1", Spec: goalText})
 			if err != nil {
 				t.Fatalf("Analyze failed: %v", err)
 			}
 
-			// Should return successfully with heuristic result.
-			if res.Kind == "" || res.Complexity == "" {
-				t.Errorf("expected heuristic fallback result, got empty Kind or Complexity")
+			// Should return successfully with heuristic result (fallback on error).
+			// Verify it matches the heuristic result.
+			heuristic := orchestrator.NewHeuristicGoalAnalyzer()
+			expected, err := heuristic.Analyze(supervisor.Task{ID: "g1", Spec: goalText})
+			if err != nil {
+				t.Fatalf("heuristic produced error: %v", err)
+			}
+
+			if res.Kind != expected.Kind {
+				t.Errorf("fallback on %s: Kind = %q, want %q (heuristic result)", tc.name, res.Kind, expected.Kind)
+			}
+			if res.Complexity != expected.Complexity {
+				t.Errorf("fallback on %s: Complexity = %q, want %q (heuristic result)", tc.name, res.Complexity, expected.Complexity)
 			}
 		})
 	}
