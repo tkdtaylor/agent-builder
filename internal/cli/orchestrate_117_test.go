@@ -26,7 +26,7 @@ func TestTC117_04A_DefaultEnvInboundIsEnvStdin(t *testing.T) {
 	sink := audit.NewFakeSink()
 
 	// Case 1: unset
-	src, rep, err := inboundFromEnv(func(string) string { return "" }, strings.NewReader(""), sink, nil)
+	src, rep, err := inboundFromEnv(func(string) string { return "" }, strings.NewReader(""), sink, nil, nil)
 	if err != nil {
 		t.Fatalf("TC-117-04A (unset): inboundFromEnv error: %v", err)
 	}
@@ -43,7 +43,7 @@ func TestTC117_04A_DefaultEnvInboundIsEnvStdin(t *testing.T) {
 			return "env"
 		}
 		return ""
-	}, strings.NewReader(""), sink, nil)
+	}, strings.NewReader(""), sink, nil, nil)
 	if err2 != nil {
 		t.Fatalf("TC-117-04A (env): inboundFromEnv error: %v", err2)
 	}
@@ -91,7 +91,7 @@ func TestTC117_04B_TelegramInboundAssembled(t *testing.T) {
 		return ""
 	}
 
-	src, rep, err := inboundFromEnv(getenv, nil, sink, nil)
+	src, rep, err := inboundFromEnv(getenv, nil, sink, nil, nil)
 	if err != nil {
 		t.Fatalf("TC-117-04B: inboundFromEnv error: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestTC117_04C_MissingTelegramVarFailsFast(t *testing.T) {
 				}
 				return allVars[key]
 			}
-			_, _, err := inboundFromEnv(getenv, nil, sink, nil)
+			_, _, err := inboundFromEnv(getenv, nil, sink, nil, nil)
 			if err == nil {
 				t.Errorf("TC-117-04C: expected error when %s is missing, got nil", missing)
 			}
@@ -183,7 +183,7 @@ func TestTC117_04D_UnknownInboundIsUsageError(t *testing.T) {
 			return "grpc" // unknown value
 		}
 		return ""
-	}, strings.NewReader(""), sink, nil)
+	}, strings.NewReader(""), sink, nil, nil)
 	if err == nil {
 		t.Fatal("TC-117-04D: expected error for unknown AGENT_BUILDER_INBOUND, got nil")
 	}
