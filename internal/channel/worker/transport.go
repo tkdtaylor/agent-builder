@@ -281,6 +281,8 @@ func (r *Receiver) classify(err error) string {
 		return "unknown_key"
 	case errors.Is(err, envelope.ErrBadSignature):
 		return "bad_signature"
+	case errors.Is(err, envelope.ErrDecryptionFailed):
+		return "decryption_failed"
 	default:
 		return "envelope_rejected"
 	}

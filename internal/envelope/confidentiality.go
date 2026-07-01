@@ -2,7 +2,6 @@ package envelope
 
 import (
 	"crypto/rand"
-	"errors"
 	"fmt"
 
 	"golang.org/x/crypto/nacl/box"
@@ -39,7 +38,7 @@ func Seal(plaintext []byte, senderPriv [32]byte, recipPub [32]byte) ([]byte, [24
 func Open(ciphertext []byte, nonce [24]byte, recipPriv [32]byte, senderPub [32]byte) ([]byte, error) {
 	plaintext, ok := box.Open(nil, ciphertext, &nonce, &senderPub, &recipPriv)
 	if !ok {
-		return nil, errors.New("authentication failed: nacl/box decrypt returned false")
+		return nil, fmt.Errorf("authentication failed: nacl/box decrypt returned false: %w", ErrDecryptionFailed)
 	}
 	return plaintext, nil
 }

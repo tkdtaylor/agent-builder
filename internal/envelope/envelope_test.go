@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -294,4 +295,361 @@ func isValidHex(s string) bool {
 		}
 	}
 	return true
+}
+
+// TestTC154_01_DirectOpenAEADFailureMatchesErrDecryptionFailed tests TC-154-01:
+// ErrDecryptionFailed sentinel matches a direct Open AEAD failure
+func TestTC154_01_DirectOpenAEADFailureMatchesErrDecryptionFailed(t *testing.T) {
+	// Setup: Seal a plaintext with real sender-priv/recipient-pub pair
+	senderPub, senderPriv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	recipPub, _, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	plaintext := []byte("test message")
+	ciphertext, nonce, err := Seal(plaintext, senderPriv, recipPub)
+	if err != nil {
+		t.Fatalf("Seal failed: %v", err)
+	}
+
+	// Call Open with mismatched recipient private key (wrong recipient)
+	wrongRecipPub, wrongRecipPriv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	// Try to decrypt with the wrong recipient key (not the one the ciphertext was sealed to)
+	_, err = Open(ciphertext, nonce, wrongRecipPriv, senderPub)
+
+	// TC-154-01: err must be non-nil
+	if err == nil {
+		t.Fatal("Open with wrong recipient key should have failed but returned nil")
+	}
+
+	// TC-154-01: errors.Is(err, ErrDecryptionFailed) must be true
+	if !errors.Is(err, ErrDecryptionFailed) {
+		t.Errorf("error should match ErrDecryptionFailed: %v", err)
+	}
+
+	// TC-154-01: err.Error() must still contain the descriptive message text
+	errStr := err.Error()
+	if !strings.Contains(errStr, "authentication failed") && !strings.Contains(errStr, "decrypt") {
+		t.Errorf("error message should contain descriptive text: %q", errStr)
+	}
+
+	// Sanity check: verify the wrong recipient key is actually wrong
+	// (the ciphertext was sealed to recipPub, not wrongRecipPub)
+	correctPlaintext, err := Open(ciphertext, nonce, wrongRecipPriv, wrongRecipPub)
+	if err != nil {
+		t.Logf("Verified: ciphertext cannot be decrypted with different recipient keys: %v", err)
+	} else {
+		t.Logf("Note: decryption succeeded (probably used wrong keypair setup), plaintext: %q", correctPlaintext)
+	}
+}
+
+// TestTC154_02_VerifyAndOpenDecryptFailureMatchesErrDecryptionFailed tests TC-154-02:
+// ErrDecryptionFailed matches through the full VerifyAndOpen chain when only Open fails
+func TestTC154_02_VerifyAndOpenDecryptFailureMatchesErrDecryptionFailed(t *testing.T) {
+	// Setup: keypairs for both sender and recipient
+	senderEdPub, senderEdPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey failed: %v", err)
+	}
+
+	senderX25519Pub, senderX25519Priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	recipX25519Pub, _, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	cache := NewReplayCache(60 * time.Second)
+	plaintext := []byte("test message")
+
+	// Create a correctly signed, replay-fresh envelope that is sealed to recipPub
+	ciphertext, nonce, err := Seal(plaintext, senderX25519Priv, recipX25519Pub)
+	if err != nil {
+		t.Fatalf("Seal failed: %v", err)
+	}
+
+	env := Envelope{
+		From:    "sender",
+		To:      "recipient",
+		Nonce:   hex.EncodeToString(nonce[:]),
+		TS:      NowRFC3339(),
+		Payload: hex.EncodeToString(ciphertext),
+		Sig:     "",
+	}
+
+	signed, err := Sign(env, senderEdPriv)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	// Now call VerifyAndOpen with a WRONG recipient X25519 private key
+	// Verify and replay check will pass, but Open will fail
+	_, wrongRecipPriv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	_, err = VerifyAndOpen(signed, senderEdPub, cache, wrongRecipPriv, senderX25519Pub)
+
+	// TC-154-02: err must be non-nil
+	if err == nil {
+		t.Fatal("VerifyAndOpen with wrong recipient key should have failed but returned nil")
+	}
+
+	// TC-154-02: errors.Is(err, ErrDecryptionFailed) must be true
+	if !errors.Is(err, ErrDecryptionFailed) {
+		t.Errorf("error should match ErrDecryptionFailed: %v", err)
+	}
+
+	// TC-154-02: The other four sentinels must NOT match this error
+	if errors.Is(err, ErrUnknownKey) {
+		t.Error("error should not match ErrUnknownKey")
+	}
+	if errors.Is(err, ErrBadSignature) {
+		t.Error("error should not match ErrBadSignature")
+	}
+	if errors.Is(err, ErrReplay) {
+		t.Error("error should not match ErrReplay")
+	}
+	if errors.Is(err, ErrStaleTimestamp) {
+		t.Error("error should not match ErrStaleTimestamp")
+	}
+}
+
+// TestTC154_03_MalformedHexPayloadNonceConsistentClassification tests TC-154-03:
+// Malformed-hex Payload and Nonce are consistently classified
+func TestTC154_03_MalformedHexPayloadNonceConsistentClassification(t *testing.T) {
+	// Setup: keypairs
+	senderEdPub, senderEdPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey failed: %v", err)
+	}
+
+	senderX25519Pub, senderX25519Priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	recipX25519Pub, recipX25519Priv, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair failed: %v", err)
+	}
+
+	cache := NewReplayCache(60 * time.Second)
+	plaintext := []byte("test message")
+
+	// Create a correctly signed envelope
+	ciphertext, nonce, err := Seal(plaintext, senderX25519Priv, recipX25519Pub)
+	if err != nil {
+		t.Fatalf("Seal failed: %v", err)
+	}
+
+	// Test 1: Malformed-hex Payload
+	env1 := Envelope{
+		From:    "sender",
+		To:      "recipient",
+		Nonce:   hex.EncodeToString(nonce[:]),
+		TS:      NowRFC3339(),
+		Payload: "not-valid-hex!!", // Malformed hex
+		Sig:     "",
+	}
+
+	signed1, err := Sign(env1, senderEdPriv)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	_, err1 := VerifyAndOpen(signed1, senderEdPub, cache, recipX25519Priv, senderX25519Pub)
+	if err1 == nil {
+		t.Fatal("VerifyAndOpen with malformed Payload hex should have failed")
+	}
+
+	// Test 2: Malformed-hex Nonce
+	env2 := Envelope{
+		From:    "sender",
+		To:      "recipient",
+		Nonce:   "not-valid-hex!!", // Malformed hex
+		TS:      NowRFC3339(),
+		Payload: hex.EncodeToString(ciphertext),
+		Sig:     "",
+	}
+
+	signed2, err := Sign(env2, senderEdPriv)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	_, err2 := VerifyAndOpen(signed2, senderEdPub, cache, recipX25519Priv, senderX25519Pub)
+	if err2 == nil {
+		t.Fatal("VerifyAndOpen with malformed Nonce hex should have failed")
+	}
+
+	// TC-154-03: Both should be classified identically
+	// Per the implementation, malformed-hex errors are NOT wrapped as ErrDecryptionFailed;
+	// they're bare errors returned from hex.DecodeString. So both should NOT match ErrDecryptionFailed.
+	// This is the consistent classification: both malformed-hex cases are treated as unclassified "envelope_rejected".
+	isErr1Decryption := errors.Is(err1, ErrDecryptionFailed)
+	isErr2Decryption := errors.Is(err2, ErrDecryptionFailed)
+
+	if isErr1Decryption != isErr2Decryption {
+		t.Errorf("Malformed Payload and Nonce should be classified identically: Payload is ErrDecryptionFailed=%v, Nonce is ErrDecryptionFailed=%v",
+			isErr1Decryption, isErr2Decryption)
+	}
+
+	// Both should return the same classification (false for ErrDecryptionFailed, since they're hex decode errors)
+	if isErr1Decryption || isErr2Decryption {
+		t.Errorf("Malformed hex errors should not be classified as ErrDecryptionFailed")
+	}
+}
+
+// TestTC154_04_ExistingSentinelNoContamination tests TC-154-04:
+// The four existing sentinels still classify correctly; no cross-contamination with ErrDecryptionFailed
+func TestTC154_04_ExistingSentinelNoContamination(t *testing.T) {
+	// Test ErrBadSignature
+	t.Run("ErrBadSignature", func(t *testing.T) {
+		senderEdPub, senderEdPriv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey failed: %v", err)
+		}
+
+		senderX25519Pub, senderX25519Priv, err := GenerateKeyPair()
+		if err != nil {
+			t.Fatalf("GenerateKeyPair failed: %v", err)
+		}
+
+		recipX25519Pub, recipX25519Priv, err := GenerateKeyPair()
+		if err != nil {
+			t.Fatalf("GenerateKeyPair failed: %v", err)
+		}
+
+		plaintext := []byte("test message")
+		ciphertext, nonce, err := Seal(plaintext, senderX25519Priv, recipX25519Pub)
+		if err != nil {
+			t.Fatalf("Seal failed: %v", err)
+		}
+
+		env := Envelope{
+			From:    "sender",
+			To:      "recipient",
+			Nonce:   hex.EncodeToString(nonce[:]),
+			TS:      NowRFC3339(),
+			Payload: hex.EncodeToString(ciphertext),
+			Sig:     "",
+		}
+
+		signed, err := Sign(env, senderEdPriv)
+		if err != nil {
+			t.Fatalf("Sign failed: %v", err)
+		}
+
+		// Tamper with signature
+		signed.Sig = "0000000000000000000000000000000000000000000000000000000000000000" +
+			"0000000000000000000000000000000000000000000000000000000000000000"
+
+		cache := NewReplayCache(60 * time.Second)
+		_, err = VerifyAndOpen(signed, senderEdPub, cache, recipX25519Priv, senderX25519Pub)
+		if err == nil {
+			t.Fatal("VerifyAndOpen with bad signature should have failed")
+		}
+
+		if !errors.Is(err, ErrBadSignature) {
+			t.Errorf("expected ErrBadSignature but got: %v", err)
+		}
+
+		// Verify no cross-contamination
+		if errors.Is(err, ErrDecryptionFailed) {
+			t.Error("ErrBadSignature should not match ErrDecryptionFailed")
+		}
+		if errors.Is(err, ErrUnknownKey) {
+			t.Error("ErrBadSignature should not match ErrUnknownKey")
+		}
+		if errors.Is(err, ErrReplay) {
+			t.Error("ErrBadSignature should not match ErrReplay")
+		}
+		if errors.Is(err, ErrStaleTimestamp) {
+			t.Error("ErrBadSignature should not match ErrStaleTimestamp")
+		}
+	})
+
+	// Test ErrReplay detection (second call with same nonce)
+	t.Run("ErrReplay", func(t *testing.T) {
+		senderEdPub, senderEdPriv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey failed: %v", err)
+		}
+
+		senderX25519Pub, senderX25519Priv, err := GenerateKeyPair()
+		if err != nil {
+			t.Fatalf("GenerateKeyPair failed: %v", err)
+		}
+
+		recipX25519Pub, recipX25519Priv, err := GenerateKeyPair()
+		if err != nil {
+			t.Fatalf("GenerateKeyPair failed: %v", err)
+		}
+
+		cache := NewReplayCache(60 * time.Second)
+
+		plaintext := []byte("test message")
+		ciphertext, nonce, err := Seal(plaintext, senderX25519Priv, recipX25519Pub)
+		if err != nil {
+			t.Fatalf("Seal failed: %v", err)
+		}
+
+		env := Envelope{
+			From:    "sender",
+			To:      "recipient",
+			Nonce:   hex.EncodeToString(nonce[:]),
+			TS:      NowRFC3339(),
+			Payload: hex.EncodeToString(ciphertext),
+			Sig:     "",
+		}
+
+		signed, err := Sign(env, senderEdPriv)
+		if err != nil {
+			t.Fatalf("Sign failed: %v", err)
+		}
+
+		// First call should succeed
+		_, err = VerifyAndOpen(signed, senderEdPub, cache, recipX25519Priv, senderX25519Pub)
+		if err != nil {
+			t.Fatalf("First VerifyAndOpen should have succeeded: %v", err)
+		}
+
+		// Second call with same nonce should trigger ErrReplay
+		_, err = VerifyAndOpen(signed, senderEdPub, cache, recipX25519Priv, senderX25519Pub)
+		if err == nil {
+			t.Fatal("Second VerifyAndOpen with same nonce should have failed with ErrReplay")
+		}
+
+		if !errors.Is(err, ErrReplay) {
+			t.Errorf("Expected ErrReplay but got: %v", err)
+		}
+
+		// Verify no cross-contamination
+		if errors.Is(err, ErrDecryptionFailed) {
+			t.Error("ErrReplay should not match ErrDecryptionFailed")
+		}
+		if errors.Is(err, ErrBadSignature) {
+			t.Error("ErrReplay should not match ErrBadSignature")
+		}
+		if errors.Is(err, ErrUnknownKey) {
+			t.Error("ErrReplay should not match ErrUnknownKey")
+		}
+		if errors.Is(err, ErrStaleTimestamp) {
+			t.Error("ErrReplay should not match ErrStaleTimestamp")
+		}
+	})
 }

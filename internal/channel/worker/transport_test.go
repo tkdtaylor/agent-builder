@@ -398,3 +398,75 @@ func TestRoleMismatchRejected(t *testing.T) {
 		t.Fatalf("no role_mismatch audit event: %v", rejectReasons(sink))
 	}
 }
+
+// TestTC154_06_DecryptFailureClassifiedAsDecryptionFailed tests TC-154-06:
+// A decrypt-failing inbound work-item envelope produces "decryption_failed" reason
+func TestTC154_06_DecryptFailureClassifiedAsDecryptionFailed(t *testing.T) {
+	k := newKeyset(t)
+
+	// Create a validly signed work-item envelope, but seal it with a
+	// different recipient's X25519 public key so decryption fails
+	wrongRecipPub, _, err := envelope.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate wrong recipient keypair: %v", err)
+	}
+
+	// Payload is a valid supervisor.Task
+	task := supervisor.Task{ID: "test-task-001", Repo: "agent-builder", Spec: "docs/tasks/backlog/001-test.md"}
+	payload, err := json.Marshal(task)
+	if err != nil {
+		t.Fatalf("marshal task: %v", err)
+	}
+
+	// Seal to the wrong recipient
+	ciphertext, nonce, err := envelope.Seal(payload, k.orchXPriv, wrongRecipPub)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+
+	// Create and sign envelope
+	env := envelope.Envelope{
+		From:    "orchestrator",
+		To:      "worker",
+		Nonce:   hex.EncodeToString(nonce[:]),
+		TS:      envelope.NowRFC3339(),
+		Payload: hex.EncodeToString(ciphertext),
+		Sig:     "",
+	}
+	env, err = envelope.Sign(env, k.orchEdPriv)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+
+	sink := audit.NewFakeSink()
+	recv := k.workItemReceiver(sink, envelope.NewReplayCache(0))
+
+	// TC-154-06: ReceiveWorkItem should fail with the decrypt-failing envelope
+	got, err := recv.ReceiveWorkItem(env)
+	if err == nil {
+		t.Fatal("ReceiveWorkItem on decrypt-failing envelope should have failed")
+	}
+
+	// TC-154-06: Error should match ErrDecryptionFailed
+	if !errors.Is(err, envelope.ErrDecryptionFailed) {
+		t.Errorf("expected error to match ErrDecryptionFailed, got: %v", err)
+	}
+
+	// TC-154-06: Got should be zero value
+	if !reflect.DeepEqual(got, supervisor.Task{}) {
+		t.Errorf("got non-zero task on decrypt failure: %+v", got)
+	}
+
+	// TC-154-06: Audit sink should record rejection with reason "decryption_failed"
+	reasons := rejectReasons(sink)
+	found := false
+	for _, reason := range reasons {
+		if reason == "decryption_failed" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected audit reason 'decryption_failed', got: %v", reasons)
+	}
+}

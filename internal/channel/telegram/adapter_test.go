@@ -1683,3 +1683,110 @@ func TestTC097_03b_SentinelClassificationToAuditReason(t *testing.T) {
 		})
 	}
 }
+
+// TestTC154_05_DecryptFailureClassifiedAsDecryptionFailed tests TC-154-05:
+// A decrypt-failing inbound envelope produces "decryption_failed" audit reason
+func TestTC154_05_DecryptFailureClassifiedAsDecryptionFailed(t *testing.T) {
+	operatorEdPub, operatorEdPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("failed to generate Ed25519 key: %v", err)
+	}
+
+	operatorX25519Pub, operatorX25519Priv, err := envelope.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("failed to generate operator X25519 keypair: %v", err)
+	}
+
+	_, orchX25519Priv, err := envelope.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("failed to generate orchestrator X25519 keypair: %v", err)
+	}
+
+	// Create a valid, correctly-signed envelope with good signature and fresh nonce,
+	// but seal it to a DIFFERENT recipient's public key so decryption fails
+	wrongRecipPub, _, err := envelope.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("failed to generate wrong recipient keypair: %v", err)
+	}
+
+	plaintext := []byte("test message")
+	ciphertext, nonce, err := envelope.Seal(plaintext, operatorX25519Priv, wrongRecipPub)
+	if err != nil {
+		t.Fatalf("failed to seal: %v", err)
+	}
+
+	env := envelope.Envelope{
+		From:    "operator",
+		To:      "orchestrator",
+		Nonce:   hex.EncodeToString(nonce[:]),
+		TS:      envelope.NowRFC3339(),
+		Payload: hex.EncodeToString(ciphertext),
+		Sig:     "",
+	}
+
+	env, err = envelope.Sign(env, operatorEdPriv)
+	if err != nil {
+		t.Fatalf("failed to sign: %v", err)
+	}
+
+	envJSON, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("failed to marshal: %v", err)
+	}
+
+	// Set up stub server with the decrypt-failing envelope
+	stubServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		response := map[string]interface{}{
+			"ok": true,
+			"result": []interface{}{
+				map[string]interface{}{
+					"update_id": 100,
+					"message": map[string]interface{}{
+						"text": string(envJSON),
+					},
+				},
+			},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer stubServer.Close()
+
+	stubGuard := &allowGuard{}
+	stubAudit := audit.NewFakeSink()
+
+	adapter := telegram.NewAdapter(telegram.Config{
+		BotToken:          "test-token",
+		BaseURL:           stubServer.URL,
+		HTTPClient:        stubServer.Client(),
+		TrustedSigningKey: operatorEdPub,
+		TrustedX25519Pub:  operatorX25519Pub,
+		OrchestratorPriv:  orchX25519Priv,  // This won't match wrongRecipPub, so decrypt fails
+		ContentGuard:      stubGuard,
+		ReplayCache:       envelope.NewReplayCache(60 * time.Second),
+		AuditSink:         stubAudit,
+	})
+
+	// TC-154-05: Next() should drop the goal (ok=false)
+	_, ok, _ := adapter.Next()
+	if ok {
+		t.Error("TC-154-05: adapter.Next() should have dropped the decrypt-failing goal (ok should be false)")
+	}
+
+	// TC-154-05: Audit sink should record a rejection event with reason "decryption_failed"
+	events := stubAudit.Events()
+	if len(events) == 0 {
+		t.Fatal("TC-154-05: no audit events emitted for decrypt failure")
+	}
+
+	found := false
+	for _, ev := range events {
+		if ev.Action == audit.ActionChannelReject && ev.Detail.Reason == "decryption_failed" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("TC-154-05: expected audit reason 'decryption_failed', got events: %#v", events)
+	}
+}
