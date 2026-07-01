@@ -28,7 +28,7 @@
 | Tool | Scope |
 |------|-------|
 | Go `testing` (stdlib) | Unit and integration tests (60 `*_test.go` files); deterministic fakes (`FakeSink`, `FakeRunner`) exercise seams without the live stack. |
-| Fitness functions (`make fitness`) | Executable architecture guards F-001…F-007 — no-docker, gate-blocking, supervisor/audit/policy isolation, no-srt, exec-sandbox-default. Block-severity; see `docs/spec/fitness-functions.md`. |
+| Fitness functions (`make fitness`) | Executable architecture guards F-001…F-014 — no-docker, gate-blocking, no-srt, exec-sandbox-default, diagrams-render, the isolation invariants (supervisor/audit/policy/envelope/worker-transport/memory-guard leaves), and the no-code-authoring / no-self-repo-sink bright lines (orchestrator, LLM planner, recipe sink). Block-severity; see `docs/spec/fitness-functions.md`. |
 | L5/L6 validation harness | End-to-end acceptance against live containment (`make l6-preflight` / `l6-probe`); the verification ladder's L5/L6 evidence is what promotes a task to ✅. |
 
 ## External tools & blocks

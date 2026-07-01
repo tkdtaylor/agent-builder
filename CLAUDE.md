@@ -76,7 +76,7 @@ Hooks run automatically and are gated by profile level. Control via environment
 variables:
 
 ```bash
-export CLAUDE_HOOK_PROFILE=minimal    # Safety hooks only (secret protection, block-no-verify, config-protection, protect-checkout)
+export CLAUDE_HOOK_PROFILE=minimal    # Safety + commit-hygiene hooks only (protect-secrets, block-no-verify, no-commit-on-main, config-protection, protect-checkout, session-lock/-touch)
 export CLAUDE_HOOK_PROFILE=standard   # + workflow hooks (plan restructuring, compaction, checkpoints) — default
 export CLAUDE_HOOK_PROFILE=strict     # + formatting, fitness, notifications (batch-format-typecheck, edit-tracker, check-fitness, desktop-notify)
 export CLAUDE_DISABLED_HOOKS=desktop-notify,batch-format-typecheck  # Disable specific hooks

@@ -1,7 +1,7 @@
 # Behaviors
 
 **Project:** agent-builder
-**Last updated:** 2026-06-28 (task 082 — agent-builder-worker recipe)
+**Last updated:** 2026-07-01 (through task 147 / B-037 — async control plane, conversational intake + clarifier, channel escalation, dynamic model-tier classifier)
 
 What the system does, observably. Each behavior describes a triggering condition, the system's response, and any externally-visible side effects. This is the "you can verify this from outside the process" view.
 
