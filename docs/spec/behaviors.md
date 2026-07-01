@@ -248,6 +248,20 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 
 ---
 
+### B-038: Telegram inbound auth mode gates each update ahead of the envelope pipeline
+
+- **Trigger:** the `telegram.Adapter`'s `Next()` processes an inbound `getUpdates` message. `AGENT_BUILDER_TELEGRAM_AUTH_MODE` (resolved once at `orchestrate` assembly, unset ⇒ `envelope`) selects the branch a mode decision takes for that update **before** the envelope pipeline. The sender ID (Telegram `message.from.id`, falling back to `message.chat.id`) is consulted here and only here.
+- **Response:** the mode decision (owned by `internal/channel/telegram/authz`) returns one of four actions per update:
+  - **`envelope` (default):** route the update through `envelope.VerifyAndOpen` exactly as before — the sender ID is ignored, and a non-envelope-shaped payload is rejected with the existing `envelope_parse_failed` reason. Byte-for-byte identical to the pre-task adapter when the mode is unset.
+  - **`disabled`:** reject every update (envelope-shaped or plaintext) before any parse/armor/authz work, with a distinct `channel_disabled` audit reason. `VerifyAndOpen` and `armor.Guard` are never invoked.
+  - **`allowlist`:** accept **plaintext** commands only from sender IDs present in the persisted approved-sender store (normalized numeric membership). An approved sender's plaintext is size-capped (SEC-001/002), routed through `armor.Guard`, and then `deriveMessage` — the SAME pipeline the envelope path uses after opening, never bypassing armor (`plaintext_accepted` audit reason). An unapproved sender (or a malformed sender ID, or an envelope-shaped payload from an unapproved sender) is rejected before armor with a `sender_not_approved` reason — plaintext-only modes never fall back to envelope verification.
+  - **`pairing` / `open`:** recognized by config validation (task 151); their runtime accept paths land in tasks 152/153.
+- **Side effects:** every accept and every reject emits an `audit.ActionChannelReject` event carrying the mode-specific reason via the existing `audit.Sink` — an accepted plaintext update emits `plaintext_accepted` only after it yields a message. In store-consulting modes the persisted `0600` JSON approved-sender store (`AGENT_BUILDER_TELEGRAM_APPROVED_STORE`) is loaded once at startup and seeded (additively) from `AGENT_BUILDER_TELEGRAM_APPROVED_IDS`; approvals survive process restarts.
+- **Failure modes:** an unrecognized `AGENT_BUILDER_TELEGRAM_AUTH_MODE`, a blank `AGENT_BUILDER_TELEGRAM_APPROVED_STORE` in a store-consulting mode, a malformed existing store file, an unwritable store path, or a non-numeric static approved ID is a fail-fast `ExitUsage` configuration error at assembly — never a nil-adapter panic at first `Next()`. Plaintext modes forfeit the envelope's end-to-end confidentiality and per-message replay protection (the permanent tradeoff named in ADR 063 Decision 2); `armor`, the size caps, and audit remain load-bearing on every accepted plaintext.
+- **References:** ADR 063 (Decisions 1/2/4/5); task 151; `docs/tasks/test-specs/151-telegram-authz-mode-plumbing-test-spec.md`; `docs/spec/configuration.md` (`AGENT_BUILDER_TELEGRAM_AUTH_MODE` / `_APPROVED_STORE` / `_APPROVED_IDS`).
+
+---
+
 ### B-029: status query returns an immediate registry snapshot over the Reporter
 
 - **Trigger:** the `orchestrate` control loop routes a `MsgStatus` to the status handler. An empty GoalID is a fleet-wide query; a non-empty GoalID is a per-goal query. The handler is wired at assembly time from the shared `StatusRegistry` and `Reporter`.

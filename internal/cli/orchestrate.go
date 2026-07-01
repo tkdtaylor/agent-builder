@@ -17,6 +17,7 @@ import (
 
 	"github.com/tkdtaylor/agent-builder/internal/audit"
 	"github.com/tkdtaylor/agent-builder/internal/channel/telegram"
+	"github.com/tkdtaylor/agent-builder/internal/channel/telegram/authz"
 	"github.com/tkdtaylor/agent-builder/internal/channel/worker"
 	"github.com/tkdtaylor/agent-builder/internal/envelope"
 	"github.com/tkdtaylor/agent-builder/internal/executor"
@@ -117,6 +118,20 @@ const (
 	// used by ReplyAdapter to seal outbound envelopes for the operator. Required for
 	// outbound replies.
 	EnvTelegramOpX25519Pub = "AGENT_BUILDER_TELEGRAM_OP_X25519_PUB"
+
+	// EnvTelegramAuthMode selects the inbound sender-ID auth mode (ADR 063). Unset (or
+	// "envelope") reproduces today's adapter exactly. Recognized: envelope, allowlist,
+	// pairing, open, disabled. An unrecognized value is a fail-fast ExitUsage error.
+	EnvTelegramAuthMode = "AGENT_BUILDER_TELEGRAM_AUTH_MODE"
+	// EnvTelegramApprovedStore is the direct path to the persisted 0600 JSON
+	// approved-sender store (ADR 063 Decision 4). Required (fail-fast if blank) for any
+	// mode that consults sender-ID approval (allowlist; pairing in task 152); ignored by
+	// envelope/disabled/open.
+	EnvTelegramApprovedStore = "AGENT_BUILDER_TELEGRAM_APPROVED_STORE"
+	// EnvTelegramApprovedIDs is the static, comma-separated list of approved numeric
+	// sender IDs seeded into the store at startup in allowlist mode (ADR 063 Decision 4).
+	// Seeding is additive (union), never a destructive overwrite of an existing store.
+	EnvTelegramApprovedIDs = "AGENT_BUILDER_TELEGRAM_APPROVED_IDS"
 )
 
 // defaultTelegramBaseURL is the Telegram Bot API base URL used when
@@ -1107,6 +1122,67 @@ func inboundFromEnv(getenv func(string) string, stdin io.Reader, sink audit.Sink
 	}
 }
 
+// assembleTelegramAuthMode reads AGENT_BUILDER_TELEGRAM_AUTH_MODE and, for modes that
+// consult sender-ID approval, constructs + seeds the persisted approved-sender store
+// from AGENT_BUILDER_TELEGRAM_APPROVED_STORE / _APPROVED_IDS (ADR 063 Decisions 1/4/5).
+//
+// Fail-fast (errUsageConfig ⇒ ExitUsage), never a nil-adapter panic at first Next():
+//   - an unrecognized AUTH_MODE value is an error (ParseMode);
+//   - a blank APPROVED_STORE path in a store-consulting mode (allowlist/pairing) is an error;
+//   - a malformed existing store file, an unwritable store path, or a non-numeric static
+//     approved ID is an error.
+//
+// Returns the resolved mode and the store (nil for envelope/disabled/open, which never
+// read the store). Seeding is additive (union): it loads any existing store, adds the
+// static IDs, and persists — it never removes IDs already on disk, so task 152's pairing
+// mode can grow the same store in-chat without a later allowlist restart wiping it.
+func assembleTelegramAuthMode(getenv func(string) string) (authz.Mode, *authz.Store, error) {
+	mode, err := authz.ParseMode(getenv(EnvTelegramAuthMode))
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: %s: %v", errUsageConfig, EnvTelegramAuthMode, err)
+	}
+
+	if !mode.ConsultsStore() {
+		// envelope / disabled / open never read the approved store.
+		return mode, nil, nil
+	}
+
+	storePath := strings.TrimSpace(getenv(EnvTelegramApprovedStore))
+	if storePath == "" {
+		return "", nil, fmt.Errorf("%w: %s is required when %s=%s", errUsageConfig, EnvTelegramApprovedStore, EnvTelegramAuthMode, mode)
+	}
+
+	store := authz.NewStore(storePath)
+	// Load any existing approvals first — a missing file is graceful absence, a malformed
+	// file is a fail-fast error so a corrupted store is noticed, not silently emptied.
+	if err := store.Load(); err != nil {
+		return "", nil, fmt.Errorf("%w: %s: %v", errUsageConfig, EnvTelegramApprovedStore, err)
+	}
+
+	// Seed the static approved IDs (allowlist). Additive/union: existing IDs are kept.
+	rawIDs := strings.TrimSpace(getenv(EnvTelegramApprovedIDs))
+	if rawIDs != "" {
+		for _, part := range strings.Split(rawIDs, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if err := store.Add(part); err != nil {
+				return "", nil, fmt.Errorf("%w: %s: %v", errUsageConfig, EnvTelegramApprovedIDs, err)
+			}
+		}
+	}
+
+	// Persist once at startup (creates the 0600 file if absent). This both writes the
+	// seeded IDs and validates the path is writable (an unwritable path is fail-fast here,
+	// not a first-Next() surprise).
+	if err := store.Persist(); err != nil {
+		return "", nil, fmt.Errorf("%w: %s: %v", errUsageConfig, EnvTelegramApprovedStore, err)
+	}
+
+	return mode, store, nil
+}
+
 // assembleTelegramInbound constructs the telegram.Adapter (inbound MessageSource)
 // and telegram.ReplyAdapter (outbound Reporter) from AGENT_BUILDER_TELEGRAM_* env vars.
 // All required vars must be set; absence is a fail-fast assembly error (never a
@@ -1115,6 +1191,14 @@ func inboundFromEnv(getenv func(string) string, stdin io.Reader, sink audit.Sink
 // Key material is decoded from hex but never logged (consistent with the existing
 // telegram adapter and worker transport).
 func assembleTelegramInbound(getenv func(string) string, sink audit.Sink, logger *slog.Logger) (*telegram.Adapter, *telegram.ReplyAdapter, error) {
+	// Resolve the inbound auth mode (ADR 063) and, for store-consulting modes, build+seed
+	// the persisted approved-sender store. Fail-fast on an unknown mode / blank-or-bad
+	// store path before decoding any crypto key material.
+	authMode, authStore, err := assembleTelegramAuthMode(getenv)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	botToken := strings.TrimSpace(getenv(EnvTelegramBotToken))
 	if botToken == "" {
 		return nil, nil, fmt.Errorf("orchestrate: %s is required when %s=telegram", EnvTelegramBotToken, EnvInbound)
@@ -1208,6 +1292,8 @@ func assembleTelegramInbound(getenv func(string) string, sink audit.Sink, logger
 		ContentGuard:      guard,
 		AuditSink:         sink,
 		Logger:            logger,
+		AuthMode:          authMode,
+		AuthStore:         authStore,
 	})
 
 	replyAdapter := telegram.NewReplyAdapter(telegram.ReplyConfig{
@@ -1265,5 +1351,10 @@ When AGENT_BUILDER_INBOUND=telegram, these are also required:
   AGENT_BUILDER_TELEGRAM_ORCH_ED_PRIV orchestrator Ed25519 private key (hex 64 bytes)
   AGENT_BUILDER_TELEGRAM_OP_X25519_PUB operator X25519 public key for outbound (hex 32 bytes)
   AGENT_BUILDER_TELEGRAM_CHAT_ID     Telegram chat ID for outbound replies
+
+Optional inbound auth mode (ADR 063; default "envelope" = today's behavior):
+  AGENT_BUILDER_TELEGRAM_AUTH_MODE      "envelope" (default) | "allowlist" | "pairing" | "open" | "disabled"
+  AGENT_BUILDER_TELEGRAM_APPROVED_STORE path to 0600 JSON approved-sender store (required for allowlist/pairing)
+  AGENT_BUILDER_TELEGRAM_APPROVED_IDS   comma-separated numeric sender IDs seeded into the store (allowlist)
 `)
 }
