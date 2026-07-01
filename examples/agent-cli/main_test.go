@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -17,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tkdtaylor/agent-builder/internal/channel/telegram"
 	"github.com/tkdtaylor/agent-builder/internal/envelope"
 )
 
@@ -1276,6 +1278,40 @@ func TestTC150_01_RealReplyRoundTrip(t *testing.T) {
 
 	const reportedText = "Approve plan? 2 sub-goals: docs-fix, coding-agent"
 
+	// Set up a stub server to capture the ReplyAdapter's sendMessage POST
+	server, bodyCapture, _ := stubSendMessageServer(t)
+
+	// Create a real ReplyAdapter wired to the stub server
+	adapter := telegram.NewReplyAdapter(telegram.ReplyConfig{
+		BotToken:   "TEST_TOKEN_150",
+		BaseURL:    server.URL,
+		ChatID:     "12345",
+		HTTPClient: server.Client(),
+		OrchEdPriv: orchEdPriv,
+		OrchXPriv:  orchXPriv,
+		OpXPub:     opXPub,
+	})
+
+	// Call Report to generate the real sealed+signed envelope (TC-150-01 LOAD-BEARING)
+	err := adapter.Report(context.Background(), reportedText)
+	if err != nil {
+		t.Fatalf("adapter.Report failed: %v", err)
+	}
+
+	// Extract the emitted envelope JSON from the stub's captured POST body
+	// (mirrors reply_test.go's TestTC098_03_RoundTrip pattern)
+	var outer struct {
+		ChatID string `json:"chat_id"`
+		Text   string `json:"text"`
+	}
+	if err := json.Unmarshal(*bodyCapture, &outer); err != nil {
+		t.Fatalf("parse outer body: %v — body: %s", err, *bodyCapture)
+	}
+	var emittedEnv envelope.Envelope
+	if err := json.Unmarshal([]byte(outer.Text), &emittedEnv); err != nil {
+		t.Fatalf("parse emitted envelope: %v — text: %s", err, outer.Text)
+	}
+
 	// Build a keyfile with the orchestrator's public keys and operator's private keys
 	keyfilePath := filepath.Join(t.TempDir(), "test_keyfile.json")
 	keyMaterial := &KeyMaterial{
@@ -1287,41 +1323,14 @@ func TestTC150_01_RealReplyRoundTrip(t *testing.T) {
 		t.Fatalf("WriteKeyfile failed: %v", err)
 	}
 
-	// We manually construct the envelope like ReplyAdapter.Report does.
-	// Seal the plaintext
-	ciphertext, nonce, err := envelope.Seal([]byte(reportedText), orchXPriv, opXPub)
-	if err != nil {
-		t.Fatalf("Seal failed: %v", err)
-	}
-
-	// Build and sign the envelope
-	env := envelope.Envelope{
-		From:    "orchestrator",
-		To:      "operator",
-		Nonce:   hex.EncodeToString(nonce[:]),
-		TS:      envelope.NowRFC3339(),
-		Payload: hex.EncodeToString(ciphertext),
-		Sig:     "",
-	}
-
-	env, err = envelope.Sign(env, orchEdPriv)
-	if err != nil {
-		t.Fatalf("Sign failed: %v", err)
-	}
-
-	// Marshal to JSON (as the ReplyAdapter does)
-	envJSON, err := marshalJSON(env)
-	if err != nil {
-		t.Fatalf("marshal envelope: %v", err)
-	}
-
-	// Write the envelope to a temp file
+	// Write the REAL emitted envelope to a temp file
+	envJSON, _ := marshalJSON(emittedEnv)
 	envelopePath := filepath.Join(t.TempDir(), "reply.json")
 	if err := os.WriteFile(envelopePath, envJSON, 0644); err != nil {
 		t.Fatalf("write envelope file: %v", err)
 	}
 
-	// Run reply-open with the envelope file
+	// Run reply-open with the REAL emitted envelope (TC-150-01 LOAD-BEARING)
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	config := Config{
@@ -1339,7 +1348,8 @@ func TestTC150_01_RealReplyRoundTrip(t *testing.T) {
 		t.Errorf("reply-open exit code: expected %d, got %d, stderr: %s", ExitOK, exitCode, stderr.String())
 	}
 
-	// TC-150-01: stdout must contain the exact plaintext (plus optional trailing newline)
+	// TC-150-01 LOAD-BEARING: stdout must be the exact plaintext byte-for-byte
+	// (proves compatibility with the LIVE ReplyAdapter.Report wire format, not a hand-built envelope)
 	stdoutStr := stdout.String()
 	stdoutTrimmed := strings.TrimSuffix(stdoutStr, "\n")
 	if stdoutTrimmed != reportedText {
@@ -1639,7 +1649,7 @@ func TestTC150_04_FailClosed(t *testing.T) {
 					OrchXPub:      orchXPub,
 				}
 			},
-			"decryption failed",
+			"authentication failed",
 		},
 	}
 
@@ -1672,8 +1682,9 @@ func TestTC150_04_FailClosed(t *testing.T) {
 			if stdout.String() != "" {
 				t.Error("stdout should be empty on failure")
 			}
-			if !strings.Contains(stderr.String(), tt.errorMsg) && !strings.Contains(stderr.String(), "error:") {
-				t.Errorf("stderr missing expected error, got: %s", stderr.String())
+			// TC-150-04: assert specific error category (not just any "error:" string)
+			if !strings.Contains(stderr.String(), tt.errorMsg) {
+				t.Errorf("stderr missing expected error category %q, got: %s", tt.errorMsg, stderr.String())
 			}
 		})
 	}
@@ -1991,36 +2002,45 @@ func TestTC150_08_KeyfileFailures(t *testing.T) {
 	}
 }
 
-// TC-150-01 edge case: multi-line plaintext with embedded newlines
+// TC-150-01 edge case: multi-line plaintext with embedded newlines (also via real ReplyAdapter)
 func TestTC150_01_EmbeddedNewlines(t *testing.T) {
 	orchEdPub, orchEdPriv, orchXPub, orchXPriv, opXPub, opXPriv := generateReplyKeys(t)
 
 	const reportedText = "line 1\nline 2\nline 3"
 
-	ciphertext, nonce, err := envelope.Seal([]byte(reportedText), orchXPriv, opXPub)
+	// Set up stub server and real ReplyAdapter
+	server, bodyCapture, _ := stubSendMessageServer(t)
+
+	adapter := telegram.NewReplyAdapter(telegram.ReplyConfig{
+		BotToken:   "TEST_TOKEN_150",
+		BaseURL:    server.URL,
+		ChatID:     "12345",
+		HTTPClient: server.Client(),
+		OrchEdPriv: orchEdPriv,
+		OrchXPriv:  orchXPriv,
+		OpXPub:     opXPub,
+	})
+
+	// Call Report with embedded-newline plaintext
+	err := adapter.Report(context.Background(), reportedText)
 	if err != nil {
-		t.Fatalf("Seal failed: %v", err)
+		t.Fatalf("adapter.Report failed: %v", err)
 	}
 
-	env := envelope.Envelope{
-		From:    "orchestrator",
-		To:      "operator",
-		Nonce:   hex.EncodeToString(nonce[:]),
-		TS:      envelope.NowRFC3339(),
-		Payload: hex.EncodeToString(ciphertext),
-		Sig:     "",
+	// Extract real emitted envelope from stub
+	var outer struct {
+		ChatID string `json:"chat_id"`
+		Text   string `json:"text"`
+	}
+	if err := json.Unmarshal(*bodyCapture, &outer); err != nil {
+		t.Fatalf("parse outer body: %v", err)
+	}
+	var emittedEnv envelope.Envelope
+	if err := json.Unmarshal([]byte(outer.Text), &emittedEnv); err != nil {
+		t.Fatalf("parse emitted envelope: %v", err)
 	}
 
-	env, err = envelope.Sign(env, orchEdPriv)
-	if err != nil {
-		t.Fatalf("Sign failed: %v", err)
-	}
-
-	envJSON, err := marshalJSON(env)
-	if err != nil {
-		t.Fatalf("marshal envelope: %v", err)
-	}
-
+	// Create keyfile
 	keyfilePath := filepath.Join(t.TempDir(), "keyfile.json")
 	keyMat := &KeyMaterial{
 		OperatorXPriv: opXPriv,
@@ -2031,9 +2051,15 @@ func TestTC150_01_EmbeddedNewlines(t *testing.T) {
 		t.Fatalf("WriteKeyfile: %v", err)
 	}
 
+	// Write real envelope to file
+	envJSON, _ := marshalJSON(emittedEnv)
+	envelopePath := filepath.Join(t.TempDir(), "reply.json")
+	if err := os.WriteFile(envelopePath, envJSON, 0644); err != nil { t.Fatalf("write envelope: %v", err) }
+
+	// Decrypt with reply-open
 	stdout := &bytes.Buffer{}
 	config := Config{
-		Args:   []string{"reply-open", "--keyfile", keyfilePath, "--envelope", string(envJSON)},
+		Args:   []string{"reply-open", "--keyfile", keyfilePath, envelopePath},
 		Stdout: stdout,
 		Stderr: &bytes.Buffer{},
 	}
@@ -2043,7 +2069,7 @@ func TestTC150_01_EmbeddedNewlines(t *testing.T) {
 		t.Errorf("exit %d", exitCode)
 	}
 
-	// TC-150-01 edge case: embedded newlines preserved, plus optional trailing newline added by CLI
+	// TC-150-01 edge case: embedded newlines preserved through real adapter round-trip
 	stdoutStr := stdout.String()
 	stdoutTrimmed := strings.TrimSuffix(stdoutStr, "\n")
 	if stdoutTrimmed != reportedText {
