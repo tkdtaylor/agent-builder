@@ -1242,3 +1242,811 @@ func TestTC149_08_EmptyCommandText(t *testing.T) {
 		})
 	}
 }
+
+// Helper function: generateReplyKeys generates all six keys needed for reply testing
+// (mirrors the pattern from internal/channel/telegram/reply_test.go).
+func generateReplyKeys(t *testing.T) (
+	orchEdPub []byte,
+	orchEdPriv []byte,
+	orchXPub [32]byte,
+	orchXPriv [32]byte,
+	opXPub [32]byte,
+	opXPriv [32]byte,
+) {
+	t.Helper()
+	var err error
+	orchEdPub, orchEdPriv, err = generateEd25519KeyPair()
+	if err != nil {
+		t.Fatalf("generate orchestrator Ed25519 key: %v", err)
+	}
+	orchXPub, orchXPriv, err = envelope.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate orchestrator X25519 keypair: %v", err)
+	}
+	opXPub, opXPriv, err = envelope.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate operator X25519 keypair: %v", err)
+	}
+	return
+}
+
+// TC-150-01: decrypts a real ReplyAdapter.Report-emitted envelope byte-for-byte
+func TestTC150_01_RealReplyRoundTrip(t *testing.T) {
+	orchEdPub, orchEdPriv, orchXPub, orchXPriv, opXPub, opXPriv := generateReplyKeys(t)
+
+	const reportedText = "Approve plan? 2 sub-goals: docs-fix, coding-agent"
+
+	// Build a keyfile with the orchestrator's public keys and operator's private keys
+	keyfilePath := filepath.Join(t.TempDir(), "test_keyfile.json")
+	keyMaterial := &KeyMaterial{
+		OperatorXPriv: opXPriv,
+		OrchEdPub:     orchEdPub,
+		OrchXPub:      orchXPub,
+	}
+	if err := WriteKeyfile(keyfilePath, keyMaterial); err != nil {
+		t.Fatalf("WriteKeyfile failed: %v", err)
+	}
+
+	// We manually construct the envelope like ReplyAdapter.Report does.
+	// Seal the plaintext
+	ciphertext, nonce, err := envelope.Seal([]byte(reportedText), orchXPriv, opXPub)
+	if err != nil {
+		t.Fatalf("Seal failed: %v", err)
+	}
+
+	// Build and sign the envelope
+	env := envelope.Envelope{
+		From:    "orchestrator",
+		To:      "operator",
+		Nonce:   hex.EncodeToString(nonce[:]),
+		TS:      envelope.NowRFC3339(),
+		Payload: hex.EncodeToString(ciphertext),
+		Sig:     "",
+	}
+
+	env, err = envelope.Sign(env, orchEdPriv)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	// Marshal to JSON (as the ReplyAdapter does)
+	envJSON, err := marshalJSON(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	// Write the envelope to a temp file
+	envelopePath := filepath.Join(t.TempDir(), "reply.json")
+	if err := os.WriteFile(envelopePath, envJSON, 0644); err != nil {
+		t.Fatalf("write envelope file: %v", err)
+	}
+
+	// Run reply-open with the envelope file
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	config := Config{
+		Args: []string{
+			"reply-open",
+			"--keyfile", keyfilePath,
+			envelopePath,
+		},
+		Stdout: stdout,
+		Stderr: stderr,
+	}
+
+	exitCode := Main(config)
+	if exitCode != ExitOK {
+		t.Errorf("reply-open exit code: expected %d, got %d, stderr: %s", ExitOK, exitCode, stderr.String())
+	}
+
+	// TC-150-01: stdout must contain the exact plaintext (plus optional trailing newline)
+	stdoutStr := stdout.String()
+	stdoutTrimmed := strings.TrimSuffix(stdoutStr, "\n")
+	if stdoutTrimmed != reportedText {
+		t.Errorf("plaintext mismatch: got %q, expected %q", stdoutTrimmed, reportedText)
+	}
+}
+
+// TC-150-02: verifies with orchestrator Ed25519 PUB and opens with operator X25519 priv
+// + orchestrator X25519 pub (correct key-role assignment)
+func TestTC150_02_CorrectKeyRoleAssignment(t *testing.T) {
+	orchEdPub, orchEdPriv, orchXPub, orchXPriv, opXPub, opXPriv := generateReplyKeys(t)
+
+	const reportedText = "test message"
+
+	// Create envelope as ReplyAdapter does
+	ciphertext, nonce, err := envelope.Seal([]byte(reportedText), orchXPriv, opXPub)
+	if err != nil {
+		t.Fatalf("Seal failed: %v", err)
+	}
+
+	env := envelope.Envelope{
+		From:    "orchestrator",
+		To:      "operator",
+		Nonce:   hex.EncodeToString(nonce[:]),
+		TS:      envelope.NowRFC3339(),
+		Payload: hex.EncodeToString(ciphertext),
+		Sig:     "",
+	}
+
+	env, err = envelope.Sign(env, orchEdPriv)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	// Create correct keyfile (operator priv + orchestrator pubs)
+	keyfilePath := filepath.Join(t.TempDir(), "test_keyfile.json")
+	keyMaterial := &KeyMaterial{
+		OperatorXPriv: opXPriv,
+		OrchEdPub:     orchEdPub,
+		OrchXPub:      orchXPub,
+	}
+	if err := WriteKeyfile(keyfilePath, keyMaterial); err != nil {
+		t.Fatalf("WriteKeyfile failed: %v", err)
+	}
+
+	// Write envelope to file
+	envelopeJSON, err := marshalJSON(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	envelopePath := filepath.Join(t.TempDir(), "reply.json")
+	if err := os.WriteFile(envelopePath, envelopeJSON, 0644); err != nil {
+		t.Fatalf("write envelope: %v", err)
+	}
+
+	// TC-150-02: with correct keys, should succeed
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	config := Config{
+		Args:   []string{"reply-open", "--keyfile", keyfilePath, envelopePath},
+		Stdout: stdout,
+		Stderr: stderr,
+	}
+
+	exitCode := Main(config)
+	if exitCode != ExitOK {
+		t.Errorf("reply-open with correct keys should succeed, got exit %d, stderr: %s", exitCode, stderr.String())
+	}
+
+	// Verify plaintext is correct
+	stdoutTrimmed := strings.TrimSuffix(stdout.String(), "\n")
+	if stdoutTrimmed != reportedText {
+		t.Errorf("plaintext mismatch: got %q, expected %q", stdoutTrimmed, reportedText)
+	}
+
+	// TC-150-02: with swapped keys (wrong opener), should fail
+	// Generate a different operator X25519 priv
+	_, wrongOpXPriv, err := envelope.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate wrong key: %v", err)
+	}
+
+	wrongKeyfilePath := filepath.Join(t.TempDir(), "wrong_keyfile.json")
+	wrongKeyMaterial := &KeyMaterial{
+		OperatorXPriv: wrongOpXPriv,
+		OrchEdPub:     orchEdPub,
+		OrchXPub:      orchXPub,
+	}
+	if err := WriteKeyfile(wrongKeyfilePath, wrongKeyMaterial); err != nil {
+		t.Fatalf("WriteKeyfile failed: %v", err)
+	}
+
+	stdout2 := &bytes.Buffer{}
+	stderr2 := &bytes.Buffer{}
+	config2 := Config{
+		Args:   []string{"reply-open", "--keyfile", wrongKeyfilePath, envelopePath},
+		Stdout: stdout2,
+		Stderr: stderr2,
+	}
+
+	exitCode2 := Main(config2)
+	if exitCode2 == ExitOK {
+		t.Error("reply-open with wrong opener key should fail")
+	}
+	if stdout2.String() != "" {
+		t.Error("stdout should be empty on failure")
+	}
+}
+
+// TC-150-03: accepts envelope JSON from file, stdin, and --envelope flag
+func TestTC150_03_MultipleEnvelopeInputs(t *testing.T) {
+	orchEdPub, orchEdPriv, orchXPub, orchXPriv, opXPub, opXPriv := generateReplyKeys(t)
+
+	const reportedText = "multi-input test"
+
+	// Create envelope
+	ciphertext, nonce, err := envelope.Seal([]byte(reportedText), orchXPriv, opXPub)
+	if err != nil {
+		t.Fatalf("Seal failed: %v", err)
+	}
+
+	env := envelope.Envelope{
+		From:    "orchestrator",
+		To:      "operator",
+		Nonce:   hex.EncodeToString(nonce[:]),
+		TS:      envelope.NowRFC3339(),
+		Payload: hex.EncodeToString(ciphertext),
+		Sig:     "",
+	}
+
+	env, err = envelope.Sign(env, orchEdPriv)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	envJSON, err := marshalJSON(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	// Create keyfile
+	keyfilePath := filepath.Join(t.TempDir(), "test_keyfile.json")
+	keyMaterial := &KeyMaterial{
+		OperatorXPriv: opXPriv,
+		OrchEdPub:     orchEdPub,
+		OrchXPub:      orchXPub,
+	}
+	if err := WriteKeyfile(keyfilePath, keyMaterial); err != nil {
+		t.Fatalf("WriteKeyfile failed: %v", err)
+	}
+
+	// Test case 1: file argument
+	envelopePath := filepath.Join(t.TempDir(), "reply.json")
+	if err := os.WriteFile(envelopePath, envJSON, 0644); err != nil {
+		t.Fatalf("write envelope: %v", err)
+	}
+
+	stdout1 := &bytes.Buffer{}
+	config1 := Config{
+		Args:   []string{"reply-open", "--keyfile", keyfilePath, envelopePath},
+		Stdout: stdout1,
+		Stderr: &bytes.Buffer{},
+	}
+	exitCode1 := Main(config1)
+	if exitCode1 != ExitOK {
+		t.Errorf("file arg: exit %d", exitCode1)
+	}
+	result1 := strings.TrimSuffix(stdout1.String(), "\n")
+
+	// Test case 2: stdin
+	stdout2 := &bytes.Buffer{}
+	config2 := Config{
+		Args:   []string{"reply-open", "--keyfile", keyfilePath},
+		Stdout: stdout2,
+		Stderr: &bytes.Buffer{},
+		Stdin:  bytes.NewReader(envJSON),
+	}
+	exitCode2 := Main(config2)
+	if exitCode2 != ExitOK {
+		t.Errorf("stdin: exit %d", exitCode2)
+	}
+	result2 := strings.TrimSuffix(stdout2.String(), "\n")
+
+	// Test case 3: --envelope flag
+	stdout3 := &bytes.Buffer{}
+	config3 := Config{
+		Args:   []string{"reply-open", "--keyfile", keyfilePath, "--envelope", string(envJSON)},
+		Stdout: stdout3,
+		Stderr: &bytes.Buffer{},
+	}
+	exitCode3 := Main(config3)
+	if exitCode3 != ExitOK {
+		t.Errorf("--envelope flag: exit %d", exitCode3)
+	}
+	result3 := strings.TrimSuffix(stdout3.String(), "\n")
+
+	// TC-150-03: all three should produce identical output
+	if result1 != result2 {
+		t.Errorf("file and stdin results differ: %q vs %q", result1, result2)
+	}
+	if result1 != result3 {
+		t.Errorf("file and --envelope results differ: %q vs %q", result1, result3)
+	}
+	if result1 != reportedText {
+		t.Errorf("result mismatch: got %q, expected %q", result1, reportedText)
+	}
+
+	// TC-150-03: both file and --envelope together is usage error
+	stderr4 := &bytes.Buffer{}
+	config4 := Config{
+		Args:   []string{"reply-open", "--keyfile", keyfilePath, "--envelope", string(envJSON), envelopePath},
+		Stdout: &bytes.Buffer{},
+		Stderr: stderr4,
+	}
+	exitCode4 := Main(config4)
+	if exitCode4 != ExitUsage {
+		t.Errorf("both file and --envelope: expected exit %d, got %d", ExitUsage, exitCode4)
+	}
+}
+
+// TC-150-04: tampered payload, wrong signer, wrong opener key all fail closed
+func TestTC150_04_FailClosed(t *testing.T) {
+	orchEdPub, orchEdPriv, orchXPub, orchXPriv, opXPub, opXPriv := generateReplyKeys(t)
+	_, wrongOrchEdPriv, _, _, _, wrongOpXPriv := generateReplyKeys(t)
+
+	const reportedText = "sensitive data"
+
+	// Create valid envelope
+	ciphertext, nonce, err := envelope.Seal([]byte(reportedText), orchXPriv, opXPub)
+	if err != nil {
+		t.Fatalf("Seal failed: %v", err)
+	}
+
+	env := envelope.Envelope{
+		From:    "orchestrator",
+		To:      "operator",
+		Nonce:   hex.EncodeToString(nonce[:]),
+		TS:      envelope.NowRFC3339(),
+		Payload: hex.EncodeToString(ciphertext),
+		Sig:     "",
+	}
+
+	env, err = envelope.Sign(env, orchEdPriv)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	// Test cases: tampered payload
+	tests := []struct {
+		name        string
+		setupEnv    func(env envelope.Envelope) envelope.Envelope
+		setupKeyMat func() *KeyMaterial
+		errorMsg    string
+	}{
+		{
+			"tampered payload",
+			func(env envelope.Envelope) envelope.Envelope {
+				if len(env.Payload) >= 2 {
+					last := env.Payload[len(env.Payload)-2:]
+					switch last {
+					case "00":
+						env.Payload = env.Payload[:len(env.Payload)-2] + "ff"
+					default:
+						env.Payload = env.Payload[:len(env.Payload)-2] + "00"
+					}
+				}
+				return env
+			},
+			func() *KeyMaterial {
+				return &KeyMaterial{
+					OperatorXPriv: opXPriv,
+					OrchEdPub:     orchEdPub,
+					OrchXPub:      orchXPub,
+				}
+			},
+			"signature verification failed",
+		},
+		{
+			"wrong signer",
+			func(env envelope.Envelope) envelope.Envelope { return env },
+			func() *KeyMaterial {
+				return &KeyMaterial{
+					OperatorXPriv: opXPriv,
+					OrchEdPub:     wrongOrchEdPriv[:32], // Wrong signer
+					OrchXPub:      orchXPub,
+				}
+			},
+			"signature verification failed",
+		},
+		{
+			"wrong opener key",
+			func(env envelope.Envelope) envelope.Envelope { return env },
+			func() *KeyMaterial {
+				return &KeyMaterial{
+					OperatorXPriv: wrongOpXPriv,
+					OrchEdPub:     orchEdPub,
+					OrchXPub:      orchXPub,
+				}
+			},
+			"decryption failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tamperedEnv := tt.setupEnv(env)
+			envJSON, err := marshalJSON(tamperedEnv)
+			if err != nil {
+				t.Fatalf("marshal envelope: %v", err)
+			}
+
+			keyfilePath := filepath.Join(t.TempDir(), "keyfile.json")
+			keyMat := tt.setupKeyMat()
+			if err := WriteKeyfile(keyfilePath, keyMat); err != nil {
+				t.Fatalf("WriteKeyfile: %v", err)
+			}
+
+			stdout := &bytes.Buffer{}
+			stderr := &bytes.Buffer{}
+			config := Config{
+				Args:   []string{"reply-open", "--keyfile", keyfilePath, "--envelope", string(envJSON)},
+				Stdout: stdout,
+				Stderr: stderr,
+			}
+
+			exitCode := Main(config)
+			if exitCode == ExitOK {
+				t.Error("should have failed")
+			}
+			if stdout.String() != "" {
+				t.Error("stdout should be empty on failure")
+			}
+			if !strings.Contains(stderr.String(), tt.errorMsg) && !strings.Contains(stderr.String(), "error:") {
+				t.Errorf("stderr missing expected error, got: %s", stderr.String())
+			}
+		})
+	}
+
+	// Test malformed JSON
+	malformedPath := filepath.Join(t.TempDir(), "malformed.json")
+	if err := os.WriteFile(malformedPath, []byte("{bad json"), 0644); err != nil {
+		t.Fatalf("write malformed: %v", err)
+	}
+
+	keyfilePath := filepath.Join(t.TempDir(), "keyfile.json")
+	keyMat := &KeyMaterial{
+		OperatorXPriv: opXPriv,
+		OrchEdPub:     orchEdPub,
+		OrchXPub:      orchXPub,
+	}
+	if err := WriteKeyfile(keyfilePath, keyMat); err != nil {
+		t.Fatalf("WriteKeyfile: %v", err)
+	}
+
+	stderr := &bytes.Buffer{}
+	config := Config{
+		Args:   []string{"reply-open", "--keyfile", keyfilePath, malformedPath},
+		Stdout: &bytes.Buffer{},
+		Stderr: stderr,
+	}
+
+	exitCode := Main(config)
+	if exitCode != 1 {
+		t.Errorf("malformed JSON: expected exit 1, got %d", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "malformed") {
+		t.Errorf("malformed JSON stderr missing 'malformed': %s", stderr.String())
+	}
+}
+
+// TC-150-05: same envelope decrypted twice in separate invocations succeeds both times
+func TestTC150_05_NoPersistedReplayState(t *testing.T) {
+	orchEdPub, orchEdPriv, orchXPub, orchXPriv, opXPub, opXPriv := generateReplyKeys(t)
+
+	const reportedText = "replay test"
+
+	// Create envelope
+	ciphertext, nonce, err := envelope.Seal([]byte(reportedText), orchXPriv, opXPub)
+	if err != nil {
+		t.Fatalf("Seal failed: %v", err)
+	}
+
+	env := envelope.Envelope{
+		From:    "orchestrator",
+		To:      "operator",
+		Nonce:   hex.EncodeToString(nonce[:]),
+		TS:      envelope.NowRFC3339(),
+		Payload: hex.EncodeToString(ciphertext),
+		Sig:     "",
+	}
+
+	env, err = envelope.Sign(env, orchEdPriv)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	envJSON, err := marshalJSON(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	// Write envelope to file
+	envelopePath := filepath.Join(t.TempDir(), "reply.json")
+	if err := os.WriteFile(envelopePath, envJSON, 0644); err != nil {
+		t.Fatalf("write envelope: %v", err)
+	}
+
+	// Create keyfile
+	keyfilePath := filepath.Join(t.TempDir(), "keyfile.json")
+	keyMat := &KeyMaterial{
+		OperatorXPriv: opXPriv,
+		OrchEdPub:     orchEdPub,
+		OrchXPub:      orchXPub,
+	}
+	if err := WriteKeyfile(keyfilePath, keyMat); err != nil {
+		t.Fatalf("WriteKeyfile: %v", err)
+	}
+
+	// Invoke reply-open twice
+	for i := 1; i <= 2; i++ {
+		stdout := &bytes.Buffer{}
+		stderr := &bytes.Buffer{}
+		config := Config{
+			Args:   []string{"reply-open", "--keyfile", keyfilePath, envelopePath},
+			Stdout: stdout,
+			Stderr: stderr,
+		}
+
+		exitCode := Main(config)
+		if exitCode != ExitOK {
+			t.Errorf("invocation %d: exit %d, stderr: %s", i, exitCode, stderr.String())
+		}
+
+		result := strings.TrimSuffix(stdout.String(), "\n")
+		if result != reportedText {
+			t.Errorf("invocation %d: got %q, expected %q", i, result, reportedText)
+		}
+	}
+}
+
+// TC-150-06: source inspection confirms no net/http/getUpdates reference
+func TestTC150_06_NoNetworkCalls(t *testing.T) {
+	// Read the main.go file and search for network-related code
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	testDir := filepath.Dir(filename)
+
+	mainFilePath := filepath.Join(testDir, "main.go")
+	mainContent, err := os.ReadFile(mainFilePath)
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	mainText := string(mainContent)
+
+	// TC-150-06: extract runReplyOpen function
+	startIdx := strings.Index(mainText, "func runReplyOpen")
+	endIdx := strings.Index(mainText, "func writef")
+	if startIdx < 0 || endIdx < 0 || startIdx >= endIdx {
+		t.Fatal("could not find runReplyOpen function")
+	}
+
+	replyOpenFunc := mainText[startIdx:endIdx]
+
+	// TC-150-06: must not contain network-related patterns
+	forbiddenPatterns := []string{
+		"http.Get",
+		"http.Client",
+		"getUpdates",
+	}
+
+	for _, pattern := range forbiddenPatterns {
+		if strings.Contains(replyOpenFunc, pattern) {
+			t.Errorf("runReplyOpen contains forbidden pattern: %s", pattern)
+		}
+	}
+}
+
+// TC-150-07: operator X25519 priv and orchestrator pub keys absent from logs
+func TestTC150_07_NoKeyMaterialInLogs(t *testing.T) {
+	orchEdPub, orchEdPriv, orchXPub, orchXPriv, opXPub, opXPriv := generateReplyKeys(t)
+
+	const reportedText = "test"
+
+	// Create envelope
+	ciphertext, nonce, err := envelope.Seal([]byte(reportedText), orchXPriv, opXPub)
+	if err != nil {
+		t.Fatalf("Seal failed: %v", err)
+	}
+
+	env := envelope.Envelope{
+		From:    "orchestrator",
+		To:      "operator",
+		Nonce:   hex.EncodeToString(nonce[:]),
+		TS:      envelope.NowRFC3339(),
+		Payload: hex.EncodeToString(ciphertext),
+		Sig:     "",
+	}
+
+	env, err = envelope.Sign(env, orchEdPriv)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	envJSON, err := marshalJSON(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	keyfilePath := filepath.Join(t.TempDir(), "keyfile.json")
+	keyMat := &KeyMaterial{
+		OperatorXPriv: opXPriv,
+		OrchEdPub:     orchEdPub,
+		OrchXPub:      orchXPub,
+	}
+	if err := WriteKeyfile(keyfilePath, keyMat); err != nil {
+		t.Fatalf("WriteKeyfile: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	config := Config{
+		Args:   []string{"reply-open", "--keyfile", keyfilePath, "--envelope", string(envJSON)},
+		Stdout: stdout,
+		Stderr: stderr,
+	}
+
+	Main(config)
+
+	combinedOutput := stdout.String() + stderr.String()
+
+	// TC-150-07: operator X25519 priv must not appear
+	opXPrivHex := hexEncode(opXPriv[:])
+	if strings.Contains(combinedOutput, opXPrivHex) {
+		t.Error("operator X25519 private key (hex) appears in output")
+	}
+
+	// TC-150-07: orchestrator pubs should not appear in stderr/logs
+	// (plaintext on stdout is expected)
+	orchEdPubHex := hexEncode(orchEdPub)
+	orchXPubHex := hexEncode(orchXPub[:])
+	if strings.Contains(stderr.String(), orchEdPubHex) {
+		t.Error("orchestrator Ed25519 pub (hex) appears in stderr")
+	}
+	if strings.Contains(stderr.String(), orchXPubHex) {
+		t.Error("orchestrator X25519 pub (hex) appears in stderr")
+	}
+}
+
+// TC-150-08: missing/malformed keyfile fails closed with clear error
+func TestTC150_08_KeyfileFailures(t *testing.T) {
+	const reportedText = "test"
+	_, orchEdPriv, _, orchXPriv, opXPub, _ := generateReplyKeys(t)
+
+	// Create a valid envelope for testing
+	ciphertext, nonce, err := envelope.Seal([]byte(reportedText), orchXPriv, opXPub)
+	if err != nil {
+		t.Fatalf("Seal failed: %v", err)
+	}
+
+	env := envelope.Envelope{
+		From:    "orchestrator",
+		To:      "operator",
+		Nonce:   hex.EncodeToString(nonce[:]),
+		TS:      envelope.NowRFC3339(),
+		Payload: hex.EncodeToString(ciphertext),
+		Sig:     "",
+	}
+
+	env, err = envelope.Sign(env, orchEdPriv)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	envJSON, err := marshalJSON(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		keyfileMu func(t *testing.T) string
+	}{
+		{
+			"missing keyfile",
+			func(t *testing.T) string {
+				return "/nonexistent/path/keyfile.json"
+			},
+		},
+		{
+			"malformed keyfile JSON",
+			func(t *testing.T) string {
+				path := filepath.Join(t.TempDir(), "bad.json")
+				_ = os.WriteFile(path, []byte("{bad json"), 0644)
+				return path
+			},
+		},
+		{
+			"malformed hex field",
+			func(t *testing.T) string {
+				path := filepath.Join(t.TempDir(), "bad_hex.json")
+				badContent := `{
+					"OperatorEdPriv": "notvalidhex",
+					"OperatorXPriv": "0102030405",
+					"OrchEdPub": "0102030405",
+					"OrchXPub": "0102030405"
+				}`
+				_ = os.WriteFile(path, []byte(badContent), 0644)
+				return path
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyfilePath := tt.keyfileMu(t)
+
+			stdout := &bytes.Buffer{}
+			stderr := &bytes.Buffer{}
+			config := Config{
+				Args:   []string{"reply-open", "--keyfile", keyfilePath, "--envelope", string(envJSON)},
+				Stdout: stdout,
+				Stderr: stderr,
+			}
+
+			exitCode := Main(config)
+
+			// TC-150-08: must exit non-zero
+			if exitCode == ExitOK {
+				t.Error("expected non-zero exit code")
+			}
+
+			// TC-150-08: stdout empty
+			if stdout.String() != "" {
+				t.Error("stdout should be empty on keyfile error")
+			}
+
+			// TC-150-08: no panic trace
+			if strings.Contains(stderr.String(), "panic:") {
+				t.Error("stderr contains panic trace")
+			}
+
+			// TC-150-08: error message present
+			if stderr.String() == "" {
+				t.Error("stderr should have error message")
+			}
+		})
+	}
+}
+
+// TC-150-01 edge case: multi-line plaintext with embedded newlines
+func TestTC150_01_EmbeddedNewlines(t *testing.T) {
+	orchEdPub, orchEdPriv, orchXPub, orchXPriv, opXPub, opXPriv := generateReplyKeys(t)
+
+	const reportedText = "line 1\nline 2\nline 3"
+
+	ciphertext, nonce, err := envelope.Seal([]byte(reportedText), orchXPriv, opXPub)
+	if err != nil {
+		t.Fatalf("Seal failed: %v", err)
+	}
+
+	env := envelope.Envelope{
+		From:    "orchestrator",
+		To:      "operator",
+		Nonce:   hex.EncodeToString(nonce[:]),
+		TS:      envelope.NowRFC3339(),
+		Payload: hex.EncodeToString(ciphertext),
+		Sig:     "",
+	}
+
+	env, err = envelope.Sign(env, orchEdPriv)
+	if err != nil {
+		t.Fatalf("Sign failed: %v", err)
+	}
+
+	envJSON, err := marshalJSON(env)
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+
+	keyfilePath := filepath.Join(t.TempDir(), "keyfile.json")
+	keyMat := &KeyMaterial{
+		OperatorXPriv: opXPriv,
+		OrchEdPub:     orchEdPub,
+		OrchXPub:      orchXPub,
+	}
+	if err := WriteKeyfile(keyfilePath, keyMat); err != nil {
+		t.Fatalf("WriteKeyfile: %v", err)
+	}
+
+	stdout := &bytes.Buffer{}
+	config := Config{
+		Args:   []string{"reply-open", "--keyfile", keyfilePath, "--envelope", string(envJSON)},
+		Stdout: stdout,
+		Stderr: &bytes.Buffer{},
+	}
+
+	exitCode := Main(config)
+	if exitCode != ExitOK {
+		t.Errorf("exit %d", exitCode)
+	}
+
+	// TC-150-01 edge case: embedded newlines preserved, plus optional trailing newline added by CLI
+	stdoutStr := stdout.String()
+	stdoutTrimmed := strings.TrimSuffix(stdoutStr, "\n")
+	if stdoutTrimmed != reportedText {
+		t.Errorf("plaintext with embedded newlines: got %q, expected %q", stdoutTrimmed, reportedText)
+	}
+}

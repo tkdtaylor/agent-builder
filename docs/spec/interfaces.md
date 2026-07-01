@@ -114,6 +114,35 @@ Subcommands:
 - Bot token, operator private keys (Ed25519 + X25519 hex-encoded), and plaintext command are **never logged or printed to stdout/stderr**.
 - The raw HTTP POST body never contains the plaintext command text unencrypted (only the sealed ciphertext in the `text` field).
 
+**Task 150 — `reply-open` subcommand:**
+
+| Subcommand / flag | Type | Default | Effect |
+|-------------------|------|---------|--------|
+| `reply-open` | subcommand | — | Verifies and decrypts a sealed reply envelope (orchestrator → operator) using the operator's X25519 private key and orchestrator's public keys. Takes the envelope JSON from exactly one source: a positional file argument, stdin, or an inline `--envelope` flag (ambiguity is a usage error). Prints the recovered plaintext to stdout. |
+| `reply-open --keyfile <path>` | flag (required) | — | **Required.** Path to the operator keyfile (JSON, `0600` mode) created by `keygen`. Contains operator X25519 private key and orchestrator public keys (Ed25519 + X25519). |
+| `reply-open --envelope '<json>'` | flag (optional) | (absent) | Inline reply envelope JSON string. Mutually exclusive with positional file argument; providing both is a usage error (exit `2`). |
+| `reply-open <envelope-file>` | positional argument (optional) | — | Path to a file containing the reply envelope JSON. Omit when using stdin or `--envelope` flag. Mutually exclusive with `--envelope`; providing both is a usage error (exit `2`). |
+
+**Inputs:**
+- **Keyfile:** JSON with `OperatorXPriv` (hex), `OrchEdPub` (hex, Ed25519 public key), and `OrchXPub` (hex, X25519 public key). Created by `keygen`.
+- **Envelope JSON (one source):** Either a file argument, stdin (when no positional arg given), or inline via `--envelope` flag. Contains an `envelope.Envelope` marshalled from orchestrator's reply: `{"From":"orchestrator","To":"operator","Nonce":"<hex>","TS":"<rfc3339>","Payload":"<hex>","Sig":"<hex>"}`.
+
+**Outputs:**
+- **Stdout:** The recovered plaintext (e.g., `"Status: approved"`) followed by a single newline. Empty on failure.
+- **Stderr:** None on success; error messages on failure (keyfile read, malformed JSON, signature verification, decryption, tamper detection), each prefixed with "error:" or "usage error:".
+
+**Exit codes:**
+- `0` — success (envelope verified and opened; plaintext printed)
+- `1` — runtime error (keyfile read/parse, malformed envelope JSON, signature verification failure, decryption failure, tampered payload)
+- `2` — usage error (missing `--keyfile`, both positional arg and `--envelope` given, malformed file path, invalid JSON, unknown keys)
+
+**Security invariants (fail-closed):**
+- Keyfile read errors (missing file, malformed JSON, truncated hex field) exit non-zero before attempting verification or decryption.
+- Tampered payload (mismatched signature, corrupted ciphertext) is detected via signature verification (expensive check first) before decryption; plaintext never appears on stdout if verification/decryption fails.
+- Wrong recipient key or wrong signer key produces a decryption-failed or signature-verification-failed error with empty stdout.
+- Operator X25519 private key (hex-encoded) and orchestrator public keys are **never logged or printed to stdout/stderr**. Recovered plaintext appearing on stdout is the intended, expected output.
+- Replay-cache is single-shot per invocation (fresh `envelope.NewReplayCache` constructed, not persisted across processes). The same saved envelope can be decrypted in multiple separate invocations.
+
 ### HTTP / RPC API
 
 None. agent-builder exposes no HTTP or RPC endpoints.
