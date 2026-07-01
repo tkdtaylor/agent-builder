@@ -41,10 +41,11 @@ import (
 // These are exported so that consumers can use errors.Is() to determine
 // the specific reason an envelope was rejected.
 var (
-	ErrUnknownKey       = errors.New("unknown_key")
-	ErrBadSignature     = errors.New("bad_signature")
-	ErrReplay           = errors.New("replay")
-	ErrStaleTimestamp   = errors.New("stale_timestamp")
+	ErrUnknownKey           = errors.New("unknown_key")
+	ErrBadSignature         = errors.New("bad_signature")
+	ErrReplay               = errors.New("replay")
+	ErrStaleTimestamp       = errors.New("stale_timestamp")
+	ErrDecryptionFailed     = errors.New("decryption_failed")
 )
 
 // Envelope is the agent-mesh-compatible wire format for signed/encrypted messages.

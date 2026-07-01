@@ -415,11 +415,11 @@ func runReplyOpen(config Config, args []string) int {
 			writef(config.Stderr, "error: replay detected\n")
 		} else if errors.Is(err, envelope.ErrStaleTimestamp) {
 			writef(config.Stderr, "error: stale timestamp\n")
-		} else {
-			// By VerifyAndOpen's contract, once JSON parses, verify + replay pass,
-			// the only remaining failure is the Open/decrypt step (nacl/box.Open).
-			// Emit a clean category with no opaque internal detail.
+		} else if errors.Is(err, envelope.ErrDecryptionFailed) {
 			writef(config.Stderr, "error: decryption failed\n")
+		} else {
+			// Catch-all for any currently-unclassified error (defense against future unclassified failure modes)
+			writef(config.Stderr, "error: envelope processing failed\n")
 		}
 		return 1
 	}

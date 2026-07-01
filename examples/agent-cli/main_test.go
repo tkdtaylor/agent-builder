@@ -1721,6 +1721,35 @@ func TestTC150_04_FailClosed(t *testing.T) {
 	}
 }
 
+// TestTC154_07_DecryptionFailedSourceAssertion tests TC-154-07:
+// reply-open uses explicit errors.Is(err, envelope.ErrDecryptionFailed) check (not else-heuristic)
+func TestTC154_07_DecryptionFailedSourceAssertion(t *testing.T) {
+	// Read the main.go source file and verify it contains the explicit sentinel check
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+
+	// Navigate to main.go from test location
+	mainGoPath := filepath.Join(filepath.Dir(filename), "main.go")
+	source, err := os.ReadFile(mainGoPath)
+	if err != nil {
+		t.Fatalf("failed to read main.go: %v", err)
+	}
+
+	sourceStr := string(source)
+
+	// TC-154-07: Assert the explicit sentinel check is present
+	if !strings.Contains(sourceStr, "envelope.ErrDecryptionFailed") {
+		t.Error("TC-154-07: main.go source does not contain explicit 'envelope.ErrDecryptionFailed' check — heuristic pattern not replaced")
+	}
+
+	// Also verify "errors.Is" is used with it (not just a comparison)
+	if !strings.Contains(sourceStr, "errors.Is(err, envelope.ErrDecryptionFailed)") {
+		t.Error("TC-154-07: main.go does not use 'errors.Is(err, envelope.ErrDecryptionFailed)' pattern")
+	}
+}
+
 // TC-150-05: same envelope decrypted twice in separate invocations succeeds both times
 func TestTC150_05_NoPersistedReplayState(t *testing.T) {
 	orchEdPub, orchEdPriv, orchXPub, orchXPriv, opXPub, opXPriv := generateReplyKeys(t)

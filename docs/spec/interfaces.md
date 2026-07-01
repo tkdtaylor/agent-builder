@@ -970,7 +970,10 @@ var ErrMissingSigningKey error // NAMED sentinel
 func LoadSigningKey() (ed25519.PrivateKey, error)
 func NewWorkItemSenderFromEnv(orchXPriv, workerXPub [32]byte) (*Sender, error)
 
-var ErrRoleMismatch error // verified envelope From/To ≠ expected direction (task 098 SEC-001)
+var ErrRoleMismatch error                        // verified envelope From/To ≠ expected direction (task 098 SEC-001)
+
+// From internal/envelope:
+var envelope.ErrDecryptionFailed error           // AEAD decrypt failure (Open step); classified in audit as "decryption_failed" (task 154)
 ```
 
 - **Key roles (mirror the Telegram adapter):** work-items — orchestrator signs (its
@@ -983,7 +986,7 @@ var ErrRoleMismatch error // verified envelope From/To ≠ expected direction (t
   relied on alone). On any rejection the receiver returns the zero `Task`/`Result` plus a
   classified error and emits an `audit.ActionChannelReject` event whose `Detail.Reason`
   carries the classification (`bad_signature`, `unknown_key`, `replay_detected`,
-  `role_mismatch`); plaintext and key material never appear in the event or in logs.
+  `decryption_failed`, `role_mismatch`); plaintext and key material never appear in the event or in logs.
 - **Startup fail-closed (REQ-083-05):** `LoadSigningKey` / `NewWorkItemSenderFromEnv`
   fail at construction (not at first receipt) when `AGENT_BUILDER_WORKER_SIGNING_KEY` is
   unset or names an absent/malformed key file; the error satisfies

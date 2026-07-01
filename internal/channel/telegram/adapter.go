@@ -183,7 +183,7 @@ func (a *Adapter) Next() (supervisor.Message, bool, error) {
 			a.trustedX25519Pub,
 		)
 		if err != nil {
-			// Reject before armor invocation (unknown key, replay, or decryption failure)
+			// Reject before armor invocation (unknown key, replay, decryption failure, or stale timestamp)
 			a.logger.Debug("envelope verification/decryption failed", "error", err)
 			// Classify rejection reason using errors.Is for sentinel matching
 			reason := "envelope_rejected"
@@ -193,6 +193,8 @@ func (a *Adapter) Next() (supervisor.Message, bool, error) {
 				reason = "replay_detected"
 			} else if errors.Is(err, envelope.ErrStaleTimestamp) {
 				reason = "replay_detected" // Stale timestamps are grouped with replay for audit purposes
+			} else if errors.Is(err, envelope.ErrDecryptionFailed) {
+				reason = "decryption_failed"
 			}
 			a.emitAuditEvent(reason)
 			continue
