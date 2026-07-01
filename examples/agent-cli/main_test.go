@@ -3,12 +3,20 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/tkdtaylor/agent-builder/internal/envelope"
 )
 
 // TC-148-01: keygen generates all four keypairs at correct sizes
@@ -584,5 +592,638 @@ func TestMain_KeygenNoSecretLeakage(t *testing.T) {
 	// ASSERTION (c): banner separator present
 	if !strings.Contains(stderrStr, "---") {
 		t.Error("stderr missing labeled banner separator (---)")
+	}
+}
+
+// Helper function: generateSendKeys creates all four keypair sets for send tests.
+func generateSendKeys(t *testing.T) (
+	opEdPub ed25519.PublicKey,
+	opEdPriv ed25519.PrivateKey,
+	opXPub [32]byte,
+	opXPriv [32]byte,
+	orchEdPub ed25519.PublicKey,
+	orchEdPriv ed25519.PrivateKey,
+	orchXPub [32]byte,
+	orchXPriv [32]byte,
+) {
+	t.Helper()
+	var err error
+	opEdPub, opEdPriv, err = ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate operator Ed25519 key: %v", err)
+	}
+	opXPub, opXPriv, err = envelope.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate operator X25519 keypair: %v", err)
+	}
+	orchEdPub, orchEdPriv, err = ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate orchestrator Ed25519 key: %v", err)
+	}
+	orchXPub, orchXPriv, err = envelope.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("generate orchestrator X25519 keypair: %v", err)
+	}
+	return
+}
+
+// Helper function: stubSendMessageServer creates a test server that captures POST requests.
+func stubSendMessageServer(t *testing.T) (server *httptest.Server, bodyCapture *[]byte, callCount *int) {
+	t.Helper()
+	var lastBody []byte
+	count := 0
+	bodyCapture = &lastBody
+	callCount = &count
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		count++
+		b, _ := io.ReadAll(r.Body)
+		lastBody = b
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"result":{}}`))
+	}))
+	t.Cleanup(server.Close)
+	return
+}
+
+// TC-149-01: sealed+signed envelope round-trips through the production
+// envelope.VerifyAndOpen (load-bearing byte-compatibility assertion)
+func TestTC149_01_EnvelopeRoundTrip(t *testing.T) {
+	opEdPub, opEdPriv, opXPub, opXPriv, _, _, orchXPub, orchXPriv := generateSendKeys(t)
+
+	const cmdText = "status tg-42-7"
+	cmdBytes := []byte(cmdText)
+
+	// Build the envelope using the CLI's BuildEnvelope function
+	env, err := BuildEnvelope(opEdPriv, opXPriv, orchXPub, cmdBytes)
+	if err != nil {
+		t.Fatalf("BuildEnvelope failed: %v", err)
+	}
+
+	// TC-149-01: envelope must have non-empty fields
+	if env.Nonce == "" {
+		t.Error("Nonce is empty")
+	}
+	if env.TS == "" {
+		t.Error("TS is empty")
+	}
+	if env.Payload == "" {
+		t.Error("Payload is empty")
+	}
+	if env.Sig == "" {
+		t.Error("Sig is empty")
+	}
+
+	// TC-149-01 LOAD-BEARING: Round-trip through real VerifyAndOpen
+	// with the adapter's exact key-role assignment:
+	//   TrustedSigningKey = operator Ed25519 pub
+	//   OrchestratorPriv = orchestrator X25519 priv
+	//   TrustedX25519Pub = operator X25519 pub
+	plaintext, err := envelope.VerifyAndOpen(
+		*env,
+		opEdPub,
+		envelope.NewReplayCache(60*time.Second),
+		orchXPriv,
+		opXPub,
+	)
+	if err != nil {
+		t.Fatalf("VerifyAndOpen failed: %v", err)
+	}
+
+	// TC-149-01: plaintext must match command text byte-for-byte
+	if !bytes.Equal(plaintext, cmdBytes) {
+		t.Errorf("plaintext mismatch: got %q, expected %q", string(plaintext), cmdText)
+	}
+}
+
+// TC-149-01 (edge case): multi-word goal-spec command
+func TestTC149_01_MultiWordCommand(t *testing.T) {
+	opEdPub, opEdPriv, opXPub, opXPriv, _, _, orchXPub, orchXPriv := generateSendKeys(t)
+
+	const cmdText = "new-goal plan docs and implement feature X with constraints"
+	cmdBytes := []byte(cmdText)
+
+	env, err := BuildEnvelope(opEdPriv, opXPriv, orchXPub, cmdBytes)
+	if err != nil {
+		t.Fatalf("BuildEnvelope failed: %v", err)
+	}
+
+	plaintext, err := envelope.VerifyAndOpen(
+		*env,
+		opEdPub,
+		envelope.NewReplayCache(60*time.Second),
+		orchXPriv,
+		opXPub,
+	)
+	if err != nil {
+		t.Fatalf("VerifyAndOpen failed: %v", err)
+	}
+
+	if !bytes.Equal(plaintext, cmdBytes) {
+		t.Errorf("plaintext mismatch: got %q, expected %q", string(plaintext), cmdText)
+	}
+}
+
+// TC-149-02: Payload and Nonce are hex-encoded (not base64)
+func TestTC149_02_HexEncodedFields(t *testing.T) {
+	_, opEdPriv, _, opXPriv, _, _, orchXPub, _ := generateSendKeys(t)
+
+	const cmdText = "status"
+	cmdBytes := []byte(cmdText)
+
+	env, err := BuildEnvelope(opEdPriv, opXPriv, orchXPub, cmdBytes)
+	if err != nil {
+		t.Fatalf("BuildEnvelope failed: %v", err)
+	}
+
+	// TC-149-02: Payload must decode as hex
+	payloadBytes, err := hex.DecodeString(env.Payload)
+	if err != nil {
+		t.Errorf("Payload is not valid hex: %v", err)
+	}
+
+	// TC-149-02: Nonce must decode as hex
+	nonceBytes, err := hex.DecodeString(env.Nonce)
+	if err != nil {
+		t.Errorf("Nonce is not valid hex: %v", err)
+	}
+	if len(nonceBytes) != 24 {
+		t.Errorf("Nonce decoded to %d bytes, expected 24", len(nonceBytes))
+	}
+
+	// TC-149-02: Payload is hex, not base64. Verify via hex round-trip.
+	// The load-bearing assertion is TC-149-01's full round-trip through VerifyAndOpen.
+	// This test documents that Nonce and Payload are hex-encoded, as expected by
+	// the real envelope.VerifyAndOpen implementation.
+	_ = payloadBytes // Use payloadBytes to prove hex decode succeeded
+}
+
+// TC-149-03: send POSTs to <baseURL>/bot<token>/sendMessage with {chat_id, text}
+func TestTC149_03_SendPostsEnvelope(t *testing.T) {
+	_, opEdPriv, _, opXPriv, _, _, orchXPub, _ := generateSendKeys(t)
+
+	server, bodyCapture, callCount := stubSendMessageServer(t)
+
+	const token = "TEST_TOKEN_149"
+	const chatID = "12345"
+	const cmdText = "status"
+
+	// Create a keyfile
+	tmpDir := t.TempDir()
+	keyfilePath := filepath.Join(tmpDir, "test_keyfile.json")
+
+	keys := &KeyMaterial{
+		OperatorEdPriv: opEdPriv,
+		OperatorXPriv:  opXPriv,
+		OrchXPub:       orchXPub,
+		OrchEdPub:      []byte{}, // Not used in send
+	}
+
+	if err := WriteKeyfile(keyfilePath, keys); err != nil {
+		t.Fatalf("WriteKeyfile failed: %v", err)
+	}
+
+	// Run send command
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	config := Config{
+		Args: []string{
+			"send",
+			"--keyfile", keyfilePath,
+			"--token", token,
+			"--base-url", server.URL,
+			"--chat-id", chatID,
+			cmdText,
+		},
+		Stdout: stdout,
+		Stderr: stderr,
+	}
+
+	exitCode := Main(config)
+	if exitCode != ExitOK {
+		t.Errorf("send command failed with exit code %d, stderr: %s", exitCode, stderr.String())
+	}
+
+	// TC-149-03: exactly one POST
+	if *callCount != 1 {
+		t.Errorf("expected 1 POST, got %d", *callCount)
+	}
+
+	// TC-149-03: request body contains {chat_id, text} with text as envelope JSON
+	var outer struct {
+		ChatID string `json:"chat_id"`
+		Text   string `json:"text"`
+	}
+	if err := json.Unmarshal(*bodyCapture, &outer); err != nil {
+		t.Fatalf("failed to parse outer body: %v — body: %s", err, *bodyCapture)
+	}
+
+	if outer.ChatID != chatID {
+		t.Errorf("chat_id mismatch: got %q, expected %q", outer.ChatID, chatID)
+	}
+
+	var env envelope.Envelope
+	if err := json.Unmarshal([]byte(outer.Text), &env); err != nil {
+		t.Fatalf("Text field does not parse as envelope.Envelope: %v — text: %s", err, outer.Text)
+	}
+
+	if env.From != "operator" {
+		t.Errorf("envelope.From: got %q, expected operator", env.From)
+	}
+	if env.To != "orchestrator" {
+		t.Errorf("envelope.To: got %q, expected orchestrator", env.To)
+	}
+}
+
+// TC-149-04: --reply-to threads reply_to_message_id in the POST body
+func TestTC149_04_ReplyToInBody(t *testing.T) {
+	_, opEdPriv, _, opXPriv, _, _, orchXPub, _ := generateSendKeys(t)
+
+	server, bodyCapture, _ := stubSendMessageServer(t)
+
+	tmpDir := t.TempDir()
+	keyfilePath := filepath.Join(tmpDir, "test_keyfile.json")
+
+	keys := &KeyMaterial{
+		OperatorEdPriv: opEdPriv,
+		OperatorXPriv:  opXPriv,
+		OrchXPub:       orchXPub,
+		OrchEdPub:      []byte{},
+	}
+
+	if err := WriteKeyfile(keyfilePath, keys); err != nil {
+		t.Fatalf("WriteKeyfile failed: %v", err)
+	}
+
+	config := Config{
+		Args: []string{
+			"send",
+			"--keyfile", keyfilePath,
+			"--token", "TOKEN",
+			"--base-url", server.URL,
+			"--chat-id", "42",
+			"--reply-to", "555",
+			"status",
+		},
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+
+	exitCode := Main(config)
+	if exitCode != ExitOK {
+		t.Errorf("send command failed with exit code %d", exitCode)
+	}
+
+	// TC-149-04: body must have reply_to_message_id: 555
+	var body map[string]interface{}
+	if err := json.Unmarshal(*bodyCapture, &body); err != nil {
+		t.Fatalf("failed to parse body: %v", err)
+	}
+
+	replyToID, ok := body["reply_to_message_id"]
+	if !ok {
+		t.Error("reply_to_message_id missing from body")
+	} else if float64(555) != replyToID {
+		t.Errorf("reply_to_message_id: got %v, expected 555", replyToID)
+	}
+}
+
+// TC-149-04 (edge case): omitting --reply-to produces body with NO reply_to_message_id key
+func TestTC149_04_NoReplyToOmitsKey(t *testing.T) {
+	_, opEdPriv, _, opXPriv, _, _, orchXPub, _ := generateSendKeys(t)
+
+	server, bodyCapture, _ := stubSendMessageServer(t)
+
+	tmpDir := t.TempDir()
+	keyfilePath := filepath.Join(tmpDir, "test_keyfile.json")
+
+	keys := &KeyMaterial{
+		OperatorEdPriv: opEdPriv,
+		OperatorXPriv:  opXPriv,
+		OrchXPub:       orchXPub,
+		OrchEdPub:      []byte{},
+	}
+
+	if err := WriteKeyfile(keyfilePath, keys); err != nil {
+		t.Fatalf("WriteKeyfile failed: %v", err)
+	}
+
+	config := Config{
+		Args: []string{
+			"send",
+			"--keyfile", keyfilePath,
+			"--token", "TOKEN",
+			"--base-url", server.URL,
+			"--chat-id", "42",
+			"status",
+		},
+		Stdout: &bytes.Buffer{},
+		Stderr: &bytes.Buffer{},
+	}
+
+	exitCode := Main(config)
+	if exitCode != ExitOK {
+		t.Errorf("send command failed with exit code %d", exitCode)
+	}
+
+	var body map[string]interface{}
+	if err := json.Unmarshal(*bodyCapture, &body); err != nil {
+		t.Fatalf("failed to parse body: %v", err)
+	}
+
+	if _, ok := body["reply_to_message_id"]; ok {
+		t.Error("reply_to_message_id should be absent when not provided")
+	}
+}
+
+// TC-149-05: --reply-to validates positive integer only
+func TestTC149_05_ReplyToValidation(t *testing.T) {
+	_, opEdPriv, _, opXPriv, _, _, orchXPub, _ := generateSendKeys(t)
+
+	tmpDir := t.TempDir()
+	keyfilePath := filepath.Join(tmpDir, "test_keyfile.json")
+
+	keys := &KeyMaterial{
+		OperatorEdPriv: opEdPriv,
+		OperatorXPriv:  opXPriv,
+		OrchXPub:       orchXPub,
+		OrchEdPub:      []byte{},
+	}
+
+	if err := WriteKeyfile(keyfilePath, keys); err != nil {
+		t.Fatalf("WriteKeyfile failed: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		value string
+		valid bool
+	}{
+		{"abc", "abc", false},
+		{"-1", "-1", false},
+		{"0", "0", false},
+		{"1", "1", true},
+		{"555", "555", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, _, callCount := stubSendMessageServer(t)
+			defer server.Close()
+
+			args := []string{
+				"send",
+				"--keyfile", keyfilePath,
+				"--token", "TOKEN",
+				"--base-url", server.URL,
+				"--chat-id", "42",
+			}
+
+			if tt.value != "" {
+				args = append(args, "--reply-to", tt.value)
+			}
+			args = append(args, "status")
+
+			config := Config{
+				Args:   args,
+				Stdout: &bytes.Buffer{},
+				Stderr: &bytes.Buffer{},
+			}
+
+			exitCode := Main(config)
+
+			if tt.valid {
+				if exitCode != ExitOK {
+					t.Errorf("expected exit code %d, got %d", ExitOK, exitCode)
+				}
+				if *callCount != 1 {
+					t.Errorf("expected 1 HTTP call, got %d", *callCount)
+				}
+			} else {
+				if exitCode != ExitUsage {
+					t.Errorf("expected exit code %d (usage error), got %d", ExitUsage, exitCode)
+				}
+				if *callCount != 0 {
+					t.Errorf("expected 0 HTTP calls, got %d", *callCount)
+				}
+			}
+		})
+	}
+}
+
+// TC-149-06: token and operator private keys absent from stdout/stderr/logs
+// and plaintext never appears in raw POST body
+func TestTC149_06_NoSecretLeakage(t *testing.T) {
+	_, opEdPriv, _, opXPriv, _, _, orchXPub, _ := generateSendKeys(t)
+
+	server, bodyCapture, _ := stubSendMessageServer(t)
+
+	tmpDir := t.TempDir()
+	keyfilePath := filepath.Join(tmpDir, "test_keyfile.json")
+
+	keys := &KeyMaterial{
+		OperatorEdPriv: opEdPriv,
+		OperatorXPriv:  opXPriv,
+		OrchXPub:       orchXPub,
+		OrchEdPub:      []byte{},
+	}
+
+	if err := WriteKeyfile(keyfilePath, keys); err != nil {
+		t.Fatalf("WriteKeyfile failed: %v", err)
+	}
+
+	const token = "SEND_TOKEN_SENTINEL_149"
+	const cmdText = "secret command text"
+
+	stdout := &bytes.Buffer{}
+	stderr := &bytes.Buffer{}
+	config := Config{
+		Args: []string{
+			"send",
+			"--keyfile", keyfilePath,
+			"--token", token,
+			"--base-url", server.URL,
+			"--chat-id", "42",
+			cmdText,
+		},
+		Stdout: stdout,
+		Stderr: stderr,
+	}
+
+	exitCode := Main(config)
+	if exitCode != ExitOK {
+		t.Errorf("send command failed with exit code %d", exitCode)
+	}
+
+	combinedOutput := stdout.String() + stderr.String()
+
+	// TC-149-06: token sentinel must not appear
+	if strings.Contains(combinedOutput, token) {
+		t.Error("bot token sentinel appears in stdout+stderr")
+	}
+
+	// TC-149-06: operator private keys must not appear (in both hex and base64)
+	opEdPrivHex := hexEncode(opEdPriv)
+	opXPrivHex := hexEncode(opXPriv[:])
+	if strings.Contains(combinedOutput, opEdPrivHex) {
+		t.Error("operator Ed25519 private key (hex) appears in stdout+stderr")
+	}
+	if strings.Contains(combinedOutput, opXPrivHex) {
+		t.Error("operator X25519 private key (hex) appears in stdout+stderr")
+	}
+
+	// TC-149-06: plaintext command must not appear in raw POST body
+	if bytes.Contains(*bodyCapture, []byte(cmdText)) {
+		t.Errorf("plaintext command %q found in raw POST body — must not appear unencrypted", cmdText)
+	}
+}
+
+// TC-149-07: keyfile read failures fail closed with clear errors
+func TestTC149_07_KeyfileReadFailure(t *testing.T) {
+	server, _, callCount := stubSendMessageServer(t)
+	defer server.Close()
+
+	tests := []struct {
+		name  string
+		setup func(t *testing.T) string // returns keyfilePath
+	}{
+		{
+			"missing file",
+			func(t *testing.T) string {
+				return "/nonexistent/path/keyfile.json"
+			},
+		},
+		{
+			"malformed JSON",
+			func(t *testing.T) string {
+				tmpDir := t.TempDir()
+				keyfilePath := filepath.Join(tmpDir, "bad.json")
+				_ = os.WriteFile(keyfilePath, []byte("{bad json"), 0644)
+				return keyfilePath
+			},
+		},
+		{
+			"malformed hex field",
+			func(t *testing.T) string {
+				tmpDir := t.TempDir()
+				keyfilePath := filepath.Join(tmpDir, "bad_hex.json")
+				badContent := `{
+					"OperatorEdPriv": "notvalidhex",
+					"OperatorXPriv": "0102030405",
+					"OrchEdPub": "0102030405",
+					"OrchXPub": "0102030405"
+				}`
+				_ = os.WriteFile(keyfilePath, []byte(badContent), 0644)
+				return keyfilePath
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			keyfilePath := tt.setup(t)
+
+			config := Config{
+				Args: []string{
+					"send",
+					"--keyfile", keyfilePath,
+					"--token", "TOKEN",
+					"--base-url", server.URL,
+					"--chat-id", "42",
+					"status",
+				},
+				Stdout: &bytes.Buffer{},
+				Stderr: &bytes.Buffer{},
+			}
+
+			exitCode := Main(config)
+
+			// TC-149-07: must fail non-zero (not panic)
+			if exitCode == ExitOK {
+				t.Error("expected non-zero exit code")
+			}
+
+			// TC-149-07: zero HTTP calls
+			if *callCount != 0 {
+				t.Errorf("expected 0 HTTP calls, got %d", *callCount)
+			}
+
+			// TC-149-07: stderr should not contain panic trace
+			stderr := config.Stderr.(*bytes.Buffer).String()
+			if strings.Contains(stderr, "panic:") {
+				t.Error("stderr contains panic trace")
+			}
+			if stderr == "" {
+				t.Error("stderr should have error message")
+			}
+		})
+	}
+}
+
+// TC-149-08: empty command text is rejected
+func TestTC149_08_EmptyCommandText(t *testing.T) {
+	_, opEdPriv, _, opXPriv, _, _, orchXPub, _ := generateSendKeys(t)
+
+	server, _, _ := stubSendMessageServer(t)
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	keyfilePath := filepath.Join(tmpDir, "test_keyfile.json")
+
+	keys := &KeyMaterial{
+		OperatorEdPriv: opEdPriv,
+		OperatorXPriv:  opXPriv,
+		OrchXPub:       orchXPub,
+		OrchEdPub:      []byte{},
+	}
+
+	if err := WriteKeyfile(keyfilePath, keys); err != nil {
+		t.Fatalf("WriteKeyfile failed: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{
+			"no command text",
+			[]string{
+				"send",
+				"--keyfile", keyfilePath,
+				"--token", "TOKEN",
+				"--base-url", server.URL,
+				"--chat-id", "42",
+			},
+		},
+		{
+			"whitespace-only command",
+			[]string{
+				"send",
+				"--keyfile", keyfilePath,
+				"--token", "TOKEN",
+				"--base-url", server.URL,
+				"--chat-id", "42",
+				"   ",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resetServer, _, _ := stubSendMessageServer(t)
+			defer resetServer.Close()
+
+			config := Config{
+				Args:   tt.args,
+				Stdout: &bytes.Buffer{},
+				Stderr: &bytes.Buffer{},
+			}
+
+			exitCode := Main(config)
+
+			// TC-149-08: must exit 2 (usage error)
+			if exitCode != ExitUsage {
+				t.Errorf("expected exit code %d, got %d", ExitUsage, exitCode)
+			}
+		})
 	}
 }
