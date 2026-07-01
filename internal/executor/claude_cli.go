@@ -78,6 +78,7 @@ type ClaudeCLIConfig struct {
 	Worktree         string
 	AuthToken        string
 	OAuthToken       string
+	Model            string // model id passed as --model; empty = CLI default (ADR 061)
 	BaseURL          string // translation-proxy URL for local entries; empty for cloud entries
 	IngestionPolicy  ClaudeIngestionPolicy
 	IngestionHarness *executorharness.Harness
@@ -89,6 +90,7 @@ type ClaudeCLI struct {
 	worktree         string
 	authToken        string
 	oauthToken       string
+	model            string // model id passed as --model; empty = CLI default (ADR 061)
 	baseURL          string // translation-proxy URL for local entries; empty = cloud mode
 	ingestionPolicy  ClaudeIngestionPolicy
 	ingestionHarness *executorharness.Harness
@@ -102,6 +104,7 @@ func NewClaudeCLI(config ClaudeCLIConfig) *ClaudeCLI {
 		worktree:         strings.TrimSpace(config.Worktree),
 		authToken:        config.AuthToken,
 		oauthToken:       config.OAuthToken,
+		model:            strings.TrimSpace(config.Model),
 		baseURL:          strings.TrimSpace(config.BaseURL),
 		ingestionPolicy:  normalizeClaudeIngestionPolicy(config.IngestionPolicy),
 		ingestionHarness: config.IngestionHarness,
@@ -144,6 +147,7 @@ func NewClaudeCLIFromEntry(entry registry.RegistryEntry, secretSource secrets.Se
 		return NewClaudeCLI(ClaudeCLIConfig{
 			CLIPath:  "claude",
 			Worktree: worktree,
+			Model:    entry.ModelID,
 			BaseURL:  entry.Endpoint,
 		})
 	}
@@ -154,6 +158,7 @@ func NewClaudeCLIFromEntry(entry registry.RegistryEntry, secretSource secrets.Se
 		Worktree:   worktree,
 		AuthToken:  authToken,
 		OAuthToken: oauthToken,
+		Model:      entry.ModelID,
 	})
 }
 
@@ -216,7 +221,11 @@ func (e *ClaudeCLI) RunContext(ctx context.Context, task supervisor.Task) (super
 	branchPath := filepath.Join(runDir, "produced-branch.txt")
 	prompt := buildClaudePrompt(task, e.worktree, branchPath)
 
-	cmd := e.cmdFactory(ctx, e.cliPath, "-p", prompt)
+	args := []string{"-p", prompt}
+	if e.model != "" {
+		args = append(args, "--model", e.model)
+	}
+	cmd := e.cmdFactory(ctx, e.cliPath, args...)
 	cmd.Dir = e.worktree
 	cmd.Env = claudeEnv(os.Environ(), e.authToken, e.oauthToken, e.baseURL, runDir)
 

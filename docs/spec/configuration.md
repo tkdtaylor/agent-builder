@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** agent-builder
-**Last updated:** 2026-07-01 (model-id refresh — `claude-oauth` example + `_MODEL` reference bumped to `claude-opus-4-8`)
+**Last updated:** 2026-07-01 (task 144 — `claude-cli` executor + completer pass `--model <MODEL>`, ADR 061; model-id examples on `claude-opus-4-8`)
 
 Every knob the system exposes — env vars, config files, runtime parameters, deployment settings. Each entry is a public contract: changes to defaults or accepted values are observable.
 
@@ -173,7 +173,7 @@ The executor registry is configured via well-known env-var prefixes per entry ID
 | `AGENT_BUILDER_REGISTRY_<ID>_ENABLED` | enum: `true`, `false` | (not set = disabled) | no | When `true`, the entry is loaded and registered into the catalog; when `false` or unset, the entry is skipped. |
 | `AGENT_BUILDER_REGISTRY_<ID>_ENDPOINT` | URL string | none | yes (if enabled) | Base URL the harness points at (cloud API, or a local model translation proxy). Blank values fail with a descriptive error. |
 | `AGENT_BUILDER_REGISTRY_<ID>_SECRET_REF` | string | none | yes for API-key cloud entries; **optional (empty) for local and subscription/OAuth entries** | Vault secret name to resolve at dispatch time (never the secret itself). An empty `SecretRef` covers two distinct cases. **(1) Local entries** (`local-qwen`, `local`, `local-ollama`): no cloud auth — Claude/Qwen translation-proxy entries inject `ANTHROPIC_AUTH_TOKEN=<placeholder>` and `ANTHROPIC_BASE_URL=<endpoint>`; `local-ollama` talks native HTTP to the endpoint. **(2) Subscription/OAuth *cloud* entries** (`antigravity`; the deprecated `gemini`): these are cloud brains that authenticate via the CLI's cached OAuth login (`~/.antigravity` / `~/.gemini`), not local inference — they require no injected key. API-key cloud entries (non-empty `SecretRef`) fail with a descriptive error if blank. |
-| `AGENT_BUILDER_REGISTRY_<ID>_MODEL` | string | none | yes (if enabled) | Model identifier (e.g., `claude-opus-4-8`, `qwen-7b`). Blank values fail with a descriptive error. |
+| `AGENT_BUILDER_REGISTRY_<ID>_MODEL` | string | none | yes (if enabled) | Model identifier (e.g., `claude-opus-4-8`, `qwen-7b`). Passed to the harness CLI as `--model <MODEL>` on dispatch — the `claude-cli` executor **and** its single-shot completer honor it (parity with `codex-cli`/`gemini-cli`/`antigravity-cli`, ADR 061); a blank/omitted `MODEL` on a synthetic-default Claude entry omits the flag and uses the CLI's built-in default model. Blank values on a configured registry entry fail with a descriptive error. |
 | `AGENT_BUILDER_REGISTRY_<ID>_CAPABILITY_TIER` | non-negative integer | none | yes (if enabled) | Ordered capability ranking (higher = stronger). Non-integer values fail with a descriptive error. |
 | `AGENT_BUILDER_REGISTRY_<ID>_COST_WEIGHT` | non-negative integer | none | yes (if enabled) | Relative cost per dispatch (lower = cheaper). Non-integer values fail with a descriptive error. |
 | `AGENT_BUILDER_REGISTRY_<ID>_BUDGET_LIMIT` | non-negative integer | `0` (unlimited) | no | Maximum dispatches over the rolling window. `0` means no cap. Non-integer values fail with a descriptive error. |

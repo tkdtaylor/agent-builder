@@ -30,8 +30,8 @@ type fakeClaudeSecretSource struct {
 	oauthToken string
 }
 
-func (f *fakeClaudeSecretSource) ProviderToken() (string, string)         { return f.authToken, f.oauthToken }
-func (f *fakeClaudeSecretSource) PublisherTokens() (string, string)       { return "", "" }
+func (f *fakeClaudeSecretSource) ProviderToken() (string, string)           { return f.authToken, f.oauthToken }
+func (f *fakeClaudeSecretSource) PublisherTokens() (string, string)         { return "", "" }
 func (f *fakeClaudeSecretSource) NamedProviderToken(string) (string, error) { return "", nil }
 
 // stubClaudeCompleterFactory re-invokes the test binary as a stub subprocess
@@ -88,8 +88,10 @@ func TestClaudeCompleterRunsPrintModeAndReturnsStdout(t *testing.T) {
 	if name != "claude" {
 		t.Errorf("command name = %q, want %q", name, "claude")
 	}
-	wantArgs := []string{"-p", "What is the capital of France?"}
-	if len(args) != len(wantArgs) || args[0] != wantArgs[0] || args[1] != wantArgs[1] {
+	// testClaudeEntry carries a ModelID, so the completer appends --model (ADR 061, task 144).
+	wantArgs := []string{"-p", "What is the capital of France?", "--model", "claude-opus-4-5"}
+	if len(args) != len(wantArgs) || args[0] != wantArgs[0] || args[1] != wantArgs[1] ||
+		args[2] != wantArgs[2] || args[3] != wantArgs[3] {
 		t.Errorf("args = %v, want %v", args, wantArgs)
 	}
 }

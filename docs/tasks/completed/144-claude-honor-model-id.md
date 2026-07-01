@@ -1,6 +1,6 @@
 # Task 144 — Claude executor + completer honor entry.ModelID via --model
 
-**Status:** backlog
+**Status:** complete
 **Spec:** `docs/tasks/test-specs/144-claude-honor-model-id-test-spec.md`
 **Relates to:** ADR 061 (per-task model selection), ADR 043 (capability/cost router), ADR 059 (single-shot Completer). Unblocks tasks 145–146.
 

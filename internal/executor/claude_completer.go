@@ -21,6 +21,7 @@ type claudeCompleter struct {
 	cliPath    string
 	authToken  string
 	oauthToken string
+	model      string // model id passed as --model; empty = CLI default (ADR 061)
 	baseURL    string // translation-proxy URL for local entries; empty = cloud mode
 	cmdFactory claudeCommandCreator
 }
@@ -34,6 +35,7 @@ var _ Completer = (*claudeCompleter)(nil)
 func newClaudeCompleter(entry registry.RegistryEntry, src secrets.SecretSource) *claudeCompleter {
 	c := &claudeCompleter{
 		cliPath:    "claude",
+		model:      strings.TrimSpace(entry.ModelID),
 		cmdFactory: exec.CommandContext,
 	}
 	if strings.TrimSpace(entry.SecretRef) == "" {
@@ -55,7 +57,11 @@ func (c *claudeCompleter) Complete(ctx context.Context, _ registry.RegistryEntry
 	}
 	defer func() { _ = os.RemoveAll(runDir) }()
 
-	cmd := c.cmdFactory(ctx, c.cliPath, "-p", prompt)
+	args := []string{"-p", prompt}
+	if c.model != "" {
+		args = append(args, "--model", c.model)
+	}
+	cmd := c.cmdFactory(ctx, c.cliPath, args...)
 	cmd.Dir = runDir
 	// Merge auth/HOME onto the command's existing env (os.Environ() in production; a
 	// test-injected env when the cmdFactory is stubbed) so the base is preserved.
