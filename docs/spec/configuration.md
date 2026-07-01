@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** agent-builder
-**Last updated:** 2026-07-01 (task 145 — per-model registry entries (`claude-haiku`/`claude-sonnet`/`claude-opus`, `agy-gemini-flash`/`agy-gemini-pro`) + recipe `MinCapability` audit, ADR 061)
+**Last updated:** 2026-07-01 (task 146 — dynamic model-tier selection: the `orchestrate` answer route's `MinCapability` is chosen at runtime from the goal analyzer's emitted `CapabilityTier` rather than a fixed floor, ADR 061 §4)
 
 Every knob the system exposes — env vars, config files, runtime parameters, deployment settings. Each entry is a public contract: changes to defaults or accepted values are observable.
 
@@ -326,11 +326,20 @@ AGENT_BUILDER_REGISTRY_AGY_GEMINI_PRO_COST_WEIGHT=8
 `agent-builder-worker` declares `MinCapability=2` (authors a new, gated coding recipe;
 a broken commit or missing gate binding is costly, so it asks for the mid/sonnet tier
 one step above the mechanical floor). Both values were confirmed correct against ADR
-061's tier semantics and left unchanged. The `coding-agent` default recipe, the `ask`/
-`orchestrate-answer` CLI paths, and the LLM planner/clarifier/analyzer all declare
-`MinCapability=1` as their floor (the cheapest-sufficient default for the base coding
-and single-shot-answer paths) — also confirmed correct and left unchanged by this
-audit.
+061's tier semantics and left unchanged. The `coding-agent` default recipe, the `ask`
+CLI path, and the LLM planner/clarifier/analyzer all declare `MinCapability=1` as their
+floor (the cheapest-sufficient default for the base coding and single-shot-answer
+paths) — also confirmed correct and left unchanged by this audit.
+
+**Dynamic tier on the `orchestrate` answer path (task 146, ADR 061 §4):** the answer
+route (`KindAnswer`) does NOT use a fixed `MinCapability`. The goal analyzer emits a
+`CapabilityTier` per goal (heuristic rubric: simple→1, complex→2, design/security→3;
+LLM authoritative where valid) and that tier is wired straight into the answer route's
+`RoutingSpec.MinCapability` (`answerMinCapability`): a positive tier is used verbatim,
+tier 0 (unset/ambiguous) falls back to `answerDefaultMinCapability = 1`. The static
+router (ADR 043) then selects the cheapest eligible entry at or above that floor. This
+is the only tier→MinCapability resolution on the answer path — there is no parallel
+`Complexity→tier` mapping — and it is independent of `SensitivityHint`.
 
 When ALL enabled registry entries are local (all have empty `SECRET_REF`), the operator does NOT need to export `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` in the host environment — `agent-builder run` will start without requiring cloud credentials. The executor injects the fixed placeholder `executor.LocalProxyAuthPlaceholder` (value: `"local-proxy-no-auth"`) as `ANTHROPIC_AUTH_TOKEN` in the subprocess to satisfy the Claude Code CLI's auth check; the translation proxy ignores the token value. (`ANTHROPIC_AUTH_TOKEN` is required rather than `ANTHROPIC_API_KEY` because the current Claude Code CLI validates `ANTHROPIC_API_KEY` as a real Anthropic credential and rejects a placeholder with `Not logged in`, while `ANTHROPIC_AUTH_TOKEN` is the gateway bearer-token var passed through to `ANTHROPIC_BASE_URL`.) The translation proxy (LiteLLM, claude-code-router) converts Anthropic API requests to the local inference server's OpenAI API. See `registry.TranslationProxySeam` for the named seam constant.
 

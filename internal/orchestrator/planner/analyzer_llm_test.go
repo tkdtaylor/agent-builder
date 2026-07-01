@@ -15,13 +15,13 @@ import (
 )
 
 type spyAnalyzerSeams struct {
-	mu           sync.Mutex
-	resolveErr   error
-	invokeErr    error
-	resolveCalls int
+	mu            sync.Mutex
+	resolveErr    error
+	invokeErr     error
+	resolveCalls  int
 	invokePrompts []string
-	cannedText   string
-	entry        registry.RegistryEntry
+	cannedText    string
+	entry         registry.RegistryEntry
 }
 
 func (s *spyAnalyzerSeams) Resolve(_ context.Context, _ router.RoutingSpec) (registry.RegistryEntry, error) {
@@ -44,53 +44,61 @@ func (s *spyAnalyzerSeams) Invoke(_ context.Context, _ registry.RegistryEntry, p
 	return s.cannedText, nil
 }
 
-
 // Compile-time assertion (TC-142-01): *LLMGoalAnalyzer satisfies orchestrator.GoalAnalyzer.
 var _ orchestrator.GoalAnalyzer = (*planner.LLMGoalAnalyzer)(nil)
 
-// TC-142-01: Well-formed JSON response is parsed correctly into Kind and Complexity
+// TC-142-01 / TC-146-01 (LLM authoritative path): Well-formed JSON response is
+// parsed correctly into Kind, Complexity, and the emitted CapabilityTier. The tier
+// the model emits is authoritative and reaches GoalAnalysis verbatim.
 func TestLLMGoalAnalyzerParsesWellFormedResponse(t *testing.T) {
 	tcs := []struct {
-		name       string
-		cannedText string
-		wantKind   orchestrator.GoalKind
+		name        string
+		cannedText  string
+		wantKind    orchestrator.GoalKind
 		wantComplex orchestrator.GoalComplexity
+		wantTier    int
 	}{
 		{
 			name:        "Answer simple",
-			cannedText:  `{"kind": "answer", "complexity": "simple", "rationale": "reads as a question"}`,
+			cannedText:  `{"kind": "answer", "complexity": "simple", "tier": 1, "rationale": "reads as a question"}`,
 			wantKind:    orchestrator.KindAnswer,
 			wantComplex: orchestrator.ComplexitySimple,
+			wantTier:    1,
 		},
 		{
 			name:        "Answer complex",
-			cannedText:  `{"kind": "answer", "complexity": "complex", "rationale": "multi-part question"}`,
+			cannedText:  `{"kind": "answer", "complexity": "complex", "tier": 2, "rationale": "multi-part question"}`,
 			wantKind:    orchestrator.KindAnswer,
 			wantComplex: orchestrator.ComplexityComplex,
+			wantTier:    2,
 		},
 		{
 			name:        "Coding simple",
-			cannedText:  `{"kind": "coding", "complexity": "simple", "rationale": "add a function"}`,
+			cannedText:  `{"kind": "coding", "complexity": "simple", "tier": 1, "rationale": "add a function"}`,
 			wantKind:    orchestrator.KindCoding,
 			wantComplex: orchestrator.ComplexitySimple,
+			wantTier:    1,
 		},
 		{
-			name:        "Coding complex",
-			cannedText:  `{"kind": "coding", "complexity": "complex", "rationale": "refactor large system"}`,
+			name:        "Coding complex design (tier 3 authoritative)",
+			cannedText:  `{"kind": "coding", "complexity": "complex", "tier": 3, "rationale": "security-critical redesign"}`,
 			wantKind:    orchestrator.KindCoding,
 			wantComplex: orchestrator.ComplexityComplex,
+			wantTier:    3,
 		},
 		{
 			name:        "Case-insensitive Answer",
-			cannedText:  `{"kind": "ANSWER", "complexity": "SIMPLE", "rationale": "should normalize"}`,
+			cannedText:  `{"kind": "ANSWER", "complexity": "SIMPLE", "tier": 1, "rationale": "should normalize"}`,
 			wantKind:    orchestrator.KindAnswer,
 			wantComplex: orchestrator.ComplexitySimple,
+			wantTier:    1,
 		},
 		{
 			name:        "JSON with surrounding prose",
-			cannedText:  `The goal is: {"kind": "coding", "complexity": "simple", "rationale": "add feature"}. Done!`,
+			cannedText:  `The goal is: {"kind": "coding", "complexity": "simple", "tier": 1, "rationale": "add feature"}. Done!`,
 			wantKind:    orchestrator.KindCoding,
 			wantComplex: orchestrator.ComplexitySimple,
+			wantTier:    1,
 		},
 	}
 
@@ -111,6 +119,9 @@ func TestLLMGoalAnalyzerParsesWellFormedResponse(t *testing.T) {
 			}
 			if res.Complexity != tc.wantComplex {
 				t.Errorf("Complexity = %q, want %q", res.Complexity, tc.wantComplex)
+			}
+			if res.CapabilityTier != tc.wantTier {
+				t.Errorf("CapabilityTier = %d, want %d (LLM authoritative)", res.CapabilityTier, tc.wantTier)
 			}
 		})
 	}
@@ -146,6 +157,18 @@ func TestLLMGoalAnalyzerFallbackOnMalformed(t *testing.T) {
 			name:           "Missing fields",
 			cannedText:     `{"kind": "answer"}`,
 			goalSpec:       "What is the capital of France?",
+			expectFallback: true,
+		},
+		{
+			name:           "Missing tier (valid kind+complexity) falls back",
+			cannedText:     `{"kind": "coding", "complexity": "complex"}`,
+			goalSpec:       "add a subtract function to github.com/x/calc",
+			expectFallback: true,
+		},
+		{
+			name:           "Out-of-range tier falls back",
+			cannedText:     `{"kind": "coding", "complexity": "complex", "tier": 9}`,
+			goalSpec:       "design a secure auth service",
 			expectFallback: true,
 		},
 		{
@@ -185,6 +208,10 @@ func TestLLMGoalAnalyzerFallbackOnMalformed(t *testing.T) {
 				if res.Complexity != expected.Complexity {
 					t.Errorf("fallback Complexity = %q, want %q (heuristic result)", res.Complexity, expected.Complexity)
 				}
+				// REQ-146-01: on fallback the emitted tier must equal the heuristic's.
+				if res.CapabilityTier != expected.CapabilityTier {
+					t.Errorf("fallback CapabilityTier = %d, want %d (heuristic result)", res.CapabilityTier, expected.CapabilityTier)
+				}
 			} else {
 				// For non-fallback cases, just verify we got valid results.
 				if res.Kind == "" || res.Complexity == "" {
@@ -217,7 +244,7 @@ func TestLLMGoalAnalyzerFallbackOnError(t *testing.T) {
 			seams := &spyAnalyzerSeams{
 				resolveErr: tc.resolveErr,
 				invokeErr:  tc.invokeErr,
-				cannedText: `{"kind": "answer", "complexity": "simple"}`,
+				cannedText: `{"kind": "answer", "complexity": "simple", "tier": 1}`,
 			}
 			analyzer := planner.NewLLMGoalAnalyzer(seams, seams.Invoke)
 
@@ -240,6 +267,9 @@ func TestLLMGoalAnalyzerFallbackOnError(t *testing.T) {
 			}
 			if res.Complexity != expected.Complexity {
 				t.Errorf("fallback on %s: Complexity = %q, want %q (heuristic result)", tc.name, res.Complexity, expected.Complexity)
+			}
+			if res.CapabilityTier != expected.CapabilityTier {
+				t.Errorf("fallback on %s: CapabilityTier = %d, want %d (heuristic result)", tc.name, res.CapabilityTier, expected.CapabilityTier)
 			}
 		})
 	}

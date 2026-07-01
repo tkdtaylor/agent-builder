@@ -1,6 +1,6 @@
 # Task 146 — Dynamic model-tier selection step (extend goal analyzer)
 
-**Status:** backlog
+**Status:** completed (🟡 code merged — awaiting spec-verifier + L6)
 **Spec:** `docs/tasks/test-specs/146-dynamic-model-tier-classifier-test-spec.md`
 **Relates to:** ADR 061 (per-task model selection), ADR 060 (goal analysis & routing), ADR 043 (router). Depends on tasks 144–145.
 

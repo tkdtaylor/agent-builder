@@ -16,7 +16,7 @@ type echoAnswerer struct {
 	prompts []string
 }
 
-func (e *echoAnswerer) Answer(_ context.Context, prompt string, _ GoalComplexity) (string, error) {
+func (e *echoAnswerer) Answer(_ context.Context, prompt string, _ int) (string, error) {
 	e.prompts = append(e.prompts, prompt)
 	a := "?"
 	if e.i < len(e.answers) {

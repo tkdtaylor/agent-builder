@@ -462,9 +462,10 @@ func (o *Orchestrator) BeginGoal(ctx context.Context, goal supervisor.Task) erro
 }
 
 // answerGoal handles a KindAnswer goal (ADR 060): it invokes the single-shot
-// Answerer with the goal text (routed to a brain at a capability floor derived
-// from complexity) and reports the answer over the channel. It is read-only
-// inference — no worker, no gate, no branch, no approval. StateDone on success.
+// Answerer with the goal text (routed to a brain at the capability floor the
+// analyzer emitted, ADR 061 §4) and reports the answer over the channel. It is
+// read-only inference — no worker, no gate, no branch, no approval. StateDone on
+// success.
 func (o *Orchestrator) answerGoal(ctx context.Context, goal supervisor.Task, analysis GoalAnalysis) error {
 	if o.answerer == nil {
 		o.registry.SetState(goal.ID, StateFailed)
@@ -474,7 +475,7 @@ func (o *Orchestrator) answerGoal(ctx context.Context, goal supervisor.Task, ana
 		return nil
 	}
 
-	answer, err := o.answerer.Answer(ctx, goal.Spec, analysis.Complexity)
+	answer, err := o.answerer.Answer(ctx, goal.Spec, analysis.CapabilityTier)
 	if err != nil {
 		o.registry.SetState(goal.ID, StateFailed)
 		if repErr := o.reporter.Report(ctx, fmt.Sprintf("Could not answer goal %q: %v", goal.ID, err)); repErr != nil {
@@ -490,7 +491,7 @@ func (o *Orchestrator) answerGoal(ctx context.Context, goal supervisor.Task, ana
 	// ADR 060 §6: keep the conversation open for follow-ups. The goal lingers in
 	// StateConversing (not StateDone); the goal actor routes follow-up `info` to
 	// ContinueAnswer and ends it (StateDone) on cancel / source EOF.
-	o.startConversation(goal.ID, goal.Spec, answer, analysis.Complexity)
+	o.startConversation(goal.ID, goal.Spec, answer, analysis.CapabilityTier)
 	o.registry.SetState(goal.ID, StateConversing)
 	if err := o.reporter.Report(ctx, answer); err != nil {
 		return fmt.Errorf("orchestrator: report answer: %w", err)
