@@ -56,7 +56,7 @@ type Envelope struct {
 	To      string `json:"to"`
 	Nonce   string `json:"nonce"`    // 24-byte random value, hex-encoded
 	TS      string `json:"ts"`       // RFC3339 or Unix timestamp
-	Payload string `json:"payload"`  // base64-encoded ciphertext or plaintext
+	Payload string `json:"payload"`  // hex-encoded ciphertext or plaintext
 	Sig     string `json:"sig"`      // hex-encoded Ed25519 signature
 }
 
