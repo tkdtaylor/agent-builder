@@ -1,7 +1,7 @@
 # Data Model
 
 **Project:** agent-builder
-**Last updated:** 2026-06-30 (goal-alignment — gemini-cli marked deprecated; agy positioned as the live third brain)
+**Last updated:** 2026-07-01 (model-id refresh — ModelID example bumped to `claude-opus-4-8`)
 
 What data exists, how it's structured, where it lives, and what relationships hold between entities. Covers persistent storage, in-memory state, and data-on-the-wire formats.
 
@@ -166,7 +166,7 @@ ID               string             stable handle, e.g. "claude-oauth", "local-q
 Harness          registry.HarnessDriver  which harness runs the loop
 CapabilityTier   int                ordered: higher = stronger
 CostWeight       int                relative cost per dispatch; lower = cheaper
-ModelID          string             model identifier (e.g. "claude-opus-4-5")
+ModelID          string             model identifier (e.g. "claude-opus-4-8")
 Endpoint         string             base URL the harness points at (cloud API or local proxy)
 SecretRef        string             which vault secret to resolve (NOT the secret itself)
 Budget           registry.QuotaBudget    configured cap over a rolling window, or zero for unlimited
