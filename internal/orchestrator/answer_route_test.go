@@ -67,8 +67,9 @@ func TestBeginGoalAnswerRoute(t *testing.T) {
 	if len(rep.lines) != 1 || rep.lines[0] != "Paris" {
 		t.Errorf("reported lines = %v, want [\"Paris\"]", rep.lines)
 	}
-	if st, ok := reg.Get("g1"); !ok || st.State != StateDone {
-		t.Errorf("goal state = %v (ok=%v), want StateDone", st.State, ok)
+	// ADR 060 §6: the answer goal stays open for follow-ups (StateConversing), not terminal.
+	if st, ok := reg.Get("g1"); !ok || st.State != StateConversing {
+		t.Errorf("goal state = %v (ok=%v), want StateConversing", st.State, ok)
 	}
 }
 

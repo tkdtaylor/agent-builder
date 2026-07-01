@@ -293,6 +293,10 @@ type Orchestrator struct {
 	// nil, a KindAnswer goal fails with a clear "not configured" report. Set via
 	// WithAnswerer. Wired in internal/cli (keeps executor out of internal/orchestrator).
 	answerer Answerer
+	// convMu guards conversations, the in-process per-goal history for KindAnswer goals
+	// holding a multi-turn conversation (ADR 060 §6).
+	convMu        sync.Mutex
+	conversations map[string]*conversation
 }
 
 // Option configures an Orchestrator.
@@ -483,7 +487,11 @@ func (o *Orchestrator) answerGoal(ctx context.Context, goal supervisor.Task, ana
 		Action: audit.ActionCompletion, TaskID: goal.ID, RunID: goal.ID,
 		Detail: audit.EventDetail{Reason: string(KindAnswer)},
 	})
-	o.registry.SetState(goal.ID, StateDone)
+	// ADR 060 §6: keep the conversation open for follow-ups. The goal lingers in
+	// StateConversing (not StateDone); the goal actor routes follow-up `info` to
+	// ContinueAnswer and ends it (StateDone) on cancel / source EOF.
+	o.startConversation(goal.ID, goal.Spec, answer, analysis.Complexity)
+	o.registry.SetState(goal.ID, StateConversing)
 	if err := o.reporter.Report(ctx, answer); err != nil {
 		return fmt.Errorf("orchestrator: report answer: %w", err)
 	}

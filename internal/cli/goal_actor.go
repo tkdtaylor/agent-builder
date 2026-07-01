@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -127,6 +128,15 @@ func (a *goalActor) run(ctx context.Context) {
 		case <-ctx.Done():
 			// Cancelled
 		}
+	}
+
+	// Multi-turn answer (ADR 060 §6): a KindAnswer goal answered and is now in
+	// StateConversing. Linger for follow-up questions — each `info` is routed to
+	// ContinueAnswer by drainCommands/applyInfo below — until cancellation or source
+	// EOF, then end the conversation (StateDone).
+	if st, ok := a.oc.registry.Get(a.goal.ID); ok && st.State == orchestrator.StateConversing {
+		<-ctx.Done()
+		a.oc.orch.EndConversation(a.goal.ID)
 	}
 
 	close(handleDone)
@@ -302,6 +312,13 @@ func (a *goalActor) applyInfo(ctx context.Context, text string) {
 		a.goal.Spec = orchestrator.FoldGoalText(a.goal.Spec, info)
 		if err := a.oc.orch.ClarifyAndReport(ctx, a.goal); err != nil {
 			a.oc.report(ctx, fmt.Sprintf("info for goal %q: re-clarify failed: %v", a.goal.ID, err))
+		}
+	case orchestrator.StateConversing:
+		// Multi-turn answer (ADR 060 §6): the info is a follow-up question. Drain it and
+		// re-answer with the conversation transcript as context.
+		followup := strings.TrimSpace(strings.Join(a.oc.registry.DrainInfo(a.goal.ID), " "))
+		if err := a.oc.orch.ContinueAnswer(ctx, a.goal.ID, followup); err != nil {
+			a.oc.report(ctx, fmt.Sprintf("info for goal %q: follow-up failed: %v", a.goal.ID, err))
 		}
 	case orchestrator.StateAwaitingApproval:
 		// Paused at the approval checkpoint: surface the queued info WITH the approval

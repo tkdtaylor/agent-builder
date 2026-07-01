@@ -38,6 +38,10 @@ const (
 	// CancelFunc fired (tearing down in-flight workers via the run-loop ctx.Done()
 	// arm) and its plan was consumed from the PlanStore.
 	StateCancelled
+	// StateConversing — a KindAnswer goal (ADR 060 §6) answered and is holding a
+	// multi-turn conversation: it lingers for follow-up questions (info) until a
+	// cancel or source EOF ends it. A live (non-terminal) state.
+	StateConversing
 )
 
 // String renders a GoalState as its lowercase lifecycle name for status reports
@@ -60,6 +64,8 @@ func (s GoalState) String() string {
 		return "failed"
 	case StateCancelled:
 		return "cancelled"
+	case StateConversing:
+		return "conversing"
 	default:
 		return "unknown"
 	}
