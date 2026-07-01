@@ -85,6 +85,35 @@ Subcommands:
 - `0` — success
 - `2` — usage error (missing `--keyfile`, existing file without `--force`, or I/O failure)
 
+**Task 149 — `send` subcommand:**
+
+| Subcommand / flag | Type | Default | Effect |
+|-------------------|------|---------|--------|
+| `send` | subcommand | — | Seals a plaintext command with the operator's X25519 private key and orchestrator's X25519 public key, signs the envelope with the operator's Ed25519 private key, marshals the envelope to JSON, and POSTs it to the Telegram Bot API `sendMessage` endpoint. |
+| `send --keyfile <path>` | flag (required) | — | **Required.** Path to the operator keyfile (JSON, `0600` mode) created by `keygen`. |
+| `send --token <token>` | flag (required) | — | **Required.** Telegram bot token (the secret part after `@BotFather` registration; never logged or exposed). |
+| `send --base-url <url>` | flag (optional) | `https://api.telegram.org` | Base URL for the Telegram Bot API. Omitted when using the default production endpoint. |
+| `send --chat-id <id>` | flag (required) | — | **Required.** Numeric Telegram chat ID or username (as a string in the JSON POST body). |
+| `send --reply-to <msgID>` | flag (optional) | (absent) | Optional positive integer message ID to thread a reply to. When omitted, the POST body has no `reply_to_message_id` key. Invalid values (non-integer, zero, or negative) exit `2`. |
+| `send <command>` | positional argument (required) | — | **Required.** The plaintext goal-spec command to seal and send (e.g., `"status"` or `"new-goal plan docs and code"`). Must not be empty or whitespace-only; empty input exits `2`. |
+
+**Outputs:**
+- **Stdout:** None (silent on success).
+- **Stderr:** None on success; error messages on failure (keyfile read errors, envelope build errors, HTTP errors, etc.), each prefixed with "error:" or "usage error:".
+- **HTTP POST:** Exactly one POST to `<baseURL>/bot<token>/sendMessage` with JSON body `{"chat_id":"<ChatID>","text":"<sealed-envelope-JSON>"}` (and optionally `"reply_to_message_id":<msgID>` when `--reply-to` is given). The `text` field contains a marshalled `envelope.Envelope` with `From:"operator"`, `To:"orchestrator"`, hex-encoded `Nonce` and `Payload`, and an Ed25519 signature in the `Sig` field. **The plaintext command never appears on the wire** — only the sealed ciphertext.
+
+**Exit codes:**
+- `0` — success (POST accepted with `{"ok":true}`)
+- `1` — runtime error (keyfile read/parse, envelope build, or HTTP/API error)
+- `2` — usage error (missing required flags, empty/whitespace command, invalid `--reply-to`, or file not found)
+
+**Security invariants (fail-closed):**
+- Keyfile read errors (missing file, malformed JSON, truncated hex field) exit non-zero before sealing or POSTing.
+- Empty or whitespace-only command text is rejected before sealing or POSTing.
+- Invalid `--reply-to` (non-positive integer) is rejected before POSTing.
+- Bot token, operator private keys (Ed25519 + X25519 hex-encoded), and plaintext command are **never logged or printed to stdout/stderr**.
+- The raw HTTP POST body never contains the plaintext command text unencrypted (only the sealed ciphertext in the `text` field).
+
 ### HTTP / RPC API
 
 None. agent-builder exposes no HTTP or RPC endpoints.

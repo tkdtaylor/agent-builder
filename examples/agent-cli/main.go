@@ -4,11 +4,15 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
+	"strconv"
 
 	"github.com/tkdtaylor/agent-builder/internal/envelope"
 )
@@ -43,9 +47,12 @@ func Main(config Config) int {
 		writef(config.Stdout, "usage: agent-cli <subcommand> [options]\n\n")
 		writef(config.Stdout, "subcommands:\n")
 		writef(config.Stdout, "  keygen              generate operator + orchestrator keypairs\n")
+		writef(config.Stdout, "  send                seal + sign a command and POST it to Telegram\n")
 		return ExitOK
 	case "keygen":
 		return runKeygen(config, config.Args[1:])
+	case "send":
+		return runSend(config, config.Args[1:])
 	default:
 		writef(config.Stderr, "usage error: unknown subcommand %q\n\n", config.Args[0])
 		return ExitUsage
@@ -114,6 +121,170 @@ func runKeygenCore(stdout, stderr io.Writer, keyfilePath string) (*KeyMaterial, 
 	writef(stderr, "\n--- paste into orchestrator environment ---\n\nkeyfile written to %s (mode 0600)\n", keyfilePath)
 
 	return keys, ExitOK
+}
+
+func runSend(config Config, args []string) int {
+	fs := flag.NewFlagSet("send", flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // silence flag's default usage
+
+	var keyfilePath string
+	var token string
+	var baseURL string
+	var chatID string
+	var replyTo string
+
+	fs.StringVar(&keyfilePath, "keyfile", "", "path to the operator keyfile")
+	fs.StringVar(&token, "token", "", "Telegram bot token")
+	fs.StringVar(&baseURL, "base-url", "https://api.telegram.org", "Telegram API base URL")
+	fs.StringVar(&chatID, "chat-id", "", "Telegram chat ID")
+	fs.StringVar(&replyTo, "reply-to", "", "message ID to reply to (positive integer)")
+
+	if err := fs.Parse(args); err != nil {
+		writef(config.Stderr, "usage error: %v\n", err)
+		return ExitUsage
+	}
+
+	// Validate required flags
+	if keyfilePath == "" {
+		writef(config.Stderr, "usage error: --keyfile is required\n")
+		return ExitUsage
+	}
+	if token == "" {
+		writef(config.Stderr, "usage error: --token is required\n")
+		return ExitUsage
+	}
+	if chatID == "" {
+		writef(config.Stderr, "usage error: --chat-id is required\n")
+		return ExitUsage
+	}
+
+	// Get positional argument (command text)
+	cmdArgs := fs.Args()
+	if len(cmdArgs) == 0 {
+		writef(config.Stderr, "usage error: command text is required\n")
+		return ExitUsage
+	}
+
+	cmdText := strings.TrimSpace(strings.Join(cmdArgs, " "))
+	if cmdText == "" {
+		writef(config.Stderr, "usage error: command text cannot be empty or whitespace-only\n")
+		return ExitUsage
+	}
+
+	// Validate reply-to if provided
+	var replyToID int64
+	if replyTo != "" {
+		id, err := strconv.ParseInt(replyTo, 10, 64)
+		if err != nil || id <= 0 {
+			writef(config.Stderr, "usage error: --reply-to must be a positive integer\n")
+			return ExitUsage
+		}
+		replyToID = id
+	}
+
+	// Read and parse keyfile
+	keyfileData, err := os.ReadFile(keyfilePath)
+	if err != nil {
+		writef(config.Stderr, "error: failed to read keyfile: %v\n", err)
+		return 1
+	}
+
+	var kf KeyFile
+	if err := unmarshalJSON(keyfileData, &kf); err != nil {
+		writef(config.Stderr, "error: failed to parse keyfile JSON: %v\n", err)
+		return 1
+	}
+
+	// Decode hex fields
+	opEdPriv, err := hexDecode(kf.OperatorEdPriv)
+	if err != nil {
+		writef(config.Stderr, "error: failed to decode OperatorEdPriv hex: %v\n", err)
+		return 1
+	}
+	opXPriv, err := hexDecode(kf.OperatorXPriv)
+	if err != nil {
+		writef(config.Stderr, "error: failed to decode OperatorXPriv hex: %v\n", err)
+		return 1
+	}
+	if len(opXPriv) != 32 {
+		writef(config.Stderr, "error: OperatorXPriv must be 32 bytes, got %d\n", len(opXPriv))
+		return 1
+	}
+	orchXPub, err := hexDecode(kf.OrchXPub)
+	if err != nil {
+		writef(config.Stderr, "error: failed to decode OrchXPub hex: %v\n", err)
+		return 1
+	}
+	if len(orchXPub) != 32 {
+		writef(config.Stderr, "error: OrchXPub must be 32 bytes, got %d\n", len(orchXPub))
+		return 1
+	}
+
+	// Build the envelope
+	var opXPrivArray [32]byte
+	copy(opXPrivArray[:], opXPriv)
+	var orchXPubArray [32]byte
+	copy(orchXPubArray[:], orchXPub)
+
+	env, err := BuildEnvelope(opEdPriv, opXPrivArray, orchXPubArray, []byte(cmdText))
+	if err != nil {
+		writef(config.Stderr, "error: failed to build envelope: %v\n", err)
+		return 1
+	}
+
+	// Marshal envelope to JSON
+	envJSON, err := marshalJSON(env)
+	if err != nil {
+		writef(config.Stderr, "error: failed to marshal envelope: %v\n", err)
+		return 1
+	}
+
+	// Build request body
+	requestBody := map[string]interface{}{
+		"chat_id": chatID,
+		"text":    string(envJSON),
+	}
+	if replyToID > 0 {
+		requestBody["reply_to_message_id"] = replyToID
+	}
+
+	bodyJSON, err := marshalJSON(requestBody)
+	if err != nil {
+		writef(config.Stderr, "error: failed to marshal request body: %v\n", err)
+		return 1
+	}
+
+	// POST to Telegram
+	url := fmt.Sprintf("%s/bot%s/sendMessage", baseURL, token)
+	resp, err := http.Post(url, "application/json", bytes.NewReader(bodyJSON))
+	if err != nil {
+		writef(config.Stderr, "error: failed to POST to Telegram: %v\n", err)
+		return 1
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	// Check response status
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		writef(config.Stderr, "error: Telegram API returned %d: %s\n", resp.StatusCode, string(body))
+		return 1
+	}
+
+	// Parse response
+	var apiResp struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&apiResp); err != nil {
+		writef(config.Stderr, "error: failed to parse Telegram response: %v\n", err)
+		return 1
+	}
+
+	if !apiResp.OK {
+		writef(config.Stderr, "error: Telegram API returned ok=false\n")
+		return 1
+	}
+
+	return ExitOK
 }
 
 func writef(w io.Writer, format string, args ...interface{}) {
