@@ -81,9 +81,18 @@ func CompleterForEntry(entry registry.RegistryEntry) (Completer, error) {
 		return &ollamaCompleter{chatter: client}, nil
 
 	case registry.HarnessClaudeCLI:
-		// ADR 059: Claude single-shot via `claude -p`. Credentials come from the env
-		// secret source (cloud) or the translation-proxy endpoint (local entry).
-		return newClaudeCompleter(entry, secrets.NewEnvSecretSource()), nil
+		// ADR 059: Claude single-shot via `claude -p`. Credentials come from the chained
+		// (env → disk) secret source (cloud) or the translation-proxy endpoint (local entry).
+		// ADR 033: env token preferred; disk OAuth fallback when env empty (REQ-143-03).
+		// For cloud entries (non-empty SecretRef), the chained source resolves auth by
+		// reading env first, then falling back to ~/.claude/.credentials.json on-disk
+		// login when env tokens are absent. For local entries (empty SecretRef), disk
+		// fallback is safe since the chained source is never consulted — newClaudeCompleter
+		// sets BaseURL for local mode and auth resolution is skipped.
+		envSrc := secrets.NewEnvSecretSource()
+		diskSrc := secrets.NewDiskOAuthSecretSource()
+		chainedSrc := secrets.NewChainedSecretSource(envSrc, diskSrc)
+		return newClaudeCompleter(entry, chainedSrc), nil
 
 	case registry.HarnessAntigravityCLI:
 		// ADR 059: agy single-shot via `agy --print`. Subscription/OAuth (~/.antigravity).

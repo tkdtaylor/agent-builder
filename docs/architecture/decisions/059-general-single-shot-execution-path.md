@@ -78,3 +78,67 @@ wiring lives in `internal/cli`.
   general path *through* `orchestrate` is a later slice.
 - **Reimplement reasoning / a chat loop in Go.** Rejected — violates "compose a brain, don't
   reimplement reasoning." Single-shot print mode delegates entirely to the brain CLI.
+
+---
+
+## Amendment (Task 143): On-disk OAuth fallback for subscription logins
+
+**Date:** 2026-07-01
+**Relates to:** ADR 033 (subscription OAuth auth mode), task 101 (`claudeEnv` HOME isolation)
+
+### Context
+
+The Claude completer isolates `HOME` (temp dir) to prevent the child process from reading host
+credential files. For a user logged in via subscription OAuth (credentials stored in
+`${HOME}/.claude/.credentials.json`), the completer fails auth unless the operator manually
+exports `CLAUDE_CODE_OAUTH_TOKEN` to the environment — `ask --entry claude-oauth` cannot access
+on-disk login even though other brains (agy with inherited real HOME, ollama with no auth need)
+work transparently. For a general agent whose premise is "hand it a goal," requiring the operator
+to export a token to use their own logged-in Claude is a usability gap on the general (non-coding)
+path.
+
+### Decision
+
+**The completer resolves cloud credentials from a chained source (env → disk)** when constructing
+the `NewClaudeCLI` for cloud entries:
+
+1. **Env credentials checked first (ADR 033 preserved):** `ANTHROPIC_API_KEY` and
+   `CLAUDE_CODE_OAUTH_TOKEN` are read from the process environment as before. If either is
+   non-empty, it is used and disk is **not** consulted (env tokens are never overridden).
+
+2. **Disk credentials consulted only when env is empty:** When both env vars are empty, the parent
+   Go process reads `${HOME}/.claude/.credentials.json` (the real HOME, before isolation) and
+   extracts `claudeAiOauth.accessToken` as the OAuth token. The token is injected into the child
+   env via `CLAUDE_CODE_OAUTH_TOKEN`, and `claudeEnv` constructs the isolated child process as
+   before.
+
+3. **Graceful absence:** Missing/malformed/empty disk file → empty tokens, no error. This makes
+   the fallback transparent for operators without on-disk logins and preserves backwards
+   compatibility.
+
+4. **Implementation:** A new `DiskOAuthSecretSource` reads the disk file. A `ChainedSecretSource`
+   wraps env and disk sources and implements the precedence: env tokens returned when present;
+   disk tokens returned when env is empty. The completer wiring replaces the bare
+   `secrets.NewEnvSecretSource()` with the chained source. Local entries (empty `SecretRef`)
+   continue to use the translation-proxy path and ignore the disk source.
+
+### Why this shape
+
+- **Reuse of HOME isolation:** The disk read happens in the parent process (before `claudeEnv`
+  strips HOME), so the child still runs isolated and cannot access host config/cache.
+- **ADR 033 precedence preserved:** Explicit env tokens always win; disk is only a fallback.
+- **Graceful degradation:** Operators without on-disk login experience no regression (no error,
+  empty token, continues to use env-only auth as before).
+- **Security boundary:** Only `accessToken` is read, never the refresh token. Token lives in env,
+  never in argv, and is redacted on CLI failure.
+
+### Consequences
+
+- `ask --entry claude-oauth` can now answer questions when the user has a real Claude Pro/Max
+  subscription and no env token is exported (the 2026-06-30 blocker). The general-agent usability
+  story is complete for all three brains.
+- Two Secret sources are chained for each cloud completer construction (env + disk). The chain is
+  lightweight (sequential calls; no I/O until disk source is consulted only when env is empty).
+  Disk I/O is still one-shot (one `ReadFile` call per completer; no caching across prompts).
+- The on-disk OAuth fallback applies **only** to the completer path (`ask`); the coding-path
+  executor (`NewClaudeCLIFromEntry`) continues to use the env source alone (unchanged).
