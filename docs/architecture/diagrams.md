@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-06-30 (goal-alignment — Context/Container now show the three brains (Claude · agy · local ollama), the multi-LLM router, and the channel; agy is the successor to the deprecated gemini CLI)
+**Last updated:** 2026-07-01 (task 146 — answer route's brain is chosen at the goal analyzer's emitted `CapabilityTier` → `RoutingSpec.MinCapability`, ADR 061 §4)
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -298,7 +298,7 @@ sequenceDiagram
 
 ## 5. Orchestrator runtime flow — goal → plan → approval → dispatch
 
-> **Answer route (ADR 060, opt-in via `AGENT_BUILDER_GOAL_ANALYSIS`).** Before this flow, `BeginGoal` runs the `GoalAnalyzer`. A `KindAnswer` goal short-circuits here: it is answered by the single-shot `Answerer` (Completer, brain chosen by complexity) and the answer is returned via the `Reporter` — no clarifier, planner, policy gate, approval, or dispatch (read-only inference). It is **multi-turn**: the goal lingers in `StateConversing` and each follow-up `info` is answered with the conversation transcript as context (via `ContinueAnswer`) until `cancel`/EOF. Only `KindCoding` goals proceed through the sequence below.
+> **Answer route (ADR 060, opt-in via `AGENT_BUILDER_GOAL_ANALYSIS`).** Before this flow, `BeginGoal` runs the `GoalAnalyzer`. A `KindAnswer` goal short-circuits here: it is answered by the single-shot `Answerer` (Completer, brain chosen at the analyzer's emitted `CapabilityTier` → `RoutingSpec.MinCapability`; tier 0 falls back to floor 1 — ADR 061 §4, task 146) and the answer is returned via the `Reporter` — no clarifier, planner, policy gate, approval, or dispatch (read-only inference). It is **multi-turn**: the goal lingers in `StateConversing` and each follow-up `info` is answered with the conversation transcript as context (via `ContinueAnswer`) until `cancel`/EOF. Only `KindCoding` goals proceed through the sequence below.
 
 Tier-1 (`internal/orchestrator`, ADR 042/046). The orchestrator sits **above** the
 Section-4 worker flow: each sub-goal it approves is dispatched by invoking

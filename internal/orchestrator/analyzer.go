@@ -10,10 +10,14 @@ import (
 // Answerer answers a general (non-coding) goal in a single shot and returns the
 // text (ADR 060). It is the Completer-backed seam the orchestrator calls for a
 // KindAnswer goal; it is wired in internal/cli so internal/orchestrator never
-// imports internal/executor (F-010/F-014). complexity lets the wiring pick the
-// brain-capability floor the router selects within.
+// imports internal/executor (F-010/F-014). capabilityTier is the model-capability
+// floor the router selects within (ADR 061 §4): the value the analyzer emitted in
+// GoalAnalysis.CapabilityTier. A zero tier means "unset" — the wiring falls back to
+// its own default floor. Passing the tier directly (not the complexity) keeps
+// GoalAnalysis.CapabilityTier the single source of the capability floor, so the
+// answer route cannot drift from a second complexity→tier mapping.
 type Answerer interface {
-	Answer(ctx context.Context, prompt string, complexity GoalComplexity) (string, error)
+	Answer(ctx context.Context, prompt string, capabilityTier int) (string, error)
 }
 
 // GoalKind is what the orchestrator decides a goal is (ADR 060): a general
@@ -40,10 +44,24 @@ const (
 )
 
 // GoalAnalysis is the result of classifying a goal (ADR 060).
+//
+// CapabilityTier is the model-capability floor the goal requires (ADR 061 §4), the
+// single source the routing spec's MinCapability is built from — the router (ADR
+// 043) then picks the cheapest eligible entry at or above it. The rubric:
+//
+//	1 — simple / mechanical goal
+//	2 — complex goal (no design/security signal)
+//	3 — design / architecture / security / concurrency / cryptography goal
+//	0 — unset / ambiguous → the wiring falls back to defaultMinCapability
+//
+// The heuristic analyzer derives it from Complexity plus a small design/security
+// keyword set; the LLM analyzer emits it directly (authoritative where available)
+// and falls back to the heuristic on malformed output.
 type GoalAnalysis struct {
-	Kind       GoalKind
-	Complexity GoalComplexity
-	Rationale  string // short, human-readable; surfaced for audit/report
+	Kind           GoalKind
+	Complexity     GoalComplexity
+	CapabilityTier int    // required model-capability floor; 0 = unset (fall back to default)
+	Rationale      string // short, human-readable; surfaced for audit/report
 }
 
 // GoalAnalyzer classifies an incoming goal so the orchestrator can route it
@@ -80,9 +98,12 @@ var codeBuildVerbs = map[string]bool{
 
 // Analyze implements GoalAnalyzer.Analyze. Rules are applied in order (ADR 060):
 // repo/path → coding; question → answer; code-build verb → coding; else answer.
+// The capability tier (ADR 061 §4) is derived from complexity plus a design/security
+// keyword bump (see tierOf) and attached to every result.
 func (a *HeuristicGoalAnalyzer) Analyze(goal supervisor.Task) (GoalAnalysis, error) {
 	spec := strings.TrimSpace(goal.Spec)
 	complexity := complexityOf(spec)
+	tier := tierOf(spec, complexity)
 
 	lower := strings.ToLower(spec)
 	firstWord := ""
@@ -92,14 +113,52 @@ func (a *HeuristicGoalAnalyzer) Analyze(goal supervisor.Task) (GoalAnalysis, err
 
 	switch {
 	case namesRepoOrPath(spec):
-		return GoalAnalysis{Kind: KindCoding, Complexity: complexity, Rationale: "names a repo or path"}, nil
+		return GoalAnalysis{Kind: KindCoding, Complexity: complexity, CapabilityTier: tier, Rationale: "names a repo or path"}, nil
 	case strings.HasSuffix(spec, "?") || interrogatives[firstWord]:
-		return GoalAnalysis{Kind: KindAnswer, Complexity: complexity, Rationale: "reads as a question"}, nil
+		return GoalAnalysis{Kind: KindAnswer, Complexity: complexity, CapabilityTier: tier, Rationale: "reads as a question"}, nil
 	case codeBuildVerbs[firstWord]:
-		return GoalAnalysis{Kind: KindCoding, Complexity: complexity, Rationale: "starts with a code-build verb"}, nil
+		return GoalAnalysis{Kind: KindCoding, Complexity: complexity, CapabilityTier: tier, Rationale: "starts with a code-build verb"}, nil
 	default:
-		return GoalAnalysis{Kind: KindAnswer, Complexity: complexity, Rationale: "no repo/path or build verb — treated as a question"}, nil
+		return GoalAnalysis{Kind: KindAnswer, Complexity: complexity, CapabilityTier: tier, Rationale: "no repo/path or build verb — treated as a question"}, nil
 	}
+}
+
+// designSecuritySubstrings are the (lowercased) markers that bump a goal to the top
+// capability tier (3): design/architecture, security, concurrency, and cryptography
+// work is where the strongest model earns its keep (ADR 061). Kept small and
+// substring-matched so morphological variants (secure/security, concurren{t,cy},
+// crypto/cryptography) all trip the same rule.
+var designSecuritySubstrings = []string{
+	"security", "secure", "auth", "crypto",
+	"architecture", "design",
+	"concurren", "distributed",
+}
+
+// tierOf maps a goal to its required model-capability floor (ADR 061 §4 rubric):
+// simple → 1, complex → 2, bumped to 3 when a design/security signal is present.
+// It never returns 0 for the heuristic path — a heuristic classification always has
+// a definite complexity, so the tier is always known; 0 (unset) is reserved for the
+// LLM path when it emits no tier and there is no fallback (never on this path).
+func tierOf(spec string, complexity GoalComplexity) int {
+	if hasDesignOrSecuritySignal(spec) {
+		return 3
+	}
+	if complexity == ComplexityComplex {
+		return 2
+	}
+	return 1
+}
+
+// hasDesignOrSecuritySignal reports whether the spec carries a design/architecture,
+// security, concurrency, or cryptography marker (case-insensitive substring match).
+func hasDesignOrSecuritySignal(spec string) bool {
+	l := strings.ToLower(spec)
+	for _, kw := range designSecuritySubstrings {
+		if strings.Contains(l, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // namesRepoOrPath reports whether the spec references a repository or file path.

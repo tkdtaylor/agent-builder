@@ -633,8 +633,9 @@ type Clarification struct {
     Questions []string
 }
 
-// GoalAnalyzer interface (ADR 060 §4, task 142):
-// Classifies a goal's Kind (answer vs coding) and Complexity at intake.
+// GoalAnalyzer interface (ADR 060 §4, task 142; tier emission ADR 061 §4, task 146):
+// Classifies a goal's Kind (answer vs coding), Complexity, and the required model-
+// CapabilityTier at intake.
 // Implementations:
 //   - HeuristicGoalAnalyzer (rule-based static patterns: interrogatives, code verbs, repo/path names; local default)
 //   - LLMGoalAnalyzer (sends prompt via planner.Invoker to classify via model; enabled by AGENT_BUILDER_GOAL_ANALYSIS=llm; fails safe to heuristic on parse/invoke error)
@@ -643,10 +644,34 @@ type GoalAnalyzer interface {
 }
 
 type GoalAnalysis struct {
-    Kind       GoalKind       // "answer" or "coding"
-    Complexity GoalComplexity // "simple" or "complex"
-    Rationale  string         // human-readable reason (audit/report)
+    Kind           GoalKind       // "answer" or "coding"
+    Complexity     GoalComplexity // "simple" or "complex"
+    CapabilityTier int            // required model-capability floor; 0 = unset (caller falls back to default). Rubric below.
+    Rationale      string         // human-readable reason (audit/report)
 }
+
+// CapabilityTier rubric (ADR 061 §4) — the single source the routing spec's
+// MinCapability is built from; the router (ADR 043) then picks the cheapest eligible
+// entry at or above it:
+//   1  simple / mechanical goal
+//   2  complex goal (no design/security signal)
+//   3  design / architecture / security / concurrency / cryptography goal
+//   0  unset / ambiguous → the wiring falls back to its default floor (defaultMinCapability = 1)
+//
+// HeuristicGoalAnalyzer: Complexity=simple→1, Complexity=complex→2, bumped to 3 when a
+//   design/security keyword is present (security, secure, auth, crypto, architecture,
+//   design, concurren…, distributed). It never emits 0 — complexity is always definite.
+// LLMGoalAnalyzer: emits the tier directly in its JSON contract ("tier": 1|2|3) and is
+//   authoritative when the value is valid; a missing/out-of-range tier (or any parse/
+//   invoke error) falls back to the heuristic's tier, and the lenient string-recovery
+//   path backfills its unset tier from the heuristic so a successful analysis always
+//   carries a definite tier.
+//
+// Answerer.Answer takes this tier (not Complexity): it is wired straight into the
+// answer route's RoutingSpec.MinCapability, so GoalAnalysis.CapabilityTier is the one
+// place the answer route's capability floor is decided (no parallel complexity→tier map).
+// SensitivityHint stays orthogonal — the same tier yields the same MinCapability at any
+// sensitivity.
 
 type GoalKind string
 type GoalComplexity string

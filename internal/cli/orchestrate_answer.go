@@ -34,23 +34,40 @@ func goalAnalyzerFromEnv(getenv func(string) string, resolver planner.ExecutorRe
 	}
 }
 
+// answerDefaultMinCapability is the routing-spec capability floor the answer route
+// uses when the analyzer emitted no tier (CapabilityTier == 0). It mirrors the
+// planner's defaultMinCapability (ADR 061 §4): the cheapest floor, letting the router
+// pick the cheapest eligible brain.
+const answerDefaultMinCapability = 1
+
+// answerMinCapability resolves the model-capability floor for the answer route from
+// the tier the goal analyzer emitted (ADR 061 §4). It is the single tier→MinCapability
+// resolution on this path: a positive tier is used verbatim; a zero (unset/ambiguous)
+// tier falls back to answerDefaultMinCapability. There is NO parallel complexity→tier
+// mapping here — GoalAnalysis.CapabilityTier is the single source (task 146).
+func answerMinCapability(capabilityTier int) int {
+	if capabilityTier > 0 {
+		return capabilityTier
+	}
+	return answerDefaultMinCapability
+}
+
 // cliAnswerer is the orchestrator.Answerer implementation for the orchestrate
-// answer path (ADR 060). It selects a brain by the goal's complexity (→ capability
-// floor) and answers via the single-shot Completer seam — the same construction
-// the `ask` subcommand uses. Living in internal/cli keeps internal/executor out of
-// internal/orchestrator (F-010/F-014).
+// answer path (ADR 060). It selects a brain at the model-capability floor the goal
+// analyzer emitted (ADR 061 §4) and answers via the single-shot Completer seam — the
+// same construction the `ask` subcommand uses. Living in internal/cli keeps
+// internal/executor out of internal/orchestrator (F-010/F-014).
 type cliAnswerer struct{}
 
 // Compile-time assertion: cliAnswerer satisfies orchestrator.Answerer.
 var _ orchestrator.Answerer = cliAnswerer{}
 
-// Answer routes the prompt to a brain at a capability floor derived from complexity
-// (simple → 1, complex → 2) and returns the single-shot completion.
-func (cliAnswerer) Answer(ctx context.Context, prompt string, complexity orchestrator.GoalComplexity) (string, error) {
-	minCap := 1
-	if complexity == orchestrator.ComplexityComplex {
-		minCap = 2
-	}
+// Answer routes the prompt to a brain at the model-capability floor derived from the
+// analyzer's emitted tier (answerMinCapability) and returns the single-shot
+// completion. The tier is wired straight into RoutingSpec.MinCapability, so the
+// dynamic tier the analyzer chose is what the static router (ADR 043) selects within.
+func (cliAnswerer) Answer(ctx context.Context, prompt string, capabilityTier int) (string, error) {
+	minCap := answerMinCapability(capabilityTier)
 
 	cat, err := buildBrainCatalog()
 	if err != nil {
@@ -58,9 +75,9 @@ func (cliAnswerer) Answer(ctx context.Context, prompt string, complexity orchest
 	}
 	entry, err := router.New(cat).Select(router.RoutingSpec{MinCapability: minCap})
 	if err != nil {
-		// Fall back to the floor (a complex goal on a single low-tier brain still
+		// Fall back to the floor (a high-tier goal on a single low-tier brain still
 		// gets answered rather than failing outright).
-		entry, err = router.New(cat).Select(router.RoutingSpec{MinCapability: 1})
+		entry, err = router.New(cat).Select(router.RoutingSpec{MinCapability: answerDefaultMinCapability})
 		if err != nil {
 			return "", fmt.Errorf("select brain for answer: %w", err)
 		}

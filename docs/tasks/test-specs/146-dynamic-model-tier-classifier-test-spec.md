@@ -23,21 +23,55 @@ alongside `Kind`, over the existing LLM-vs-heuristic seam.
   change sensitivity handling.
 - **REQ-146-05** — Spec updated (`interfaces.md` GoalAnalysis contract); `make check` green.
 
+## Tier rubric (resolved, ADR 061 §4)
+
+`GoalAnalysis.CapabilityTier int` is the single source the answer route's
+`RoutingSpec.MinCapability` is built from (0 = unset → caller falls back to the default
+floor). The rubric:
+
+| Goal | Tier |
+|------|------|
+| simple / mechanical | 1 |
+| complex (no design/security signal) | 2 |
+| design / architecture / security / concurrency / cryptography | 3 |
+| ambiguous / unknown | 0 (unset → default floor) |
+
+- **Heuristic analyzer:** `Complexity=simple → 1`, `Complexity=complex → 2`, bumped to 3
+  when a design/security keyword is present (`security`, `secure`, `auth`, `crypto`,
+  `architecture`, `design`, `concurren…`, `distributed`). It always has a definite
+  complexity, so it never emits 0.
+- **LLM analyzer:** emits the tier directly in its JSON contract (`"tier": 1|2|3`) and is
+  authoritative when valid; a missing/out-of-range tier (or any parse/invoke error) falls
+  back to the heuristic result exactly as task 142 does; the lenient string-recovery path
+  backfills its unset tier from the heuristic so a successful analysis always carries a
+  definite tier.
+
 ## Test cases
 
-- **TC-146-01** (`TestAnalyzerEmitsTierBySimpleGoal`, table) — trivial goal → low tier;
-  design/security goal → high tier; ambiguous → default.
-- **TC-146-02** (`TestEmittedTierReachesRoutingSpec`) — analyzer tier N → built
-  `RoutingSpec.MinCapability == N`; no tier → `defaultMinCapability`.
-- **TC-146-03** (`TestTierIndependentOfSensitivity`) — same goal at different sensitivities
-  yields the same tier.
+- **TC-146-01** (`TestAnalyzerEmitsTierBySimpleGoal`, table, `internal/orchestrator`) —
+  heuristic: trivial/simple → 1; complex-but-not-security → 2; design/architecture/
+  security/auth/crypto/concurrency → 3. Companion `TestHeuristicAnalyzerNeverEmitsUnsetTier`
+  pins the heuristic never emits 0. LLM authoritative path asserted in
+  `TestLLMGoalAnalyzerParsesWellFormedResponse` (`internal/orchestrator/planner`): the
+  emitted `"tier"` reaches `GoalAnalysis.CapabilityTier` verbatim (tiers 1/2/3); malformed/
+  missing/out-of-range tier falls back to the heuristic tier
+  (`TestLLMGoalAnalyzerFallbackOnMalformed` asserts `CapabilityTier == heuristic`).
+- **TC-146-02** (`TestEmittedTierReachesRoutingSpec`, `internal/cli`) — drives the real
+  producer `answerMinCapability(tier)` (the single tier→MinCapability resolution inside
+  `cliAnswerer.Answer`) and the real consumer `router.Select(RoutingSpec{MinCapability: …})`:
+  tier N → floor N → an entry at tier ≥ N is selected; tier 0 → `answerDefaultMinCapability`
+  (= 1). Not a hand-set field — the mapping function and Select call are the ones on the
+  live answer path.
+- **TC-146-03** (`TestTierIndependentOfSensitivity`, `internal/orchestrator` +
+  `TestTierMinCapabilityIndependentOfSensitivity`, `internal/cli`) — the analyzer takes no
+  sensitivity input (tier is stable across calls), and the same tier yields the same
+  `MinCapability` floor at `SensitivityNone` and `SensitivitySensitive` — model tier and
+  sensitivity stay orthogonal (REQ-146-04: `SensitivityHint` semantics unchanged).
 
 ## Verification levels
 
 - **L2** — analyzer + wiring tests above.
-- **L3** — `make check` green.
+- **L3** — `make check` green (Go tests + 14/14 fitness, incl. F-014
+  `internal/orchestrator/planner` has no direct import of `internal/executor`).
 - **L6** — operator observes a trivial goal → cheap model, hard goal → top model via the
   dynamic step.
-
-> Stub spec — refine the tier rubric and analyzer assertions when the task is picked up,
-> consistent with ADR 060/061.

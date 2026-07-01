@@ -324,6 +324,16 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 
 ---
 
+### B-037: Goal analysis emits a capability tier that feeds the routing spec's MinCapability
+
+- **Trigger:** A goal reaches the goal analyzer (`GoalAnalyzer.Analyze`) at intake — the heuristic analyzer (default) or the LLM analyzer (`AGENT_BUILDER_GOAL_ANALYSIS=llm`).
+- **Response:** The analysis carries a `CapabilityTier` (ADR 061 §4) alongside `Kind`/`Complexity`, by this rubric: simple/mechanical → tier 1; complex (no design/security signal) → tier 2; design/architecture/security/concurrency/cryptography goal → tier 3; ambiguous/unset → 0. The heuristic derives it from `Complexity` plus a design/security keyword bump (`security`, `secure`, `auth`, `crypto`, `architecture`, `design`, `concurren…`, `distributed`) and never emits 0. The LLM analyzer emits the tier directly in its JSON contract (`"tier"`) and is authoritative when valid (1–3); a missing/out-of-range tier, any parse/invoke error, or the lenient string-recovery path backfills the tier from the heuristic, so a successful analysis always carries a definite tier.
+- **Side effects:** On the answer route (`KindAnswer`), the emitted tier is passed to `Answerer.Answer` and wired straight into `RoutingSpec.MinCapability` (`answerMinCapability`): a positive tier is used verbatim; tier 0 falls back to the default floor (`answerDefaultMinCapability = 1`). The static router (ADR 043) then selects the cheapest eligible entry at or above that floor — the dynamic step only chooses the floor, it does not itself select. This is the single tier→MinCapability resolution on the answer path; there is no parallel `Complexity→tier` mapping. `SensitivityHint` stays orthogonal: the same tier yields the same floor at any sensitivity.
+- **Failure modes:** If the emitted tier is 0 (unset), the wiring falls back to the default floor rather than failing. If the router finds no entry at the chosen floor, the answer route retries at the default floor so a single low-tier deployment still answers rather than erroring out.
+- **References:** ADR 061 §4; ADR 060; task 146; `docs/tasks/test-specs/146-dynamic-model-tier-classifier-test-spec.md`.
+
+---
+
 ## Edge cases and error behaviors
 
 ### B-003: Native tool absence fails loudly

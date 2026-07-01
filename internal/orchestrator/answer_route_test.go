@@ -24,29 +24,30 @@ func (f fakeAnalyzer) Analyze(supervisor.Task) (GoalAnalysis, error) { return f.
 
 // fakeAnswerer records its inputs and returns a canned answer.
 type fakeAnswerer struct {
-	answer        string
-	err           error
-	called        bool
-	gotPrompt     string
-	gotComplexity GoalComplexity
+	answer    string
+	err       error
+	called    bool
+	gotPrompt string
+	gotTier   int
 }
 
-func (f *fakeAnswerer) Answer(_ context.Context, prompt string, c GoalComplexity) (string, error) {
+func (f *fakeAnswerer) Answer(_ context.Context, prompt string, tier int) (string, error) {
 	f.called = true
 	f.gotPrompt = prompt
-	f.gotComplexity = c
+	f.gotTier = tier
 	return f.answer, f.err
 }
 
-// TC-139-01: a KindAnswer goal is answered — answerer gets the goal text + complexity,
-// the answer is reported, and the goal reaches StateDone. No planner/policy involved.
+// TC-139-01: a KindAnswer goal is answered — answerer gets the goal text + the
+// emitted capability tier, the answer is reported, and the goal reaches
+// StateConversing. No planner/policy involved.
 func TestBeginGoalAnswerRoute(t *testing.T) {
 	rep := &recordingAnswerReporter{}
 	ans := &fakeAnswerer{answer: "Paris"}
 	reg := NewStatusRegistry()
 	o := New(nil, nil, rep, runtime.Config{},
 		WithStatusRegistry(reg),
-		WithGoalAnalyzer(fakeAnalyzer{GoalAnalysis{Kind: KindAnswer, Complexity: ComplexitySimple}}),
+		WithGoalAnalyzer(fakeAnalyzer{GoalAnalysis{Kind: KindAnswer, Complexity: ComplexitySimple, CapabilityTier: 1}}),
 		WithAnswerer(ans),
 	)
 
@@ -61,8 +62,8 @@ func TestBeginGoalAnswerRoute(t *testing.T) {
 	if ans.gotPrompt != goal.Spec {
 		t.Errorf("answerer prompt = %q, want %q", ans.gotPrompt, goal.Spec)
 	}
-	if ans.gotComplexity != ComplexitySimple {
-		t.Errorf("answerer complexity = %q, want simple", ans.gotComplexity)
+	if ans.gotTier != 1 {
+		t.Errorf("answerer tier = %d, want 1 (the analyzer's emitted CapabilityTier)", ans.gotTier)
 	}
 	if len(rep.lines) != 1 || rep.lines[0] != "Paris" {
 		t.Errorf("reported lines = %v, want [\"Paris\"]", rep.lines)

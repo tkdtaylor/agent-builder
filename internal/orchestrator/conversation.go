@@ -23,11 +23,12 @@ type convTurn struct {
 }
 
 // conversation is the in-process, per-goal history for a KindAnswer goal that is
-// holding a multi-turn conversation (ADR 060 §6). complexity is carried so each
-// follow-up routes to the same brain-capability floor as the opening question.
+// holding a multi-turn conversation (ADR 060 §6). capabilityTier is carried so each
+// follow-up routes to the same model-capability floor as the opening question (ADR
+// 061 §4); 0 means unset (the answerer falls back to its default floor).
 type conversation struct {
-	turns      []convTurn
-	complexity GoalComplexity
+	turns          []convTurn
+	capabilityTier int
 }
 
 // composeTranscript renders the running conversation into the single prompt the
@@ -47,7 +48,7 @@ func composeTranscript(c *conversation) string {
 
 // startConversation records the opening turn pair and returns nothing; called by
 // answerGoal after the first reply so the goal can linger in StateConversing.
-func (o *Orchestrator) startConversation(goalID, question, answer string, complexity GoalComplexity) {
+func (o *Orchestrator) startConversation(goalID, question, answer string, capabilityTier int) {
 	o.convMu.Lock()
 	defer o.convMu.Unlock()
 	if o.conversations == nil {
@@ -58,7 +59,7 @@ func (o *Orchestrator) startConversation(goalID, question, answer string, comple
 			{role: roleUser, text: question},
 			{role: roleAssistant, text: answer},
 		},
-		complexity: complexity,
+		capabilityTier: capabilityTier,
 	}
 }
 
@@ -79,10 +80,10 @@ func (o *Orchestrator) ContinueAnswer(ctx context.Context, goalID, text string) 
 	}
 	conv.turns = append(conv.turns, convTurn{role: roleUser, text: text})
 	prompt := composeTranscript(conv)
-	complexity := conv.complexity
+	tier := conv.capabilityTier
 	o.convMu.Unlock()
 
-	answer, err := o.answerer.Answer(ctx, prompt, complexity)
+	answer, err := o.answerer.Answer(ctx, prompt, tier)
 	if err != nil {
 		if repErr := o.reporter.Report(ctx, fmt.Sprintf("Could not answer follow-up for goal %q: %v", goalID, err)); repErr != nil {
 			return fmt.Errorf("orchestrator: report follow-up error: %w", repErr)
