@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/tkdtaylor/agent-builder/internal/audit"
+	"github.com/tkdtaylor/agent-builder/internal/channel/telegram/authz"
 	"github.com/tkdtaylor/agent-builder/internal/envelope"
 	"github.com/tkdtaylor/agent-builder/internal/ingestion"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
@@ -55,6 +56,14 @@ type Adapter struct {
 	maxBodyBytes      int64
 	maxMessageBytes   int64
 	guardTimeout      time.Duration
+
+	// authMode selects the inbound auth mode (ADR 063). Unset ⇒ authz.ModeEnvelope,
+	// which reproduces today's adapter exactly (VerifyAndOpen runs, sender ID ignored).
+	authMode authz.Mode
+	// authStore is the persisted approved-sender store consulted in sender-ID modes
+	// (allowlist/pairing). nil for envelope/disabled/open — Decide only dereferences it
+	// for the store-consulting modes.
+	authStore *authz.Store
 
 	// goalIDCache maps a Telegram message ID (the original new-goal message ID as
 	// a string) to the derived goalID. Used to thread reply-to commands to the
@@ -91,6 +100,12 @@ type Config struct {
 	// GuardTimeout is the timeout for armor guard DecideContent calls.
 	// Default: 5 seconds if not set.
 	GuardTimeout time.Duration
+	// AuthMode selects the inbound auth mode (ADR 063). The zero value ("") is treated
+	// as authz.ModeEnvelope — today's behavior, byte-for-byte, when unset.
+	AuthMode authz.Mode
+	// AuthStore is the persisted approved-sender store. Required (non-nil, already
+	// Load()ed) for sender-ID modes that consult it (allowlist/pairing); nil otherwise.
+	AuthStore *authz.Store
 }
 
 // NewAdapter constructs a Telegram channel adapter.
@@ -113,6 +128,9 @@ func NewAdapter(config Config) *Adapter {
 	if config.GuardTimeout <= 0 {
 		config.GuardTimeout = 5 * time.Second // 5 seconds default
 	}
+	if config.AuthMode == "" {
+		config.AuthMode = authz.ModeEnvelope // unset ⇒ strong-security default (ADR 063 Decision 1)
+	}
 	return &Adapter{
 		botToken:          config.BotToken,
 		baseURL:           config.BaseURL,
@@ -127,6 +145,8 @@ func NewAdapter(config Config) *Adapter {
 		maxBodyBytes:      config.MaxBodyBytes,
 		maxMessageBytes:   config.MaxMessageBytes,
 		guardTimeout:      config.GuardTimeout,
+		authMode:          config.AuthMode,
+		authStore:         config.AuthStore,
 		goalIDCache:       make(map[string]string),
 	}
 }
@@ -156,6 +176,45 @@ func (a *Adapter) Next() (supervisor.Message, bool, error) {
 		}
 
 		a.logger.Debug("processing update", "update_id", update.UpdateID, "text_len", len(update.Message.Text))
+
+		// Mode decision (ADR 063 Decision 5): decide BEFORE any envelope parse or armor
+		// work whether this update is routed through the crypto pipeline (envelope mode),
+		// rejected outright (disabled mode), or accepted as plaintext (sender-ID modes).
+		// The sender ID is consulted here and only here; envelope mode ignores it.
+		//
+		// disabled: reject before any parse/armor/authz — done here.
+		// allowlist/pairing/open: sender-ID gate accepts/rejects the plaintext.
+		// envelope (default): fall through to the untouched VerifyAndOpen pipeline below.
+		decision := authz.Decide(a.authMode, update.Message.senderID(), a.authStore)
+		switch decision.Action {
+		case authz.ActionRejectDisabled, authz.ActionRejectUnapproved:
+			// Reject BEFORE any envelope parse / armor / ContentGuard invocation.
+			a.logger.Debug("mode rejected update", "update_id", update.UpdateID, "reason", decision.Reason)
+			a.emitAuditEvent(string(decision.Reason))
+			continue
+
+		case authz.ActionAcceptPlaintext:
+			// Sender-ID gate accepted: enforce the SAME size cap, then run the SAME armor +
+			// derive pipeline the envelope path uses (ADR 063 Decision 2 — RETAINED controls).
+			// Note the accept-side audit event is emitted only after the update actually
+			// yields a message, so a size-cap/armor reject on accepted-sender content records
+			// its own rejection reason, not a spurious accept.
+			if int64(len(update.Message.Text)) > a.maxMessageBytes {
+				a.logger.Debug("message text exceeds max length (plaintext path)", "update_id", update.UpdateID, "text_len", len(update.Message.Text), "max", a.maxMessageBytes)
+				a.emitAuditEvent("text_too_long")
+				continue
+			}
+			msg, ok := a.processPlaintext(update, []byte(update.Message.Text))
+			if !ok {
+				continue
+			}
+			a.emitAuditEvent(string(decision.Reason))
+			a.logger.Debug("message derived (plaintext path)", "kind", msg.Kind, "goal_id", msg.GoalID)
+			return msg, true, nil
+
+		case authz.ActionRouteEnvelope:
+			// Fall through to the envelope pipeline below (unchanged from pre-task behavior).
+		}
 
 		// Check message text length to prevent processing oversized messages (SEC-001)
 		if int64(len(update.Message.Text)) > a.maxMessageBytes {
@@ -202,6 +261,26 @@ func (a *Adapter) Next() (supervisor.Message, bool, error) {
 
 		a.logger.Debug("envelope verified and decrypted", "plaintext_len", len(plaintext))
 
+		msg, ok := a.processPlaintext(update, plaintext)
+		if !ok {
+			continue
+		}
+		a.logger.Debug("message derived", "kind", msg.Kind, "goal_id", msg.GoalID)
+		return msg, true, nil
+	}
+
+	// No valid message from this batch.
+	a.logger.Debug("no valid message from updates")
+	return supervisor.Message{}, false, nil
+}
+
+// processPlaintext runs verified/accepted plaintext through the armor + derive pipeline
+// shared by the envelope path and the sender-ID plaintext paths (ADR 063 Decision 2:
+// armor is RETAINED on every accepted plaintext, never bypassed on the sender-ID path).
+// It returns (msg, true) when a message is derived, or (zero, false) when the update is
+// rejected (candidate-invalid, armor error, or armor block) — the caller continues.
+func (a *Adapter) processPlaintext(update Update, plaintext []byte) (supervisor.Message, bool) {
+	{
 		// Convert plaintext to a ContentCandidate for armor.
 		// Note: SourceURI must be http/https (per ingestion package validation),
 		// so we use a placeholder https URI.
@@ -218,7 +297,7 @@ func (a *Adapter) Next() (supervisor.Message, bool, error) {
 		if err != nil {
 			a.logger.Debug("content candidate creation failed", "error", err)
 			a.emitAuditEvent("candidate_invalid")
-			continue
+			return supervisor.Message{}, false
 		}
 
 		// Route through armor.Guard with a bounded timeout context (SEC-002)
@@ -229,7 +308,7 @@ func (a *Adapter) Next() (supervisor.Message, bool, error) {
 		if err != nil {
 			a.logger.Debug("armor guard error", "error", err)
 			a.emitAuditEvent("armor_error")
-			continue
+			return supervisor.Message{}, false
 		}
 
 		a.logger.Debug("armor decision", "outcome", decision.Outcome)
@@ -238,19 +317,14 @@ func (a *Adapter) Next() (supervisor.Message, bool, error) {
 		if decision.Outcome != ingestion.DecisionAllow {
 			a.logger.Debug("armor rejected", "reason", decision.Reason)
 			a.emitAuditEvent("armor_blocked: " + decision.Reason)
-			continue
+			return supervisor.Message{}, false
 		}
 
-		// SECURITY: plaintext has passed envelope-verify + armor. Now derive kind/GoalID
-		// at the adapter edge from the trusted plaintext and message identity.
+		// SECURITY: plaintext has passed envelope-verify (or the sender-ID gate) + armor.
+		// Now derive kind/GoalID at the adapter edge from the trusted plaintext and identity.
 		msg := a.deriveMessage(update, plaintext)
-		a.logger.Debug("message derived", "kind", msg.Kind, "goal_id", msg.GoalID)
-		return msg, true, nil
+		return msg, true
 	}
-
-	// No valid message from this batch.
-	a.logger.Debug("no valid message from updates")
-	return supervisor.Message{}, false, nil
 }
 
 // deriveMessage maps a verified, armor-passed Telegram update to a typed supervisor.Message
@@ -354,14 +428,14 @@ func splitVerb(text string) (verb, rest string) {
 
 // GetUpdatesResponse is the Telegram Bot API response shape for getUpdates.
 type GetUpdatesResponse struct {
-	OK     bool      `json:"ok"`
-	Result []Update  `json:"result"`
-	Error  string    `json:"error_description,omitempty"`
+	OK     bool     `json:"ok"`
+	Result []Update `json:"result"`
+	Error  string   `json:"error_description,omitempty"`
 }
 
 // Update is one Telegram update.
 type Update struct {
-	UpdateID int64   `json:"update_id"`
+	UpdateID int64    `json:"update_id"`
 	Message  *Message `json:"message,omitempty"`
 }
 
@@ -369,13 +443,34 @@ type Update struct {
 type Message struct {
 	MessageID      int64    `json:"message_id"`
 	Text           string   `json:"text"`
+	From           *User    `json:"from,omitempty"`
 	Chat           *Chat    `json:"chat,omitempty"`
 	ReplyToMessage *Message `json:"reply_to_message,omitempty"`
+}
+
+// User is the sender of a Telegram message (minimal — only the numeric ID is used for
+// the sender-ID auth gate in ADR 063 modes).
+type User struct {
+	ID int64 `json:"id"`
 }
 
 // Chat is a Telegram chat (minimal — only the ID is used for goal ID derivation).
 type Chat struct {
 	ID int64 `json:"id"`
+}
+
+// senderID returns the raw numeric sender ID for the auth gate as a decimal string.
+// Telegram populates message.from.id for the sender; in a 1:1 private chat the chat ID
+// equals the user ID, so Chat.ID is the fallback when From is absent. An update with
+// neither yields "" (which fails Normalize, so it can never satisfy a sender-ID gate).
+func (m *Message) senderID() string {
+	if m.From != nil {
+		return strconv.FormatInt(m.From.ID, 10)
+	}
+	if m.Chat != nil {
+		return strconv.FormatInt(m.Chat.ID, 10)
+	}
+	return ""
 }
 
 // getUpdates polls the Telegram Bot API.
