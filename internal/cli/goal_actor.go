@@ -133,9 +133,15 @@ func (a *goalActor) run(ctx context.Context) {
 	// Multi-turn answer (ADR 060 §6): a KindAnswer goal answered and is now in
 	// StateConversing. Linger for follow-up questions — each `info` is routed to
 	// ContinueAnswer by drainCommands/applyInfo below — until cancellation or source
-	// EOF, then end the conversation (StateDone).
+	// EOF, then end the conversation (StateDone). Selecting on both ctx.Done() and
+	// a.shutdown means a FINITE MessageSource (env spec + EOF stdin) unblocks this
+	// linger on drain even though the control loop never cancels ctx (task 147) — a
+	// live/interactive source leaves shutdown open, so only cancellation ends it.
 	if st, ok := a.oc.registry.Get(a.goal.ID); ok && st.State == orchestrator.StateConversing {
-		<-ctx.Done()
+		select {
+		case <-ctx.Done():
+		case <-a.shutdown:
+		}
 		a.oc.orch.EndConversation(a.goal.ID)
 	}
 

@@ -43,6 +43,10 @@ func TestComposeTranscript(t *testing.T) {
 // TC-141-01/02: the opening answer starts a conversation (StateConversing); a
 // follow-up (ContinueAnswer) re-answers with the full transcript as context and
 // grows the history to four turns.
+//
+// TC-147-04 (regression, task 147): unchanged by the internal/cli goal_actor.go
+// shutdown-select fix — while input remains (shutdown open), a follow-up still
+// continues the conversation and does not end prematurely.
 func TestConversingAnswerAndFollowUp(t *testing.T) {
 	rep := &recordingAnswerReporter{}
 	ans := &echoAnswerer{answers: []string{"Paris", "Berlin"}}
