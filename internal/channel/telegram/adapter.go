@@ -65,6 +65,19 @@ type Adapter struct {
 	// for the store-consulting modes.
 	authStore *authz.Store
 
+	// ownerID is the configured, already-normalized owner sender ID (ADR 063 Decision 3),
+	// meaningful only in pairing mode. Only messages from this sender can approve/deny.
+	ownerID int64
+	// ownerChatID is the raw Telegram chat ID string the owner-notification (pairing
+	// request) is sent to. In a 1:1 owner DM this equals the owner's sender ID.
+	ownerChatID string
+	// notifier sends PLAINTEXT pairing messages (the sender's "pending" reply and the
+	// owner's approve/deny notification). It is distinct from the envelope-sealing
+	// ReplyAdapter used for orchestrator results — pairing notifications are plaintext by
+	// construction (the sender has no envelope key). nil ⇒ pairing notifications are
+	// skipped (audit still fires), so a misconfigured notifier never crashes the loop.
+	notifier PairingNotifier
+
 	// goalIDCache maps a Telegram message ID (the original new-goal message ID as
 	// a string) to the derived goalID. Used to thread reply-to commands to the
 	// correct goal actor. Guarded by mu (ADR 054 §2: the control loop is the single
@@ -106,6 +119,28 @@ type Config struct {
 	// AuthStore is the persisted approved-sender store. Required (non-nil, already
 	// Load()ed) for sender-ID modes that consult it (allowlist/pairing); nil otherwise.
 	AuthStore *authz.Store
+	// OwnerID is the configured, already-normalized owner sender ID (ADR 063 Decision 3),
+	// required for pairing mode. Only messages from this sender can approve/deny.
+	OwnerID int64
+	// OwnerChatID is the raw Telegram chat ID the owner pairing-request notification is
+	// sent to. In a 1:1 owner DM this equals the owner's sender ID (as a string).
+	OwnerChatID string
+	// Notifier sends plaintext pairing messages (pending reply + owner notification).
+	// Required for pairing mode to actually deliver notifications; nil is tolerated
+	// (notifications skipped, audit still fires) so a wiring gap never panics Next().
+	Notifier PairingNotifier
+}
+
+// PairingNotifier sends a PLAINTEXT message to a Telegram chat. It is the outbound seam
+// for the pairing flow (ADR 063 Decision 3): the "pending" reply to an unknown sender and
+// the "approve <id>/deny <id>" notification to the owner's chat. These messages are
+// plaintext by construction — the unknown sender holds no envelope key — so this seam is
+// deliberately separate from the envelope-sealing ReplyAdapter used for goal results.
+//
+// Implementations must not panic; a delivery error is returned and logged, never fatal to
+// the poll loop. A test fake records (chatID, text) pairs for assertion.
+type PairingNotifier interface {
+	Notify(ctx context.Context, chatID, text string) error
 }
 
 // NewAdapter constructs a Telegram channel adapter.
@@ -147,6 +182,9 @@ func NewAdapter(config Config) *Adapter {
 		guardTimeout:      config.GuardTimeout,
 		authMode:          config.AuthMode,
 		authStore:         config.AuthStore,
+		ownerID:           config.OwnerID,
+		ownerChatID:       config.OwnerChatID,
+		notifier:          config.Notifier,
 		goalIDCache:       make(map[string]string),
 	}
 }
@@ -185,12 +223,44 @@ func (a *Adapter) Next() (supervisor.Message, bool, error) {
 		// disabled: reject before any parse/armor/authz — done here.
 		// allowlist/pairing/open: sender-ID gate accepts/rejects the plaintext.
 		// envelope (default): fall through to the untouched VerifyAndOpen pipeline below.
-		decision := authz.Decide(a.authMode, update.Message.senderID(), a.authStore)
+		var decision authz.Decision
+		if a.authMode == authz.ModePairing {
+			// Pairing mode (ADR 063 Decision 3): the owner-gated approve/deny grammar and
+			// the unknown-sender pending flow are decided here, on the sender-ID identity,
+			// BEFORE deriveMessage. DecidePairing gates approve/deny on sender==owner first,
+			// so a stranger's "approve <own-id>" can never self-approve (TC-152-05).
+			decision = authz.DecidePairing(update.Message.senderID(), a.ownerID, update.Message.Text, a.authStore)
+		} else {
+			decision = authz.Decide(a.authMode, update.Message.senderID(), a.authStore)
+		}
 		switch decision.Action {
 		case authz.ActionRejectDisabled, authz.ActionRejectUnapproved:
 			// Reject BEFORE any envelope parse / armor / ContentGuard invocation.
 			a.logger.Debug("mode rejected update", "update_id", update.UpdateID, "reason", decision.Reason)
 			a.emitAuditEvent(string(decision.Reason))
+			continue
+
+		case authz.ActionPairingPending:
+			// Unknown sender in pairing mode: audit the request, reply "pending" to the
+			// sender, and notify the owner with the approve/deny instruction. No armor, no
+			// envelope parse, no deriveMessage — the update never becomes a message.
+			a.handlePairingPending(update)
+			continue
+
+		case authz.ActionPairingApprove:
+			// Owner approved a sender: add to the persisted store, persist, audit, confirm.
+			a.handlePairingApprove(update, decision.TargetID)
+			continue
+
+		case authz.ActionPairingDeny:
+			// Owner denied a sender: audit + confirm, NO store mutation (re-request allowed).
+			a.handlePairingDeny(update, decision.TargetID)
+			continue
+
+		case authz.ActionPairingMalformed:
+			// Owner sent malformed approve/deny grammar: audit, confirm the error, no store
+			// mutation, no fall-through to deriveMessage.
+			a.handlePairingMalformed(update, decision.Reason)
 			continue
 
 		case authz.ActionAcceptPlaintext:
@@ -469,6 +539,20 @@ func (m *Message) senderID() string {
 	}
 	if m.Chat != nil {
 		return strconv.FormatInt(m.Chat.ID, 10)
+	}
+	return ""
+}
+
+// chatID returns the raw Telegram chat ID this message arrived in, as a decimal string.
+// It is the destination for a "pending" reply to the sender (pairing mode). In a 1:1
+// private chat the chat ID equals the sender's user ID; From.ID is the fallback when the
+// Chat object is absent. An update with neither yields "" (a no-op notify target).
+func (m *Message) chatID() string {
+	if m.Chat != nil {
+		return strconv.FormatInt(m.Chat.ID, 10)
+	}
+	if m.From != nil {
+		return strconv.FormatInt(m.From.ID, 10)
 	}
 	return ""
 }
