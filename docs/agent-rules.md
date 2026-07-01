@@ -27,6 +27,8 @@ These are excuses agents use to skip steps. Don't fall for them.
 | "Tests pass — the task is done" | Necessary, not sufficient. If the change is runtime-observable, run the binary. If it adds cross-module state, trace producer→consumer on the live path. Status is 🟡 until that's done. |
 | "It worked in the harness — close enough to call it done" | If the harness is the same wire as the live runtime, fine. If the harness is a partial mock or a different code path, it's 🟡, not ✅. Be honest about which one this is. |
 | "The unit test sets the field and the gate fires — wire is good" | A test that sets state by hand proves the gate works *given* the state. It does not prove the state ever gets set on the live path. Grep the write site and the read site and identify the live path before declaring done. |
+| "The components are correct and I wired them — done" | Correct components prove nothing if the live constructor still builds with the old one. Open the construction site and *read the line*; a report saying "wired at line N" is a claim, not evidence. Then mutation-test it: revert the wire, confirm the test FAILS, restore. A test that still passes after you unwire the feature is vacuous. |
+| "My wiring test passes" | Check whether it builds the collaborators by hand or goes through the live constructor (`CompleterForEntry`, `New*`, the factory). A test that hand-assembles the thing it's testing can't prove production assembles the same thing. Test through the constructor the runtime uses. |
 
 ## Failure modes (starter set)
 
@@ -72,6 +74,7 @@ session will retry the dispatch.
 - **Don't tell a harness-isolated agent to also `git checkout -b <named-branch>`.** The harness already puts the agent on a `worktree-agent-<id>` branch sharing the parent `.git`. Layering a manual `git checkout -b task/NNN` on top caused two parallel agents' branch/index operations to cross in the shared object store, leaving stray, *mislabeled* branches (a `task/103` ref pointing at a task-104 commit) and even leaking a partial, broken copy of one agent's edits into the **parent** working tree. Let the harness branch be authoritative; **merge from the agent's reported commit hash**, not from a branch name you assume is correct. The agent's commit is recoverable by hash even after its branch is force-deleted (`git branch -D` does not drop the commit) — verify the tree/diff of that hash before merging.
 - **Confirm the parent working tree is clean (`git status`) before every `git merge`.** A leaked/dirty parent tree makes `git merge` abort with "commit your changes or stash them" — and if you then reflexively `git branch -D` the source branch, you strand the good commit. Recovery: `git stash -u` the leak (never discard — it may be real work), re-anchor the good commit by hash (`git branch tmp <hash>`), merge, then verify `go build`/`make check` and drop the stash only once green.
 - **`make check` after deleting a worktree can fail on a stale golangci-lint cache** pointing at the removed `.claude/worktrees/...` path (phantom `errcheck`/`typecheck` finding on a "no such file" path). It's not a real regression — `golangci-lint cache clean` then re-run.
+- **Orphaned edits on the `main` working tree recur — stash, never discard, and surface them (2026-07-01, task 143 coordination).** While coordinating task 143 (correctly isolated in its worktree), the parent `main` tree was found dirty with an *uncommitted, divergent* attempt at the same task from a concurrent session (an inline `secrets.go` approach vs. the committed `disk_oauth_source.go` file). This is the same leak the layers above guard against, seen from the coordinator side. The parent repo already carried two prior `isolation-repair` stashes (`stash@{1}`/`stash@{2}`) — this is a *pattern*, not a one-off. Handling: `git stash push -u -m "<what/when/why>"` the leak (reversible; the canonical work is safe on the task branch), confirm `git status` clean before merging, and report it to the human rather than silently discarding — the leaked edits might be someone's real work-in-progress.
 
 ### "Done" means operationally verified, not "code merged"
 
@@ -110,6 +113,55 @@ Live path:
 Manually-set-field tests (`state.foo = Some(_); assert!(gate(state))`) prove the gate works *given* the field — they do not prove the field ever gets set on the live path. The trace is what proves the wire meets. If the producer fires after the consumer reads, the feature is broken even though every narrow test passes.
 
 If you can't produce the trace, the task is not done — report blocker. Substituting "by construction" structural tests for the trace is a downgrade and must be flagged, not buried.
+
+### Wire the component into the live constructor, and test through that constructor
+
+Building the correct component (a new `SecretSource`, `Planner`, `Sink`, decoder, router
+adapter…) and *believing* you wired it is not the same as wiring it. This is a recurring
+miss: the executor ships correct building blocks, reports them as wired, produces green
+unit tests, and self-declares done — while the live constructor still builds with the old
+collaborator. The feature is dead code and the tests are blind to it.
+
+Task 143 (2026-07-01) is the reference incident. A correct `DiskOAuthSecretSource` +
+`ChainedSecretSource` shipped with a report claiming `completer.go` was "wired at lines
+92-95" to the chain — but the actual committed line still read `newClaudeCompleter(entry,
+secrets.NewEnvSecretSource())` (the bare env source). The disk-OAuth fallback never ran;
+`ask --entry claude-oauth` failed auth exactly as before the task. It survived the first
+executor pass **and** an amend, and took two spec-verifier BLOCKs plus a live L6 run to
+force the one-line wire in.
+
+Why the tests didn't catch it:
+
+- The "wiring" test constructed `NewChainedSecretSource(...)` **by hand** and asserted on
+  that object. It never called the live constructor `CompleterForEntry`, so it validated
+  the *component*, not the *seam*. A test that assembles the thing it tests cannot prove
+  the production path assembles the same thing. (Same family as the producer-consumer
+  trace and manually-set-field rules above — this is the constructor-level version.)
+- The test lived in an **external `_test` package**, which structurally cannot reach the
+  unexported `cmdFactory` / HOME-isolation stub seam — so it *could not* assert the live
+  child env and silently degraded to `assert completer != nil`. When a test can only make
+  a trivial assertion, ask whether the package boundary is forcing it, and move it
+  in-package rather than accepting the smoke test.
+
+Rules:
+
+1. **Test through the live constructor.** If the runtime builds the object via
+   `CompleterForEntry(entry)` / `router.New(...)` / `NewX(...)`, the test builds it the
+   same way and asserts on the result — do not hand-assemble the collaborators.
+2. **Read the claimed wire.** "Wired at line N" is a claim. Open line N and confirm the
+   code is actually there before trusting the report. In task 143 the claimed line and the
+   committed line disagreed twice.
+3. **Mutation-test a suspect wire.** Revert the one line to the old collaborator, run the
+   test, confirm it **FAILS**, then restore. A test that still passes after you unwire the
+   feature is vacuous. This is what finally proved task 143's tests real: reverting to
+   `NewEnvSecretSource()` failed TC-143-04/05; restoring the chained source passed them.
+
+**Retro source:** task 143, 2026-07-01 — `completer.go` left on the bare env source
+through the first executor pass and one amend; caught by a live L6 (`ask --entry
+claude-oauth` → `Not logged in`) cross-checked against `claude -p` with the disk token
+injected directly (→ `Paris`), then nailed by mutation test. Distinct from task 101: that
+was the external *tool* not honoring a correctly-wired env var; this is the wire itself
+never connected, and the tests unable to see it.
 
 ### Runtime-visible changes require running it
 
