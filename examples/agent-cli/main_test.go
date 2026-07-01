@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"io"
@@ -736,25 +737,39 @@ func TestTC149_02_HexEncodedFields(t *testing.T) {
 	}
 
 	// TC-149-02: Payload must decode as hex
-	payloadBytes, err := hex.DecodeString(env.Payload)
+	payloadHexBytes, err := hex.DecodeString(env.Payload)
 	if err != nil {
 		t.Errorf("Payload is not valid hex: %v", err)
 	}
 
+	// TC-149-02: Payload is hex, NOT base64 (negative contrast)
+	// Assert that base64 decode either fails OR produces different bytes than hex
+	payloadBase64Bytes, b64Err := base64.StdEncoding.DecodeString(env.Payload)
+	if b64Err == nil && bytes.Equal(payloadBase64Bytes, payloadHexBytes) {
+		// Both decode successfully to the same bytes — this would mean Payload is
+		// ambiguously interpretable as both hex and base64 of the same content,
+		// which is NOT what we want. The field must be hex-only.
+		t.Error("Payload decodes as valid base64 of the same bytes as hex — encoding is ambiguous")
+	}
+
 	// TC-149-02: Nonce must decode as hex
-	nonceBytes, err := hex.DecodeString(env.Nonce)
+	nonceHexBytes, err := hex.DecodeString(env.Nonce)
 	if err != nil {
 		t.Errorf("Nonce is not valid hex: %v", err)
 	}
-	if len(nonceBytes) != 24 {
-		t.Errorf("Nonce decoded to %d bytes, expected 24", len(nonceBytes))
+	if len(nonceHexBytes) != 24 {
+		t.Errorf("Nonce decoded to %d bytes, expected 24", len(nonceHexBytes))
 	}
 
-	// TC-149-02: Payload is hex, not base64. Verify via hex round-trip.
-	// The load-bearing assertion is TC-149-01's full round-trip through VerifyAndOpen.
-	// This test documents that Nonce and Payload are hex-encoded, as expected by
-	// the real envelope.VerifyAndOpen implementation.
-	_ = payloadBytes // Use payloadBytes to prove hex decode succeeded
+	// TC-149-02: Nonce is hex, NOT base64 (negative contrast)
+	// Assert that base64 decode either fails OR produces different bytes than hex
+	nonceBase64Bytes, b64NErr := base64.StdEncoding.DecodeString(env.Nonce)
+	if b64NErr == nil && bytes.Equal(nonceBase64Bytes, nonceHexBytes) {
+		// Both decode successfully to the same bytes — this would mean Nonce is
+		// ambiguously interpretable as both hex and base64 of the same content,
+		// which is NOT what we want. The field must be hex-only.
+		t.Error("Nonce decodes as valid base64 of the same bytes as hex — encoding is ambiguous")
+	}
 }
 
 // TC-149-03: send POSTs to <baseURL>/bot<token>/sendMessage with {chat_id, text}
