@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator"
+	"github.com/tkdtaylor/agent-builder/internal/orchestrator/planner"
 	"github.com/tkdtaylor/agent-builder/internal/router"
 )
 
@@ -17,9 +18,15 @@ const EnvGoalAnalysis = "AGENT_BUILDER_GOAL_ANALYSIS"
 
 // goalAnalyzerFromEnv returns the goal analyzer to inject, or nil when analysis is
 // disabled (nil → the orchestrator treats every goal as coding). The heuristic is
-// the default when enabled; the LLM analyzer is task 140.
-func goalAnalyzerFromEnv(getenv func(string) string) orchestrator.GoalAnalyzer {
+// the default when enabled; the LLM analyzer is task 142 (REQ-142-03).
+func goalAnalyzerFromEnv(getenv func(string) string, resolver planner.ExecutorResolver, invoke planner.Invoker) orchestrator.GoalAnalyzer {
 	switch strings.ToLower(strings.TrimSpace(getenv(EnvGoalAnalysis))) {
+	case "llm":
+		if resolver == nil || invoke == nil {
+			// If LLM seams are not configured, fall back to heuristic (never break intake).
+			return orchestrator.NewHeuristicGoalAnalyzer()
+		}
+		return planner.NewLLMGoalAnalyzer(resolver, invoke)
 	case "true", "1", "yes", "heuristic", "on":
 		return orchestrator.NewHeuristicGoalAnalyzer()
 	default:

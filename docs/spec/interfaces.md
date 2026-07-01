@@ -633,6 +633,24 @@ type Clarification struct {
     Questions []string
 }
 
+// GoalAnalyzer interface (ADR 060 §4, task 142):
+// Classifies a goal's Kind (answer vs coding) and Complexity at intake.
+// Implementations:
+//   - HeuristicGoalAnalyzer (rule-based static patterns: interrogatives, code verbs, repo/path names; local default)
+//   - LLMGoalAnalyzer (sends prompt via planner.Invoker to classify via model; enabled by AGENT_BUILDER_GOAL_ANALYSIS=llm; fails safe to heuristic on parse/invoke error)
+type GoalAnalyzer interface {
+    Analyze(goal supervisor.Task) (GoalAnalysis, error)
+}
+
+type GoalAnalysis struct {
+    Kind       GoalKind       // "answer" or "coding"
+    Complexity GoalComplexity // "simple" or "complex"
+    Rationale  string         // human-readable reason (audit/report)
+}
+
+type GoalKind string
+type GoalComplexity string
+
 // Self-containment posture (task 085 / ADR 050 §3): the L2-assertable evidence the
 // orchestrator runs under the SAME exec-sandbox profile as its workers.
 const (

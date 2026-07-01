@@ -476,22 +476,28 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		getenv = os.Getenv
 	}
 
-	// 10d. Clarifier selection (default: HeuristicClarifier) (REQ-131-03)
+	// 10d. Clarifier and GoalAnalyzer LLM seams (shared) (REQ-131-03, REQ-142-03)
+	// Build seams upfront if either clarifier or analyzer needs them.
+	clarifierChoice := strings.TrimSpace(getenv(EnvClarifier))
+	analyzerChoice := strings.ToLower(strings.TrimSpace(getenv(EnvGoalAnalysis)))
+	needsSeams := (clarifierChoice == clarifierLLM) || (analyzerChoice == "llm")
+
+	var llmResolver llmplanner.ExecutorResolver
+	var llmInvoke llmplanner.Invoker
+	if needsSeams {
+		res, inv, err := buildLLMSeams()
+		if err != nil {
+			cleanup()
+			return orchestrateConfig{}, noop, err
+		}
+		llmResolver = res
+		llmInvoke = inv
+	}
+
+	// 10e. Clarifier selection (REQ-131-03)
 	clarifier := ov.clarifier
 	if clarifier == nil {
-		choice := strings.TrimSpace(getenv(EnvClarifier))
-		var resolver llmplanner.ExecutorResolver
-		var invoke llmplanner.Invoker
-		if choice == clarifierLLM {
-			res, inv, err := buildLLMSeams()
-			if err != nil {
-				cleanup()
-				return orchestrateConfig{}, noop, err
-			}
-			resolver = res
-			invoke = inv
-		}
-		clar, err := clarifierFromEnv(getenv, resolver, invoke)
+		clar, err := clarifierFromEnv(getenv, llmResolver, llmInvoke)
 		if err != nil {
 			cleanup()
 			return orchestrateConfig{}, noop, err
@@ -499,7 +505,7 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		clarifier = clar
 	}
 
-	// 10e. requireApproval selection: default true, false on lenient false values
+	// 10f. requireApproval selection: default true, false on lenient false values
 	requireApproval := true
 	rawRequireApproval := strings.ToLower(strings.TrimSpace(getenv(EnvRequireApproval)))
 	if rawRequireApproval == "false" || rawRequireApproval == "0" || rawRequireApproval == "no" {
@@ -521,7 +527,7 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		// intake and answer general questions over the channel. Nil analyzer (default)
 		// = every goal is coding (pre-060 behavior). The answerer routes to a brain by
 		// complexity via the single-shot Completer.
-		orchestrator.WithGoalAnalyzer(goalAnalyzerFromEnv(getenv)),
+		orchestrator.WithGoalAnalyzer(goalAnalyzerFromEnv(getenv, llmResolver, llmInvoke)),
 		orchestrator.WithAnswerer(cliAnswerer{}),
 	)
 
