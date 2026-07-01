@@ -6,6 +6,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"strconv"
+	"time"
 
 	"github.com/tkdtaylor/agent-builder/internal/envelope"
 )
@@ -48,11 +50,14 @@ func Main(config Config) int {
 		writef(config.Stdout, "subcommands:\n")
 		writef(config.Stdout, "  keygen              generate operator + orchestrator keypairs\n")
 		writef(config.Stdout, "  send                seal + sign a command and POST it to Telegram\n")
+		writef(config.Stdout, "  reply-open          decrypt + verify a sealed outbound reply envelope\n")
 		return ExitOK
 	case "keygen":
 		return runKeygen(config, config.Args[1:])
 	case "send":
 		return runSend(config, config.Args[1:])
+	case "reply-open":
+		return runReplyOpen(config, config.Args[1:])
 	default:
 		writef(config.Stderr, "usage error: unknown subcommand %q\n\n", config.Args[0])
 		return ExitUsage
@@ -283,6 +288,146 @@ func runSend(config Config, args []string) int {
 		writef(config.Stderr, "error: Telegram API returned ok=false\n")
 		return 1
 	}
+
+	return ExitOK
+}
+
+func runReplyOpen(config Config, args []string) int {
+	fs := flag.NewFlagSet("reply-open", flag.ContinueOnError)
+	fs.SetOutput(io.Discard) // silence flag's default usage
+
+	var keyfilePath string
+	var envelopeFlag string
+
+	fs.StringVar(&keyfilePath, "keyfile", "", "path to the operator keyfile")
+	fs.StringVar(&envelopeFlag, "envelope", "", "envelope JSON (inline)")
+
+	if err := fs.Parse(args); err != nil {
+		writef(config.Stderr, "usage error: %v\n", err)
+		return ExitUsage
+	}
+
+	// Validate required keyfile
+	if keyfilePath == "" {
+		writef(config.Stderr, "usage error: --keyfile is required\n")
+		return ExitUsage
+	}
+
+	// Determine envelope source (file, stdin, or flag) — exactly one required
+	positionalArgs := fs.Args()
+	var envelopeJSON []byte
+	var err error
+
+	if len(positionalArgs) > 0 && envelopeFlag != "" {
+		// Both file and --envelope given
+		writef(config.Stderr, "usage error: cannot specify both positional file and --envelope flag\n")
+		return ExitUsage
+	}
+
+	if len(positionalArgs) > 0 {
+		// Read from file
+		envelopeJSON, err = os.ReadFile(positionalArgs[0])
+		if err != nil {
+			writef(config.Stderr, "error: failed to read envelope file: %v\n", err)
+			return 1
+		}
+	} else if envelopeFlag != "" {
+		// Use inline envelope
+		envelopeJSON = []byte(envelopeFlag)
+	} else {
+		// Read from stdin
+		envelopeJSON, err = io.ReadAll(config.Stdin)
+		if err != nil {
+			writef(config.Stderr, "error: failed to read from stdin: %v\n", err)
+			return 1
+		}
+	}
+
+	// Read and parse keyfile
+	keyfileData, err := os.ReadFile(keyfilePath)
+	if err != nil {
+		writef(config.Stderr, "error: failed to read keyfile: %v\n", err)
+		return 1
+	}
+
+	var kf KeyFile
+	if err := unmarshalJSON(keyfileData, &kf); err != nil {
+		writef(config.Stderr, "error: failed to parse keyfile JSON: %v\n", err)
+		return 1
+	}
+
+	// Decode hex fields from keyfile
+	opXPriv, err := hexDecode(kf.OperatorXPriv)
+	if err != nil {
+		writef(config.Stderr, "error: failed to decode OperatorXPriv hex: %v\n", err)
+		return 1
+	}
+	if len(opXPriv) != 32 {
+		writef(config.Stderr, "error: OperatorXPriv must be 32 bytes, got %d\n", len(opXPriv))
+		return 1
+	}
+
+	orchEdPub, err := hexDecode(kf.OrchEdPub)
+	if err != nil {
+		writef(config.Stderr, "error: failed to decode OrchEdPub hex: %v\n", err)
+		return 1
+	}
+
+	orchXPub, err := hexDecode(kf.OrchXPub)
+	if err != nil {
+		writef(config.Stderr, "error: failed to decode OrchXPub hex: %v\n", err)
+		return 1
+	}
+	if len(orchXPub) != 32 {
+		writef(config.Stderr, "error: OrchXPub must be 32 bytes, got %d\n", len(orchXPub))
+		return 1
+	}
+
+	// Parse envelope JSON
+	var env envelope.Envelope
+	if err := unmarshalJSON(envelopeJSON, &env); err != nil {
+		writef(config.Stderr, "error: malformed envelope JSON: %v\n", err)
+		return 1
+	}
+
+	// Prepare key arrays for VerifyAndOpen
+	var opXPrivArray [32]byte
+	copy(opXPrivArray[:], opXPriv)
+	var orchXPubArray [32]byte
+	copy(orchXPubArray[:], orchXPub)
+
+	// VerifyAndOpen: orchestrator signed, so verify with orchestrator's Ed25519 pub
+	// and open with operator X25519 priv + orchestrator X25519 pub
+	plaintext, err := envelope.VerifyAndOpen(
+		env,
+		orchEdPub,
+		envelope.NewReplayCache(60*time.Second),
+		opXPrivArray,
+		orchXPubArray,
+	)
+	if err != nil {
+		// Classify the error by sentinel
+		if errors.Is(err, envelope.ErrBadSignature) {
+			writef(config.Stderr, "error: signature verification failed\n")
+		} else if errors.Is(err, envelope.ErrUnknownKey) {
+			writef(config.Stderr, "error: signature verification failed\n")
+		} else if errors.Is(err, envelope.ErrReplay) {
+			writef(config.Stderr, "error: replay detected\n")
+		} else if errors.Is(err, envelope.ErrStaleTimestamp) {
+			writef(config.Stderr, "error: stale timestamp\n")
+		} else {
+			// By VerifyAndOpen's contract, once JSON parses, verify + replay pass,
+			// the only remaining failure is the Open/decrypt step (nacl/box.Open).
+			// Emit a clean category with no opaque internal detail.
+			writef(config.Stderr, "error: decryption failed\n")
+		}
+		return 1
+	}
+
+	// Print recovered plaintext to stdout
+	_, _ = config.Stdout.Write(plaintext)
+	// Add optional trailing newline for terminal display
+	_, _ = fmt.Fprint(config.Stdout, "\n")
 
 	return ExitOK
 }
