@@ -1,6 +1,6 @@
 # Task 145 — Per-model registry entries + recipe capability-tier audit
 
-**Status:** backlog
+**Status:** complete (🟡 code merged; L6 pending operator observation)
 **Spec:** `docs/tasks/test-specs/145-per-model-registry-entries-test-spec.md`
 **Relates to:** ADR 061 (per-task model selection), ADR 043 (router). Depends on task 144 (Claude honors `--model`).
 

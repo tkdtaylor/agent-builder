@@ -1,7 +1,7 @@
 # Configuration
 
 **Project:** agent-builder
-**Last updated:** 2026-07-01 (task 144 — `claude-cli` executor + completer pass `--model <MODEL>`, ADR 061; model-id examples on `claude-opus-4-8`)
+**Last updated:** 2026-07-01 (task 145 — per-model registry entries (`claude-haiku`/`claude-sonnet`/`claude-opus`, `agy-gemini-flash`/`agy-gemini-pro`) + recipe `MinCapability` audit, ADR 061)
 
 Every knob the system exposes — env vars, config files, runtime parameters, deployment settings. Each entry is a public contract: changes to defaults or accepted values are observable.
 
@@ -180,12 +180,14 @@ The executor registry is configured via well-known env-var prefixes per entry ID
 | `AGENT_BUILDER_REGISTRY_<ID>_BUDGET_WINDOW` | duration string | `0` (unlimited) | no | Rolling time window for budget enforcement (e.g., `5h`, `30m`). Non-duration values fail with a descriptive error. |
 
 **Known entry IDs and their harnesses:**
-- `claude-oauth` → `claude-cli` (Anthropic Claude via OAuth/subscription)
+- `claude-oauth` → `claude-cli` (Anthropic Claude via OAuth/subscription; single synthetic-default entry, no declared tier)
+- `claude-haiku` / `claude-sonnet` / `claude-opus` → `claude-cli` (per-model Claude entries, ADR 061 — see *Per-model registry entries* below)
 - `local-qwen` → `claude-cli` (Local Qwen model via translation proxy)
 - `local-ollama` → `ollama-native` (Native Ollama executor, no translation proxy)
 - `codex` → `codex-cli` (OpenAI Codex)
 - `gemini` → `gemini-cli` — **DEPRECATED 2026-06-18, superseded by `antigravity` (ADR 057); CLI backend shut down**
 - `antigravity` → `antigravity-cli` (Antigravity `agy` CLI via subscription/OAuth; multi-model — the live third brain, successor to `gemini`)
+- `agy-gemini-flash` / `agy-gemini-pro` → `antigravity-cli` (per-Gemini-level `agy` entries, ADR 061 — see *Per-model registry entries* below)
 
 **Example configuration for `claude-oauth`:**
 ```
@@ -246,6 +248,89 @@ AGENT_BUILDER_REGISTRY_ANTIGRAVITY_COST_WEIGHT=5
 The `agy` CLI must be installed and logged in (via Google Sign-In in the terminal or headless token setup) on the operator's system. Credentials are cached in `~/.antigravity` and do not need to be injected by the executor. The model token must match one of the models reported by `agy models` (e.g., "Claude Opus 4.6 (Thinking)", "Gemini 3.5 Flash (High)", "GPT-OSS 120B (Medium)").
 
 **Note:** The native Ollama executor (`ollama-native` harness) requires the model to return structured `tool_calls` via Ollama's `/api/chat` endpoint. As of Ollama 0.17.7, `qwen3:8b` returns parseable `tool_calls`. Other models (e.g., `qwen2.5-coder:7b`) may emit bare JSON without the `<tool_call>` wrapper, preventing tool execution. Consult the Ollama model library documentation for confirmed `tool_calls` support.
+
+### Per-model registry entries (ADR 061)
+
+ADR 061 makes **model level *the* capability tier**: instead of one registry entry per
+brain, a deployment registers one entry per model per brain, each with a
+`CAPABILITY_TIER`/`COST_WEIGHT` that reflects the model's strength/price, and the
+router (ADR 043) picks the cheapest entry that meets a recipe's `MinCapability`. This
+is how the project's own Claude Code subagent roles map to models (haiku for
+mechanical work, sonnet for review-grade work, opus for deep design/security) — the
+same shape, applied to agent-builder's own dispatch.
+
+Every field below is read from `AGENT_BUILDER_REGISTRY_<ID>_*` env vars exactly like
+any other entry (see the *Executor Registry Configuration* table above) — the loader
+does not hardcode tier/cost/model numbers; the operator sets them.
+
+**Tier↔model convention:**
+
+| Entry ID | Harness | `CAPABILITY_TIER` | `COST_WEIGHT` | `MODEL` (example) |
+|----------|---------|---:|---:|---|
+| `claude-haiku` | `claude-cli` | 1 | 1 | `claude-haiku-4-5-20251001` |
+| `claude-sonnet` | `claude-cli` | 2 | 5 | `claude-sonnet-5` |
+| `claude-opus` | `claude-cli` | 3 | 10 | `claude-opus-4-8` |
+| `agy-gemini-flash` | `antigravity-cli` | 1 | 1 | `Gemini 3.5 Flash (High)` |
+| `agy-gemini-pro` | `antigravity-cli` | 3 | 8 | `Gemini 3 Pro (High)` |
+
+A recipe with `MinCapability=1` routes to `claude-haiku` (or `agy-gemini-flash`) when
+enabled; `MinCapability=3` routes to `claude-opus` (or `agy-gemini-pro`). `MODEL` for
+the `agy-gemini-*` entries must match a token reported by `agy models` on the deployed
+host — the value above is the documented example, not a guaranteed-stable model name.
+
+**Example configuration — all three Claude tiers:**
+```
+AGENT_BUILDER_REGISTRY_CLAUDE_HAIKU_ENABLED=true
+AGENT_BUILDER_REGISTRY_CLAUDE_HAIKU_ENDPOINT=https://api.anthropic.com
+AGENT_BUILDER_REGISTRY_CLAUDE_HAIKU_SECRET_REF=claude-oauth-token
+AGENT_BUILDER_REGISTRY_CLAUDE_HAIKU_MODEL=claude-haiku-4-5-20251001
+AGENT_BUILDER_REGISTRY_CLAUDE_HAIKU_CAPABILITY_TIER=1
+AGENT_BUILDER_REGISTRY_CLAUDE_HAIKU_COST_WEIGHT=1
+
+AGENT_BUILDER_REGISTRY_CLAUDE_SONNET_ENABLED=true
+AGENT_BUILDER_REGISTRY_CLAUDE_SONNET_ENDPOINT=https://api.anthropic.com
+AGENT_BUILDER_REGISTRY_CLAUDE_SONNET_SECRET_REF=claude-oauth-token
+AGENT_BUILDER_REGISTRY_CLAUDE_SONNET_MODEL=claude-sonnet-5
+AGENT_BUILDER_REGISTRY_CLAUDE_SONNET_CAPABILITY_TIER=2
+AGENT_BUILDER_REGISTRY_CLAUDE_SONNET_COST_WEIGHT=5
+
+AGENT_BUILDER_REGISTRY_CLAUDE_OPUS_ENABLED=true
+AGENT_BUILDER_REGISTRY_CLAUDE_OPUS_ENDPOINT=https://api.anthropic.com
+AGENT_BUILDER_REGISTRY_CLAUDE_OPUS_SECRET_REF=claude-oauth-token
+AGENT_BUILDER_REGISTRY_CLAUDE_OPUS_MODEL=claude-opus-4-8
+AGENT_BUILDER_REGISTRY_CLAUDE_OPUS_CAPABILITY_TIER=3
+AGENT_BUILDER_REGISTRY_CLAUDE_OPUS_COST_WEIGHT=10
+# SECRET_REF may reuse the same claude-oauth-token vault entry across all three
+# tiers — they share one Claude subscription/OAuth login; only MODEL/TIER/COST differ.
+```
+
+**Example configuration — both `agy` Gemini levels:**
+```
+AGENT_BUILDER_REGISTRY_AGY_GEMINI_FLASH_ENABLED=true
+AGENT_BUILDER_REGISTRY_AGY_GEMINI_FLASH_ENDPOINT=https://agy.google.com
+AGENT_BUILDER_REGISTRY_AGY_GEMINI_FLASH_MODEL=Gemini 3.5 Flash (High)
+AGENT_BUILDER_REGISTRY_AGY_GEMINI_FLASH_CAPABILITY_TIER=1
+AGENT_BUILDER_REGISTRY_AGY_GEMINI_FLASH_COST_WEIGHT=1
+# SECRET_REF is not set — subscription mode uses cached OAuth login from `agy` CLI
+
+AGENT_BUILDER_REGISTRY_AGY_GEMINI_PRO_ENABLED=true
+AGENT_BUILDER_REGISTRY_AGY_GEMINI_PRO_ENDPOINT=https://agy.google.com
+AGENT_BUILDER_REGISTRY_AGY_GEMINI_PRO_MODEL=Gemini 3 Pro (High)
+AGENT_BUILDER_REGISTRY_AGY_GEMINI_PRO_CAPABILITY_TIER=3
+AGENT_BUILDER_REGISTRY_AGY_GEMINI_PRO_COST_WEIGHT=8
+# SECRET_REF is not set — subscription mode uses cached OAuth login from `agy` CLI
+```
+
+**Recipe `MinCapability` audit (task 145):** `docs-fix` declares `MinCapability=1`
+(mechanical markdown-lint fix, no design judgment — base/haiku tier is sufficient) and
+`agent-builder-worker` declares `MinCapability=2` (authors a new, gated coding recipe;
+a broken commit or missing gate binding is costly, so it asks for the mid/sonnet tier
+one step above the mechanical floor). Both values were confirmed correct against ADR
+061's tier semantics and left unchanged. The `coding-agent` default recipe, the `ask`/
+`orchestrate-answer` CLI paths, and the LLM planner/clarifier/analyzer all declare
+`MinCapability=1` as their floor (the cheapest-sufficient default for the base coding
+and single-shot-answer paths) — also confirmed correct and left unchanged by this
+audit.
 
 When ALL enabled registry entries are local (all have empty `SECRET_REF`), the operator does NOT need to export `ANTHROPIC_API_KEY` or `CLAUDE_CODE_OAUTH_TOKEN` in the host environment — `agent-builder run` will start without requiring cloud credentials. The executor injects the fixed placeholder `executor.LocalProxyAuthPlaceholder` (value: `"local-proxy-no-auth"`) as `ANTHROPIC_AUTH_TOKEN` in the subprocess to satisfy the Claude Code CLI's auth check; the translation proxy ignores the token value. (`ANTHROPIC_AUTH_TOKEN` is required rather than `ANTHROPIC_API_KEY` because the current Claude Code CLI validates `ANTHROPIC_API_KEY` as a real Anthropic credential and rejects a placeholder with `Not logged in`, while `ANTHROPIC_AUTH_TOKEN` is the gateway bearer-token var passed through to `ANTHROPIC_BASE_URL`.) The translation proxy (LiteLLM, claude-code-router) converts Anthropic API requests to the local inference server's OpenAI API. See `registry.TranslationProxySeam` for the named seam constant.
 
