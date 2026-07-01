@@ -1649,7 +1649,7 @@ func TestTC150_04_FailClosed(t *testing.T) {
 					OrchXPub:      orchXPub,
 				}
 			},
-			"authentication failed",
+			"decryption failed",
 		},
 	}
 

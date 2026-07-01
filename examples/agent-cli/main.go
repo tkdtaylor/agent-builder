@@ -406,13 +406,20 @@ func runReplyOpen(config Config, args []string) int {
 		orchXPubArray,
 	)
 	if err != nil {
-		// Classify the error
+		// Classify the error by sentinel
 		if errors.Is(err, envelope.ErrBadSignature) {
 			writef(config.Stderr, "error: signature verification failed\n")
 		} else if errors.Is(err, envelope.ErrUnknownKey) {
-			writef(config.Stderr, "error: decryption failed\n")
+			writef(config.Stderr, "error: signature verification failed\n")
+		} else if errors.Is(err, envelope.ErrReplay) {
+			writef(config.Stderr, "error: replay detected\n")
+		} else if errors.Is(err, envelope.ErrStaleTimestamp) {
+			writef(config.Stderr, "error: stale timestamp\n")
 		} else {
-			writef(config.Stderr, "error: %v\n", err)
+			// By VerifyAndOpen's contract, once JSON parses, verify + replay pass,
+			// the only remaining failure is the Open/decrypt step (nacl/box.Open).
+			// Emit a clean category with no opaque internal detail.
+			writef(config.Stderr, "error: decryption failed\n")
 		}
 		return 1
 	}
