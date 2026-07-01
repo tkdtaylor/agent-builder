@@ -6,8 +6,9 @@
 
 ## Goal
 
-Stand up the new `cmd/agent-cli` entrypoint and its `internal/agentcli` package (the
-operator's laptop-side Telegram client — see the feature brief for full context), starting
+Stand up the new `examples/agent-cli/` operator client (entrypoint + logic together in one
+liftable directory — the operator's laptop-side Telegram client, placed per ADR 062 — see
+the feature brief for full context), starting
 with the `keygen` subcommand: generate the operator's Ed25519 (signing) and X25519
 (sealing) keypairs plus the orchestrator's Ed25519 and X25519 keypairs, emit a paste-ready
 `AGENT_BUILDER_TELEGRAM_*` env block for the orchestrator side, and write a private,
@@ -15,8 +16,23 @@ with the `keygen` subcommand: generate the operator's Ed25519 (signing) and X255
 `reply-open` (task 150) subcommands need.
 
 This task also lays the dispatcher scaffold (`Main(Config)` mirroring `internal/cli`'s
-shape) that tasks 149/150 add subcommands to — it is the foundation task for the whole
-feature.
+shape, but living under `examples/agent-cli/`) that tasks 149/150 add subcommands to — it
+is the foundation task for the whole feature.
+
+**Placement (ADR 062):** all client code — entrypoint and logic — lives together under the
+new top-level `examples/agent-cli/` directory (its own package(s)), importing
+`internal/envelope` and stdlib crypto only. It is NOT under `cmd/` and has NO
+`internal/agentcli` package. The orchestrator (`cmd/agent-builder`, `internal/**`) must
+never import `examples/agent-cli` — a one-way edge (`examples/agent-cli → internal/envelope`
+is the only client dependency), which a future `make fitness-agentcli-boundary` check may
+enforce (not built by this task).
+
+**First commit is the ADR.** ADR 062 (this decision) is committed first, per the ADR
+milestone. As part of THIS task's implementation commit, also correct the stale
+`Envelope.Payload`/`Nonce` doc comment in `internal/envelope/envelope.go:59` from
+"base64-encoded" to "hex-encoded" (the wire encoding is hex — `reply.go` hex-encodes both
+and `VerifyAndOpen` calls `hex.DecodeString`; ADR 062 pins hex). That one-line fix lands in
+task 148's `feat:` commit, not as a standalone change.
 
 ## Context
 
@@ -40,7 +56,7 @@ Reference: `internal/envelope/envelope.go`, `internal/envelope/confidentiality.g
 | REQ-148-01 | `GenerateKeys()` produces operator Ed25519 (32/64B), operator X25519 (32B/32B), orchestrator Ed25519 (32/64B), orchestrator X25519 (32B/32B) keypairs using `envelope.GenerateKeyPair` and `ed25519.GenerateKey(rand.Reader)` exclusively (no hand-rolled crypto). | must have |
 | REQ-148-02 | `RenderEnvBlock(keys)` emits a paste-ready block of the seven `AGENT_BUILDER_TELEGRAM_*` variables the orchestrator consumes (`_SIGNING_KEY`, `_X25519_PUB`, `_ORCH_PRIV`, `_ORCH_ED_PRIV`, `_OP_X25519_PUB` populated from generated keys; `_BOT_TOKEN`, `_BASE_URL`, `_CHAT_ID` as placeholder lines), hex-encoded, and never includes operator PRIVATE key material. | must have |
 | REQ-148-03 | `WriteKeyfile(path, keys)` writes a JSON keyfile (operator Ed25519 priv, operator X25519 priv, orchestrator Ed25519 pub, orchestrator X25519 pub) with file mode 0600; never includes orchestrator PRIVATE keys. | must have |
-| REQ-148-04 | `agent-cli keygen --keyfile <path> [--force]` CLI subcommand: mandatory `--keyfile`, refuses to overwrite an existing file without `--force`, prints the env block to stdout and a one-line non-secret confirmation to stderr, exit 0 on success / exit 2 on usage error. | must have |
+| REQ-148-04 | `examples/agent-cli keygen --keyfile <path> [--force]` CLI subcommand: mandatory `--keyfile`, refuses to overwrite an existing file without `--force`, prints the env block to stdout and a one-line non-secret confirmation to stderr, exit 0 on success / exit 2 on usage error. | must have |
 | REQ-148-05 | No secret material (operator or orchestrator private keys, hex or base64) appears ambiguously mixed into stdout/stderr; the orchestrator-paste env block is visually separated from the human confirmation line by a labeled banner. | must have |
 
 ## Readiness gate
@@ -56,7 +72,7 @@ Reference: `internal/envelope/envelope.go`, `internal/envelope/confidentiality.g
 - [ ] [REQ-148-02] TC-148-04: env block never contains `OperatorEdPriv`/`OperatorXPriv` (hex or base64).
 - [ ] [REQ-148-03] TC-148-05: keyfile has mode 0600; JSON contains exactly `OperatorEdPriv`, `OperatorXPriv`, `OrchEdPub`, `OrchXPub` at correct lengths; write to a missing parent dir fails cleanly.
 - [ ] [REQ-148-03] TC-148-06: keyfile never contains `OrchEdPriv`/`OrchXPriv` (hex or base64).
-- [ ] [REQ-148-04] TC-148-07: `agent-cli keygen --keyfile <path>` exits 0, stdout has the env block, keyfile exists at 0600; no `--keyfile` exits 2.
+- [ ] [REQ-148-04] TC-148-07: `examples/agent-cli keygen --keyfile <path>` exits 0, stdout has the env block, keyfile exists at 0600; no `--keyfile` exits 2.
 - [ ] [REQ-148-04] TC-148-08: second `keygen --keyfile <same path>` without `--force` exits non-zero and leaves the original file byte-unchanged; `--force` overwrites successfully.
 - [ ] [REQ-148-05] TC-148-09: no private-key encoding appears anywhere in combined stdout+stderr; a labeled banner separates the paste-ready block from the confirmation line.
 
@@ -69,12 +85,12 @@ Reference: `internal/envelope/envelope.go`, `internal/envelope/confidentiality.g
   follow-on once a token exists.
 - **Harness command:**
   ```
-  go test -race -count=1 ./internal/agentcli/...
+  go test -race -count=1 ./examples/agent-cli/...
   make check
   ```
   Expected: all TC-148-01..09 pass; `make check` → `All checks passed.`
 - **Runtime observation (L6-lite, this host, no live bot needed):** build and run
-  `go run ./cmd/agent-cli keygen --keyfile /tmp/agent-cli-demo/operator.json` and paste the
+  `go run ./examples/agent-cli keygen --keyfile /tmp/agent-cli-demo/operator.json` and paste the
   quoted stdout + `ls -l` of the keyfile into the task's verify commit.
 
 ## Out of scope
@@ -89,4 +105,4 @@ Reference: `internal/envelope/envelope.go`, `internal/envelope/confidentiality.g
 
 - **Blocks on:** none — `internal/envelope` (task 096) is already complete.
 - **Blocks:** task 149 (`send`), task 150 (`reply-open`) — both add subcommands to this
-  task's dispatcher and read the keyfile shape this task defines.
+  task's `examples/agent-cli` dispatcher and read the keyfile shape this task defines.

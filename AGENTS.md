@@ -71,6 +71,7 @@ blocks" as the current mission.
 ```
 cmd/          ← entrypoints (main packages) — cmd/agent-builder
 internal/     ← code outputs (orchestrator packages; not importable externally)
+examples/     ← reference clients / liftable examples that consume published contracts (e.g. the Telegram operator CLI, examples/agent-cli); one-way dependency into internal/envelope, never imported by the orchestrator (ADR 062)
 artifacts/    ← non-code outputs (rendered diagrams, exports, schemas)
 docs/         ← spec + planning + history (the source-of-truth side)
   spec/           authoritative current-state snapshot — SPEC.md, behaviors, architecture, data-model, interfaces, configuration

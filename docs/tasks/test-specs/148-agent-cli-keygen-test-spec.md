@@ -59,10 +59,10 @@
 
 ### TC-148-07: CLI end-to-end — `agent-cli keygen --keyfile <path>` prints the env block to stdout and writes the keyfile
 - **Requirement:** REQ-148-04
-- **Input:** `agent-cli keygen --keyfile /tmp/x/operator.json` invoked via the dispatcher with injected stdout/stderr buffers (mirrors `cli.Config` pattern from `internal/cli`).
+- **Input:** `examples/agent-cli keygen --keyfile /tmp/x/operator.json` invoked via the dispatcher with injected stdout/stderr buffers (mirrors `cli.Config` pattern from `internal/cli`).
 - **Expected output:** exit code 0; stdout contains the seven `AGENT_BUILDER_TELEGRAM_*` lines from TC-148-03; stderr is empty except for a one-line human-readable confirmation ("keyfile written to /tmp/x/operator.json (mode 0600)") which itself contains no secret material; the keyfile exists at the given path with mode 0600.
 - **Assertions:** unit-level dispatcher test using a temp dir; assert exit code, stdout content, and file existence/permissions.
-- **Edge cases:** `agent-cli keygen` with no `--keyfile` flag exits 2 (usage error) — the keyfile path is mandatory since losing it loses the operator's only copy of their private keys.
+- **Edge cases:** `examples/agent-cli keygen` with no `--keyfile` flag exits 2 (usage error) — the keyfile path is mandatory since losing it loses the operator's only copy of their private keys.
 
 ### TC-148-08: `--keyfile` targeting an existing file refuses to overwrite without `--force`
 - **Requirement:** REQ-148-04
@@ -79,4 +79,4 @@
 - **Edge cases:** none.
 
 ## Notes
-Package: new `internal/agentcli` (parallel to `internal/cli`, which is the orchestrator's own CLI — kept separate to avoid import confusion and because this is a distinct binary's logic). Entrypoint: new `cmd/agent-cli/main.go` (task 148 also stubs the dispatcher `Main(Config)` shape, mirroring `internal/cli.Main`/`cli.Config`, so tasks 149/150 add subcommands to the same dispatcher rather than each owning their own `main`). Reuses `internal/envelope.GenerateKeyPair` and stdlib `crypto/ed25519`/`crypto/rand` exclusively — no new crypto. `make fitness-*-isolation`-style checks are out of scope for this task (no leaf-purity constraint here; `internal/agentcli` is allowed to import `internal/envelope`).
+Placement per ADR 062: all client code — entrypoint and logic — lives together under the new top-level `examples/agent-cli/` directory (its own package(s)), NOT under `cmd/` and NOT with an `internal/agentcli` package. This keeps it liftable as a single directory and keeps the operator-side trust boundary visible. Entrypoint `examples/agent-cli/main.go` plus the client's package(s) under that directory; task 148 stubs the dispatcher `Main(Config)` shape, mirroring `internal/cli.Main`/`cli.Config`, so tasks 149/150 add subcommands to the same dispatcher rather than each owning their own `main`. Reuses `internal/envelope.GenerateKeyPair` and stdlib `crypto/ed25519`/`crypto/rand` exclusively — no new crypto. `examples/agent-cli` imports `internal/envelope` and stdlib only; the orchestrator (`cmd/agent-builder`, `internal/**`) must never import it (one-way edge; a `make fitness-agentcli-boundary` check may enforce it later — out of scope for this task). Task 148's implementation commit also corrects the stale base64→hex doc comment in `internal/envelope/envelope.go:59` (ADR 062).

@@ -6,7 +6,7 @@
 
 ## Goal
 
-Add the `reply-open` subcommand to `agent-cli` (task 148's dispatcher): take a reply
+Add the `reply-open` subcommand to `examples/agent-cli` (task 148's dispatcher): take a reply
 envelope JSON (file, stdin, or inline flag) as produced by the orchestrator's
 `telegram.ReplyAdapter.Report`, verify it with the orchestrator's Ed25519 public key,
 open it with the operator's X25519 private key + the orchestrator's X25519 public key,
@@ -49,7 +49,7 @@ replicate for the reverse direction).
 ## Readiness gate
 
 - [x] Test spec `docs/tasks/test-specs/150-agent-cli-reply-open-test-spec.md` exists (written first — 2026-07-01)
-- [ ] Task 148 merged (`internal/agentcli` package, dispatcher scaffold, keyfile JSON shape exist)
+- [ ] Task 148 merged (`examples/agent-cli` package, dispatcher scaffold, keyfile JSON shape exist)
 - [ ] `make check` green on `main` before branching
 
 ## Acceptance criteria
@@ -73,14 +73,14 @@ replicate for the reverse direction).
   runtime observation below exercises without needing a bot token.
 - **Harness command:**
   ```
-  go test -race -count=1 ./internal/agentcli/...
+  go test -race -count=1 ./examples/agent-cli/...
   make check
   ```
   Expected: all TC-150-01..08 pass; `make check` → `All checks passed.`
 - **Runtime observation (L6-lite, this host, no live bot needed):** generate a keyfile via
   task 148's `keygen`, construct a real `telegram.ReplyAdapter` in a small throwaway Go
   program (or reuse the unit test harness) to emit one real sealed/signed reply envelope
-  to a file, then run `go run ./cmd/agent-cli reply-open --keyfile <kf> <envelope-file>`
+  to a file, then run `go run ./examples/agent-cli reply-open --keyfile <kf> <envelope-file>`
   and confirm the exact plaintext prints to stdout.
 
 ## Out of scope
@@ -93,7 +93,7 @@ replicate for the reverse direction).
 
 ## Dependencies
 
-- **Blocks on:** task 148 (`internal/agentcli` dispatcher + keyfile shape).
+- **Blocks on:** task 148 (`examples/agent-cli` dispatcher + keyfile shape).
 - **Blocks:** none. Independent of task 149 (`send`) — no shared code path beyond the
   task 148 scaffold; the two can be implemented in either order or in parallel once 148
   is merged.

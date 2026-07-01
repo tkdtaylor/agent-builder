@@ -6,7 +6,7 @@
 
 ## Goal
 
-Add the `send` subcommand to `agent-cli` (task 148's dispatcher): read the operator
+Add the `send` subcommand to `examples/agent-cli` (task 148's dispatcher): read the operator
 keyfile, seal the plaintext command with X25519+AEAD (operator priv → orchestrator pub),
 sign the resulting envelope with the operator's Ed25519 private key, and POST it to the
 Telegram Bot API's `sendMessage` endpoint — the only way to produce a command the live
@@ -49,7 +49,7 @@ Reference: `internal/envelope/envelope.go`, `internal/channel/telegram/adapter.g
 ## Readiness gate
 
 - [x] Test spec `docs/tasks/test-specs/149-agent-cli-send-test-spec.md` exists (written first — 2026-07-01)
-- [ ] Task 148 merged (`internal/agentcli` package, dispatcher scaffold, keyfile JSON shape exist)
+- [ ] Task 148 merged (`examples/agent-cli` package, dispatcher scaffold, keyfile JSON shape exist)
 - [ ] `make check` green on `main` before branching
 
 ## Acceptance criteria
@@ -73,7 +73,7 @@ Reference: `internal/envelope/envelope.go`, `internal/channel/telegram/adapter.g
   merging this task.
 - **Harness command:**
   ```
-  go test -race -count=1 ./internal/agentcli/...
+  go test -race -count=1 ./examples/agent-cli/...
   make check
   ```
   Expected: all TC-149-01..08 pass; `make check` → `All checks passed.`
@@ -91,6 +91,6 @@ Reference: `internal/envelope/envelope.go`, `internal/channel/telegram/adapter.g
 
 ## Dependencies
 
-- **Blocks on:** task 148 (`internal/agentcli` dispatcher + keyfile shape).
+- **Blocks on:** task 148 (`examples/agent-cli` dispatcher + keyfile shape).
 - **Blocks:** none. Independent of task 150 (`reply-open`) — no shared code path beyond
   the task 148 scaffold.

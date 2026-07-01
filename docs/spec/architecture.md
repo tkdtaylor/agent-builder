@@ -55,6 +55,7 @@ When the structure changes, both files update in the same commit. The tables her
 **Invariants for this table**
 - Every container listed has a corresponding directory or deployable artifact under `cmd/`, `internal/`, or `containment/` (the Go layout; no `src/`). The drift-audit mode of the `architect` agent checks this against the actual repo layout.
 - Every `Depends on` entry must resolve to another row in this table (Container) or a row in Section 2 (Systems).
+- The top-level `examples/` directory holds **reference clients / liftable examples that consume published contracts** (e.g. `examples/agent-cli`, the Telegram operator CLI) — not orchestrator containers, so they are intentionally absent from this table. An example has a one-way dependency into a published contract (`examples/agent-cli → internal/envelope`) and is never imported by the orchestrator (`cmd/agent-builder`, `internal/**`). Governing ADR: 062.
 
 ---
 
