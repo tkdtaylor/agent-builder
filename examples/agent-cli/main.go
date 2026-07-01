@@ -79,27 +79,40 @@ func runKeygen(config Config, args []string) int {
 		return ExitUsage
 	}
 
-	// Generate keys
-	keys, err := GenerateKeys()
+	// Run the keygen logic (extracted for testability)
+	_, envBlock, err := runKeygenLogic(keyfilePath)
 	if err != nil {
-		writef(config.Stderr, "error: failed to generate keys: %v\n", err)
+		writef(config.Stderr, "error: %v\n", err)
 		return 1
 	}
 
-	// Write keyfile
-	if err := WriteKeyfile(keyfilePath, keys); err != nil {
-		writef(config.Stderr, "error: failed to write keyfile: %v\n", err)
-		return 1
-	}
-
-	// Render and emit env block to stdout
-	envBlock := RenderEnvBlock(keys)
+	// Emit env block to stdout
 	_, _ = fmt.Fprint(config.Stdout, envBlock)
 
 	// Emit confirmation to stderr
 	writef(config.Stderr, "\n--- paste into orchestrator environment ---\n\nkeyfile written to %s (mode 0600)\n", keyfilePath)
 
 	return ExitOK
+}
+
+// runKeygenLogic generates keys, writes keyfile, and returns the keys and env block.
+// Extracted for testability so tests can inspect the actual generated key material.
+func runKeygenLogic(keyfilePath string) (*KeyMaterial, string, error) {
+	// Generate keys
+	keys, err := GenerateKeys()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to generate keys: %w", err)
+	}
+
+	// Write keyfile
+	if err := WriteKeyfile(keyfilePath, keys); err != nil {
+		return nil, "", fmt.Errorf("failed to write keyfile: %w", err)
+	}
+
+	// Render env block
+	envBlock := RenderEnvBlock(keys)
+
+	return keys, envBlock, nil
 }
 
 func writef(w io.Writer, format string, args ...interface{}) {

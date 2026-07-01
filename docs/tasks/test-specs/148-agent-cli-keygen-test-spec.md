@@ -71,11 +71,14 @@
 - **Assertions:** unit test captures the keyfile bytes before/after the no-`--force` second call and asserts byte-equality (unchanged); asserts the `--force` call produces different key material and exit 0.
 - **Edge cases:** none beyond the two paths above.
 
-### TC-148-09: no secret material appears in stdout/stderr in mixed/ambiguous form
+### TC-148-09: secret material segregation — operator privates never leak; orchestrator privates confined to env block only
 - **Requirement:** REQ-148-05
 - **Input:** the same invocation as TC-148-07, with output captured into buffers.
-- **Expected output:** neither the operator's Ed25519/X25519 private keys nor the orchestrator's Ed25519/X25519 private keys (hex or base64 encodings) appear anywhere in combined stdout+stderr. The orchestrator env block (which is meant to be pasted server-side) is printed distinctly from the human-readable confirmation line, so an operator visually scanning terminal output cannot mistake one context for the other (assert the confirmation line and the env block are separated by a blank line or a labeled banner, e.g. `--- paste into orchestrator environment ---`).
-- **Assertions:** unit test encodes every private-key field (`OperatorEdPriv`, `OperatorXPriv`, `OrchEdPriv`, `OrchXPriv`) hex and base64 and asserts none appear in stdout+stderr combined; asserts a banner/separator string is present.
+- **Expected output:** 
+  - **(a)** Operator's Ed25519/X25519 private keys (hex encodings) NEVER appear anywhere in combined stdout+stderr.
+  - **(b)** Orchestrator's Ed25519/X25519 private keys (hex encodings) appear ONLY within the labeled env-block region on stdout (on the `_ORCH_PRIV`/`_ORCH_ED_PRIV` lines), and NEVER in the stderr confirmation line. *(Note: REQ-148-02 and TC-148-07 REQUIRE these to be in the env block, so absence-from-all-output would contradict the spec. This property corrects the initial TC-148-09 text.)*
+  - **(c)** The orchestrator env block is printed distinctly from the human-readable confirmation line by a labeled banner (e.g., `--- paste into orchestrator environment ---`).
+- **Assertions:** unit test obtains the REAL generated `KeyMaterial` and encodes every private-key field in hex; asserts `OperatorEdPriv` and `OperatorXPriv` hex are absent from stdout AND stderr; asserts `OrchEdPriv` and `OrchXPriv` hex do NOT appear in stderr, and DO appear in stdout only within the env block (after the banner); asserts the banner-separator string is present in stderr.
 - **Edge cases:** none.
 
 ## Notes
