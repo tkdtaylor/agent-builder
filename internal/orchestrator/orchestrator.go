@@ -285,6 +285,14 @@ type Orchestrator struct {
 	clarifier         Clarifier
 	getenv            func(string) string
 	requireApproval   bool
+	// analyzer classifies a goal's kind + complexity at intake (ADR 060). When nil,
+	// every goal is treated as KindCoding (the pre-060 behavior — backward compatible).
+	// Set via WithGoalAnalyzer.
+	analyzer GoalAnalyzer
+	// answerer answers a KindAnswer goal via the single-shot Completer (ADR 060). When
+	// nil, a KindAnswer goal fails with a clear "not configured" report. Set via
+	// WithAnswerer. Wired in internal/cli (keeps executor out of internal/orchestrator).
+	answerer Answerer
 }
 
 // Option configures an Orchestrator.
@@ -379,6 +387,17 @@ func WithRequireApproval(require bool) Option {
 	return func(o *Orchestrator) { o.requireApproval = require }
 }
 
+// WithGoalAnalyzer sets the goal analyzer (ADR 060). When unset, every goal is
+// treated as KindCoding (pre-060 behavior).
+func WithGoalAnalyzer(a GoalAnalyzer) Option {
+	return func(o *Orchestrator) { o.analyzer = a }
+}
+
+// WithAnswerer sets the single-shot Answerer used for KindAnswer goals (ADR 060).
+func WithAnswerer(a Answerer) Option {
+	return func(o *Orchestrator) { o.answerer = a }
+}
+
 // New constructs an Orchestrator. planner, pol, and reporter are required.
 func New(planner Planner, pol PolicyClient, reporter supervisor.Reporter, base runtime.Config, opts ...Option) *Orchestrator {
 	o := &Orchestrator{
@@ -413,6 +432,21 @@ func New(planner Planner, pol PolicyClient, reporter supervisor.Reporter, base r
 func (o *Orchestrator) BeginGoal(ctx context.Context, goal supervisor.Task) error {
 	o.emitFleetEvent(audit.AuditEvent{Action: audit.ActionGoalIntake, TaskID: goal.ID, RunID: goal.ID})
 
+	// ADR 060: analyze the goal's kind before the coding-centric flow. A KindAnswer
+	// goal is answered directly (read-only single-shot inference — no clarifier,
+	// planner, policy-spawn gate, or approval, because it takes no action). When no
+	// analyzer is configured, every goal is KindCoding (pre-060 behavior).
+	if o.analyzer != nil {
+		analysis, err := o.analyzer.Analyze(goal)
+		if err != nil {
+			o.registry.SetState(goal.ID, StateFailed)
+			return fmt.Errorf("orchestrator: analyze goal %q: %w", goal.ID, err)
+		}
+		if analysis.Kind == KindAnswer {
+			return o.answerGoal(ctx, goal, analysis)
+		}
+	}
+
 	intakeMode := strings.TrimSpace(o.getenv("AGENT_BUILDER_INTAKE"))
 	if intakeMode == "auto" {
 		_, err := o.ConfirmAndPlan(ctx, goal)
@@ -421,6 +455,39 @@ func (o *Orchestrator) BeginGoal(ctx context.Context, goal supervisor.Task) erro
 
 	o.registry.SetState(goal.ID, StateClarifying)
 	return o.ClarifyAndReport(ctx, goal)
+}
+
+// answerGoal handles a KindAnswer goal (ADR 060): it invokes the single-shot
+// Answerer with the goal text (routed to a brain at a capability floor derived
+// from complexity) and reports the answer over the channel. It is read-only
+// inference — no worker, no gate, no branch, no approval. StateDone on success.
+func (o *Orchestrator) answerGoal(ctx context.Context, goal supervisor.Task, analysis GoalAnalysis) error {
+	if o.answerer == nil {
+		o.registry.SetState(goal.ID, StateFailed)
+		if err := o.reporter.Report(ctx, "Cannot answer: no answerer configured for the general (non-coding) path."); err != nil {
+			return fmt.Errorf("orchestrator: report missing answerer: %w", err)
+		}
+		return nil
+	}
+
+	answer, err := o.answerer.Answer(ctx, goal.Spec, analysis.Complexity)
+	if err != nil {
+		o.registry.SetState(goal.ID, StateFailed)
+		if repErr := o.reporter.Report(ctx, fmt.Sprintf("Could not answer goal %q: %v", goal.ID, err)); repErr != nil {
+			return fmt.Errorf("orchestrator: report answer error: %w", repErr)
+		}
+		return nil
+	}
+
+	o.emitFleetEvent(audit.AuditEvent{
+		Action: audit.ActionCompletion, TaskID: goal.ID, RunID: goal.ID,
+		Detail: audit.EventDetail{Reason: string(KindAnswer)},
+	})
+	o.registry.SetState(goal.ID, StateDone)
+	if err := o.reporter.Report(ctx, answer); err != nil {
+		return fmt.Errorf("orchestrator: report answer: %w", err)
+	}
+	return nil
 }
 
 // ClarifyAndReport runs the clarifier on the goal and reports questions or ready prompt.

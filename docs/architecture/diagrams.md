@@ -298,6 +298,8 @@ sequenceDiagram
 
 ## 5. Orchestrator runtime flow — goal → plan → approval → dispatch
 
+> **Answer route (ADR 060, opt-in via `AGENT_BUILDER_GOAL_ANALYSIS`).** Before this flow, `BeginGoal` runs the `GoalAnalyzer`. A `KindAnswer` goal short-circuits here: it is answered by the single-shot `Answerer` (Completer, brain chosen by complexity) and the answer is returned via the `Reporter` — no clarifier, planner, policy gate, approval, or dispatch (read-only inference). Only `KindCoding` goals proceed through the sequence below.
+
 Tier-1 (`internal/orchestrator`, ADR 042/046). The orchestrator sits **above** the
 Section-4 worker flow: each sub-goal it approves is dispatched by invoking
 `runtime.Run` (the entire Section-4 sequence) once. The orchestrator authors no code

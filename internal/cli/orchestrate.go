@@ -517,6 +517,12 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		orchestrator.WithClarifier(clarifier),
 		orchestrator.WithGetEnv(getenv),
 		orchestrator.WithRequireApproval(requireApproval),
+		// ADR 060: when AGENT_BUILDER_GOAL_ANALYSIS is enabled, classify the goal at
+		// intake and answer general questions over the channel. Nil analyzer (default)
+		// = every goal is coding (pre-060 behavior). The answerer routes to a brain by
+		// complexity via the single-shot Completer.
+		orchestrator.WithGoalAnalyzer(goalAnalyzerFromEnv(getenv)),
+		orchestrator.WithAnswerer(cliAnswerer{}),
 	)
 
 	// Inbound message seam (ADR 054 §2). Precedence: an explicit typed MessageSource

@@ -54,15 +54,15 @@ func runAsk(config Config, args []string) int {
 	return ExitOK
 }
 
-// selectAskEntry resolves the brain entry to ask: an explicit --entry id, or the
-// router's default selection. With an empty registry it falls back to the synthetic
-// default Claude entry (same shape as internal/runtime.defaultClaudeEntry).
-func selectAskEntry(entryID string) (registry.RegistryEntry, error) {
+// buildBrainCatalog loads the registry brains from env; with an empty registry it
+// falls back to the synthetic default Claude entry (same shape as
+// internal/runtime.defaultClaudeEntry). Shared by the `ask` subcommand and the
+// orchestrate answer path (ADR 059/060).
+func buildBrainCatalog() (*registry.Catalog, error) {
 	entries, err := registry.LoadFromEnv()
 	if err != nil {
-		return registry.RegistryEntry{}, fmt.Errorf("load registry: %w", err)
+		return nil, fmt.Errorf("load registry: %w", err)
 	}
-
 	cat := registry.NewCatalog()
 	if len(entries) == 0 {
 		cat.RegisterEntry(registry.RegistryEntry{
@@ -76,6 +76,16 @@ func selectAskEntry(entryID string) (registry.RegistryEntry, error) {
 		for _, e := range entries {
 			cat.RegisterEntry(e)
 		}
+	}
+	return cat, nil
+}
+
+// selectAskEntry resolves the brain entry to ask: an explicit --entry id, or the
+// router's default selection.
+func selectAskEntry(entryID string) (registry.RegistryEntry, error) {
+	cat, err := buildBrainCatalog()
+	if err != nil {
+		return registry.RegistryEntry{}, err
 	}
 
 	if entryID != "" {

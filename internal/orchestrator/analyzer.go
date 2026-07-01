@@ -1,10 +1,20 @@
 package orchestrator
 
 import (
+	"context"
 	"strings"
 
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
+
+// Answerer answers a general (non-coding) goal in a single shot and returns the
+// text (ADR 060). It is the Completer-backed seam the orchestrator calls for a
+// KindAnswer goal; it is wired in internal/cli so internal/orchestrator never
+// imports internal/executor (F-010/F-014). complexity lets the wiring pick the
+// brain-capability floor the router selects within.
+type Answerer interface {
+	Answer(ctx context.Context, prompt string, complexity GoalComplexity) (string, error)
+}
 
 // GoalKind is what the orchestrator decides a goal is (ADR 060): a general
 // question to answer, or a coding task to plan and dispatch.
