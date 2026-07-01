@@ -55,6 +55,36 @@ There is no `verify` flag that skips, bypasses, or weakens the Gate. The Gate is
 
 **Binary resolution for `verify-checkpoint`:** The subcommand resolves the `audit-trail` binary from `AGENT_BUILDER_AUDIT_BIN` (takes precedence; stat-checked at invocation time) falling back to `audit-trail` on `$PATH`. Binary resolution failure exits `2` with a usage error naming the failure. This is the same resolution pattern as `internal/runtime` uses for `audit-trail emit` and `audit-trail verify`.
 
+### Agent CLI (operator Telegram client)
+
+The operator-side companion CLI (`examples/agent-cli/`) — a liftable, laptop-side tool that generates keypairs for Telegram authentication and seals/verifies/opens envelopes for the orchestrator (tasks 148/149/150, ADR 062). Placed under `examples/` (not `cmd/` or `internal/agentcli`) to signal a reference client separate from the product and to preserve a single extraction path if lifted to a standalone repo later.
+
+```
+agent-cli <subcommand> [flags]
+
+Subcommands:
+  keygen              generate operator + orchestrator keypairs
+  send                (task 149) seal+sign a plaintext command into an envelope
+  reply-open          (task 150) decrypt+verify a sealed reply envelope
+```
+
+**Task 148 — `keygen` subcommand:**
+
+| Subcommand / flag | Type | Default | Effect |
+|-------------------|------|---------|--------|
+| `keygen` | subcommand | — | Generates four keypairs (operator Ed25519 + X25519; orchestrator Ed25519 + X25519) and writes them to a keyfile and env block. |
+| `keygen --keyfile <path>` | flag (required) | — | **Required.** Path where the `0600` operator keyfile (JSON) is written. Must be provided; omitting it exits `2`. |
+| `keygen --force` | flag (optional) | `false` | Overwrite an existing keyfile. Without `--force`, a second invocation against the same path exits non-zero and leaves the original file unchanged. |
+
+**Outputs:**
+- **Stdout:** Seven `AGENT_BUILDER_TELEGRAM_*` env variables (hex-encoded) suitable for copy-paste into the orchestrator's `.env` or shell session. Variables: `_SIGNING_KEY` (operator Ed25519 pub), `_X25519_PUB` (operator X25519 pub), `_ORCH_PRIV` (orchestrator X25519 priv), `_ORCH_ED_PRIV` (orchestrator Ed25519 priv), `_OP_X25519_PUB` (operator X25519 pub, duplicate of `_X25519_PUB` for adapter config), `_BOT_TOKEN` (placeholder), `_BASE_URL` (placeholder), `_CHAT_ID` (placeholder). Contains **no operator private keys**.
+- **Stderr:** One-line human confirmation message ("keyfile written to <path> (mode 0600)") separated from stdout by a labeled banner (`--- paste into orchestrator environment ---`).
+- **Keyfile (`0600` mode, JSON):** Contains operator private keys (Ed25519 + X25519 hex-encoded) and orchestrator public keys (Ed25519 + X25519 hex-encoded). Used by `send` (task 149) and `reply-open` (task 150) subcommands. **Does not contain orchestrator private keys** (those remain server-side only).
+
+**Exit codes:**
+- `0` — success
+- `2` — usage error (missing `--keyfile`, existing file without `--force`, or I/O failure)
+
 ### HTTP / RPC API
 
 None. agent-builder exposes no HTTP or RPC endpoints.

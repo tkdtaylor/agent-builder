@@ -131,6 +131,19 @@ The launcher resolves allowlisted hostnames to IPv4 addresses before the workloa
 | `AGENT_BUILDER_TELEGRAM_ORCH_ED_PRIV` | secret hex string (64 bytes) | none | required when `AGENT_BUILDER_INBOUND=telegram` | Orchestrator Ed25519 private key (hex-encoded, 64 bytes) used by `telegram.ReplyAdapter` to sign outbound reply envelopes. Never logged. |
 | `AGENT_BUILDER_TELEGRAM_OP_X25519_PUB` | hex string (32 bytes) | none | required when `AGENT_BUILDER_INBOUND=telegram` | Operator X25519 public key (hex-encoded, 32 bytes) used by `telegram.ReplyAdapter` to seal outbound reply envelopes for the operator. |
 | `AGENT_BUILDER_TELEGRAM_CHAT_ID` | string | none | required when `AGENT_BUILDER_INBOUND=telegram` | Telegram chat ID that `telegram.ReplyAdapter` uses as the destination for all outbound replies (acks, status, results). |
+
+**Generating Telegram keypairs (task 148):** Use `agent-cli keygen --keyfile <path>` to generate all four keypairs (operator Ed25519 + X25519, orchestrator Ed25519 + X25519) and emit the seven `AGENT_BUILDER_TELEGRAM_*` env variables. The command writes a `0600` operator keyfile (needed for `agent-cli send` and `agent-cli reply-open`) and prints the env block to stdout for server-side configuration. See [interfaces.md](interfaces.md#agent-cli-operator-telegram-client) for the full CLI signature.
+
+**Operator keyfile structure (task 148):** The `0600`-permissioned JSON keyfile written by `agent-cli keygen` holds operator private keys (Ed25519 + X25519 hex-encoded) and orchestrator public keys (hex-encoded). **Never contains orchestrator private keys**; those remain server-side only. Format:
+```json
+{
+  "OperatorEdPriv": "<hex, 128 chars = 64 bytes>",
+  "OperatorXPriv": "<hex, 64 chars = 32 bytes>",
+  "OrchEdPub": "<hex, 64 chars = 32 bytes>",
+  "OrchXPub": "<hex, 64 chars = 32 bytes>"
+}
+```
+
 | `VAULT_MASTER_KEY` | secret string (hex) | none | required when vault is enabled and `VAULT_MASTER_KEY_FILE` is unset | 32-byte hex-encoded master key for the vault daemon's encryption. Validated to decode to exactly 32 bytes; an invalid or short key is a fail-fast error. **Never auto-generated** — absence when vault is enabled fails loud (a silent ephemeral key would lose secrets across restarts). Never logged. |
 | `VAULT_MASTER_KEY_FILE` | path | none | alternative to `VAULT_MASTER_KEY` | Path to a file containing the hex master key. **Takes precedence over `VAULT_MASTER_KEY`** when both are set. The file contents are read and validated identically to `VAULT_MASTER_KEY`; the key value is never logged. |
 
