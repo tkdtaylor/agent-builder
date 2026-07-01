@@ -53,12 +53,20 @@ var ErrUnknownMode = errors.New("telegram authz: unknown auth mode")
 
 // ParseMode resolves a raw AGENT_BUILDER_TELEGRAM_AUTH_MODE value to a Mode.
 // An empty (or whitespace-only) value resolves to ModeEnvelope — unset ⇒ default,
-// never an "unknown value" error (ADR 063 Decision 1). Any other unrecognized value
-// is a fail-fast ErrUnknownMode, consistent with the AGENT_BUILDER_INBOUND handling.
+// never an "unknown value" error (ADR 063 Decision 1). Any other value is matched as an
+// EXACT, case-sensitive, whitespace-exact literal — no trimming is applied to a non-blank
+// value before matching. This is load-bearing for "open" (ADR 063 Decision 1 / task 153,
+// REQ-153-02): a padded or mis-cased near-miss (" open", "open ", "Open", "OPEN") must
+// never silently resolve to the highest-risk mode via implicit trimming or case-folding,
+// and must never silently fall back to the envelope default either — it is a fail-fast
+// ErrUnknownMode, consistent with the AGENT_BUILDER_INBOUND handling.
 func ParseMode(raw string) (Mode, error) {
-	switch m := Mode(strings.TrimSpace(raw)); m {
-	case "":
+	if strings.TrimSpace(raw) == "" {
+		// Only a genuinely blank/whitespace-only value is treated as "unset" ⇒ envelope.
+		// A non-blank value is matched EXACTLY below — never trimmed.
 		return ModeEnvelope, nil
+	}
+	switch m := Mode(raw); m {
 	case ModeEnvelope, ModeAllowlist, ModePairing, ModeOpen, ModeDisabled:
 		return m, nil
 	default:

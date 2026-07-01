@@ -562,7 +562,7 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 	case ov.source != nil:
 		source = goalSourceAsMessages(ov.source)
 	default:
-		inboundSrc, inboundReporter, err := inboundFromEnv(os.Getenv, config.Stdin, auditSink, logger)
+		inboundSrc, inboundReporter, err := inboundFromEnv(os.Getenv, config.Stdin, auditSink, logger, config.Stderr)
 		if err != nil {
 			cleanup()
 			return orchestrateConfig{}, noop, fmt.Errorf("orchestrate: inbound channel: %w", err)
@@ -1109,14 +1109,19 @@ func (denyAllPolicy) Decide(policy.DecideRequest) (policy.DecideResponse, error)
 // When AGENT_BUILDER_INBOUND=telegram, a telegram.Adapter (MessageSource) and
 // telegram.ReplyAdapter (Reporter) are built from the AGENT_BUILDER_TELEGRAM_*
 // env vars. Missing required vars are a fail-fast assembly error.
-func inboundFromEnv(getenv func(string) string, stdin io.Reader, sink audit.Sink, logger *slog.Logger) (supervisor.MessageSource, supervisor.Reporter, error) {
+//
+// warnOut receives the mandatory footgun WARNING (ADR 063 Decision 1 / task 153) when
+// the resolved Telegram auth mode is "open" — see assembleTelegramInbound. Production
+// passes config.Stderr; a nil warnOut is tolerated (the warning is simply discarded,
+// never a panic) so existing callers that do not care about the warning still compile.
+func inboundFromEnv(getenv func(string) string, stdin io.Reader, sink audit.Sink, logger *slog.Logger, warnOut io.Writer) (supervisor.MessageSource, supervisor.Reporter, error) {
 	choice := strings.TrimSpace(getenv(EnvInbound))
 	switch choice {
 	case "", inboundEnv:
 		return newEnvMessageSource(getenv, stdin), nil, nil
 
 	case inboundTelegram:
-		src, rep, err := assembleTelegramInbound(getenv, sink, logger)
+		src, rep, err := assembleTelegramInbound(getenv, sink, logger, warnOut)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1214,6 +1219,13 @@ func assembleTelegramOwnerID(getenv func(string) string, mode authz.Mode) (int64
 	return ownerID, nil
 }
 
+// openModeWarning is the mandatory startup WARNING (ADR 063 Decision 1 / task 153,
+// REQ-153-03) emitted to stderr exactly once, unconditionally, whenever the resolved
+// Telegram auth mode is "open". It names the concrete risk in the exact framing ADR
+// 063's mode-matrix Notes column uses, so a substring check for the risk phrase
+// ("any account that finds the bot can command it") is stable across refactors.
+const openModeWarning = "WARNING: AGENT_BUILDER_TELEGRAM_AUTH_MODE=open — any account that finds the bot can command it (no sender-ID gate, no allowlist, no pairing approval). Plaintext only; armor/size-caps/audit are still enforced, but there is no gate on WHO can send commands.\n"
+
 // assembleTelegramInbound constructs the telegram.Adapter (inbound MessageSource)
 // and telegram.ReplyAdapter (outbound Reporter) from AGENT_BUILDER_TELEGRAM_* env vars.
 // All required vars must be set; absence is a fail-fast assembly error (never a
@@ -1221,13 +1233,26 @@ func assembleTelegramOwnerID(getenv func(string) string, mode authz.Mode) (int64
 //
 // Key material is decoded from hex but never logged (consistent with the existing
 // telegram adapter and worker transport).
-func assembleTelegramInbound(getenv func(string) string, sink audit.Sink, logger *slog.Logger) (*telegram.Adapter, *telegram.ReplyAdapter, error) {
+//
+// warnOut receives the mandatory footgun WARNING (REQ-153-03) iff the resolved mode is
+// "open" — emitted exactly once, unconditionally (never gated behind a verbosity flag),
+// regardless of what else is configured (e.g. an unrelated APPROVED_STORE value present
+// alongside "open" does not suppress or duplicate it). A nil warnOut is tolerated (the
+// warning is simply discarded), so a caller that does not care about it never panics.
+func assembleTelegramInbound(getenv func(string) string, sink audit.Sink, logger *slog.Logger, warnOut io.Writer) (*telegram.Adapter, *telegram.ReplyAdapter, error) {
 	// Resolve the inbound auth mode (ADR 063) and, for store-consulting modes, build+seed
 	// the persisted approved-sender store. Fail-fast on an unknown mode / blank-or-bad
 	// store path before decoding any crypto key material.
 	authMode, authStore, err := assembleTelegramAuthMode(getenv)
 	if err != nil {
 		return nil, nil, err
+	}
+
+	// REQ-153-03: the mandatory footgun warning fires iff (and only iff) the resolved
+	// mode is "open" — exactly once per assembly, unconditional. No warning for any of
+	// the other four modes.
+	if authMode == authz.ModeOpen && warnOut != nil {
+		_, _ = io.WriteString(warnOut, openModeWarning)
 	}
 
 	// Pairing mode requires a configured owner sender ID (ADR 063 Decision 3). Fail-fast

@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-07-01
-**Status:** backlog
+**Status:** complete (🟡 code merged; awaiting spec-verifier)
 
 ## Goal
 
@@ -43,18 +43,18 @@ validation, task 152's owner-gate pattern (for contrast — `open` deliberately 
 ## Readiness gate
 
 - [x] Test spec `docs/tasks/test-specs/153-telegram-open-mode-and-docs-test-spec.md` exists (written first — 2026-07-01)
-- [ ] ADR 063 read in full
-- [ ] Task 152 merged (`pairing` mode, owner gate, persisted approvals)
-- [ ] `make check` green on `main` before branching
+- [x] ADR 063 read in full
+- [x] Task 152 merged (`pairing` mode, owner gate, persisted approvals)
+- [x] `make check` green on `main` before branching
 
 ## Acceptance criteria
 
-- [ ] [REQ-153-01] TC-153-01: `open` mode accepts plaintext from a never-before-seen sender ID; `ContentGuard.DecideContent` is invoked; `MsgStatus`/etc. derived correctly.
-- [ ] [REQ-153-01] TC-153-02: `open` mode still rejects oversized plaintext before armor, with an audit event; `ContentGuard` never invoked for that update.
-- [ ] [REQ-153-02] TC-153-03: unset/`""` still resolves to `envelope`; `"Open"`/`"OPEN"`/padded-whitespace variants all fail assembly as unknown-mode errors (none resolve to `open`).
-- [ ] [REQ-153-02] TC-153-04: the full existing test suites for tasks 151/152 (envelope default, disabled-rejects-all, allowlist accept/reject, pairing stranger-cannot-self-approve, pairing survives-restart) still pass unmodified after this task's diff lands.
-- [ ] [REQ-153-03] TC-153-05: assembling with `AUTH_MODE=open` emits exactly one `WARNING`-prefixed stderr line containing the named risk phrase; assembling with any of the other four modes emits zero such lines.
-- [ ] [REQ-153-04] TC-153-06: `configuration.md` and `behaviors.md` (and `diagrams.md`, only if the diagram's shape changed) reviewed and confirmed to carry the complete mode-matrix narrative in present tense, with no future-tense "planned" language.
+- [x] [REQ-153-01] TC-153-01: `open` mode accepts plaintext from a never-before-seen sender ID; `ContentGuard.DecideContent` is invoked; `MsgStatus`/etc. derived correctly.
+- [x] [REQ-153-01] TC-153-02: `open` mode still rejects oversized plaintext before armor, with an audit event; `ContentGuard` never invoked for that update.
+- [x] [REQ-153-02] TC-153-03: unset/`""` still resolves to `envelope`; `"Open"`/`"OPEN"`/padded-whitespace variants all fail assembly as unknown-mode errors (none resolve to `open`).
+- [x] [REQ-153-02] TC-153-04: the full existing test suites for tasks 151/152 (envelope default, disabled-rejects-all, allowlist accept/reject, pairing stranger-cannot-self-approve, pairing survives-restart) still pass unmodified after this task's diff lands.
+- [x] [REQ-153-03] TC-153-05: assembling with `AUTH_MODE=open` emits exactly one `WARNING`-prefixed stderr line containing the named risk phrase; assembling with any of the other four modes emits zero such lines.
+- [x] [REQ-153-04] TC-153-06: `configuration.md` and `behaviors.md` (and `diagrams.md`, only if the diagram's shape changed) reviewed and confirmed to carry the complete mode-matrix narrative in present tense, with no future-tense "planned" language.
 
 ## Verification plan
 
@@ -69,11 +69,20 @@ validation, task 152's owner-gate pattern (for contrast — `open` deliberately 
   ```
   Expected: all TC-153-01..06 pass (TC-153-04's regression re-run is the prior tasks' test
   functions, unmodified); `make check` → `All checks passed.`
-- **Runtime observation (documented follow-on, no live bot token available):** once a real
-  bot token exists, assemble `orchestrate` with `AGENT_BUILDER_TELEGRAM_AUTH_MODE=open`,
-  confirm the stderr warning prints on process start, and confirm a message from an
-  arbitrary never-configured Telegram account is accepted and answered. Record as L5/L6
-  residual in the verify commit, not claimed here.
+- **Runtime observation — ACHIEVED at assembly level (L6), residual at the live-bot level.**
+  The `WARNING` stderr line is an assembly-time side effect that does not require a live
+  Telegram bot token to observe: built the real `cmd/agent-builder` binary and ran
+  `orchestrate` against a full valid env (`AGENT_BUILDER_TELEGRAM_AUTH_MODE=open` + all
+  required crypto/task-root/publish vars, a fake bot token, and an unroutable base URL so
+  the eventual `getUpdates` call fails harmlessly after assembly). Observed the exact live
+  stderr line printed exactly once before the (expected) connection-refused error:
+  `WARNING: AGENT_BUILDER_TELEGRAM_AUTH_MODE=open — any account that finds the bot can
+  command it (no sender-ID gate, no allowlist, no pairing approval). Plaintext only;
+  armor/size-caps/audit are still enforced, but there is no gate on WHO can send commands.`
+  Re-ran the same binary with the mode unset (`envelope` default) and confirmed 0
+  `WARNING` lines. **Residual, not claimed here:** confirming a message from an arbitrary
+  never-configured Telegram account is accepted and answered end-to-end still requires a
+  live bot token — that live-bot observation remains a documented follow-on.
 
 ## Out of scope
 
