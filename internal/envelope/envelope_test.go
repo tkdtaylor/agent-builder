@@ -652,4 +652,134 @@ func TestTC154_04_ExistingSentinelNoContamination(t *testing.T) {
 			t.Error("ErrReplay should not match ErrStaleTimestamp")
 		}
 	})
+
+	// Test ErrUnknownKey (Verify with wrong-size public key)
+	t.Run("ErrUnknownKey", func(t *testing.T) {
+		_, senderEdPriv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey failed: %v", err)
+		}
+
+		senderX25519Pub, senderX25519Priv, err := GenerateKeyPair()
+		if err != nil {
+			t.Fatalf("GenerateKeyPair failed: %v", err)
+		}
+
+		recipX25519Pub, recipX25519Priv, err := GenerateKeyPair()
+		if err != nil {
+			t.Fatalf("GenerateKeyPair failed: %v", err)
+		}
+
+		plaintext := []byte("test message")
+		ciphertext, nonce, err := Seal(plaintext, senderX25519Priv, recipX25519Pub)
+		if err != nil {
+			t.Fatalf("Seal failed: %v", err)
+		}
+
+		env := Envelope{
+			From:    "sender",
+			To:      "recipient",
+			Nonce:   hex.EncodeToString(nonce[:]),
+			TS:      NowRFC3339(),
+			Payload: hex.EncodeToString(ciphertext),
+			Sig:     "",
+		}
+
+		signed, err := Sign(env, senderEdPriv)
+		if err != nil {
+			t.Fatalf("Sign failed: %v", err)
+		}
+
+		cache := NewReplayCache(60 * time.Second)
+
+		// Verify with wrong-sized public key (not ed25519.PublicKeySize)
+		wrongSizePub := make(ed25519.PublicKey, 10) // Wrong size
+		_, err = VerifyAndOpen(signed, wrongSizePub, cache, recipX25519Priv, senderX25519Pub)
+		if err == nil {
+			t.Fatal("VerifyAndOpen with wrong-sized public key should have failed")
+		}
+
+		if !errors.Is(err, ErrUnknownKey) {
+			t.Errorf("expected ErrUnknownKey but got: %v", err)
+		}
+
+		// Verify no cross-contamination
+		if errors.Is(err, ErrDecryptionFailed) {
+			t.Error("ErrUnknownKey should not match ErrDecryptionFailed")
+		}
+		if errors.Is(err, ErrBadSignature) {
+			t.Error("ErrUnknownKey should not match ErrBadSignature")
+		}
+		if errors.Is(err, ErrReplay) {
+			t.Error("ErrUnknownKey should not match ErrReplay")
+		}
+		if errors.Is(err, ErrStaleTimestamp) {
+			t.Error("ErrUnknownKey should not match ErrStaleTimestamp")
+		}
+	})
+
+	// Test ErrStaleTimestamp (ReplayCache with stale timestamp)
+	t.Run("ErrStaleTimestamp", func(t *testing.T) {
+		senderEdPub, senderEdPriv, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatalf("GenerateKey failed: %v", err)
+		}
+
+		senderX25519Pub, senderX25519Priv, err := GenerateKeyPair()
+		if err != nil {
+			t.Fatalf("GenerateKeyPair failed: %v", err)
+		}
+
+		recipX25519Pub, recipX25519Priv, err := GenerateKeyPair()
+		if err != nil {
+			t.Fatalf("GenerateKeyPair failed: %v", err)
+		}
+
+		plaintext := []byte("test message")
+		ciphertext, nonce, err := Seal(plaintext, senderX25519Priv, recipX25519Pub)
+		if err != nil {
+			t.Fatalf("Seal failed: %v", err)
+		}
+
+		// Use a very old timestamp (beyond replay window)
+		staleTime := time.Now().Add(-120 * time.Second)
+		env := Envelope{
+			From:    "sender",
+			To:      "recipient",
+			Nonce:   hex.EncodeToString(nonce[:]),
+			TS:      staleTime.Format(time.RFC3339),
+			Payload: hex.EncodeToString(ciphertext),
+			Sig:     "",
+		}
+
+		signed, err := Sign(env, senderEdPriv)
+		if err != nil {
+			t.Fatalf("Sign failed: %v", err)
+		}
+
+		cache := NewReplayCache(60 * time.Second)
+
+		_, err = VerifyAndOpen(signed, senderEdPub, cache, recipX25519Priv, senderX25519Pub)
+		if err == nil {
+			t.Fatal("VerifyAndOpen with stale timestamp should have failed")
+		}
+
+		if !errors.Is(err, ErrStaleTimestamp) {
+			t.Errorf("expected ErrStaleTimestamp but got: %v", err)
+		}
+
+		// Verify no cross-contamination
+		if errors.Is(err, ErrDecryptionFailed) {
+			t.Error("ErrStaleTimestamp should not match ErrDecryptionFailed")
+		}
+		if errors.Is(err, ErrBadSignature) {
+			t.Error("ErrStaleTimestamp should not match ErrBadSignature")
+		}
+		if errors.Is(err, ErrReplay) {
+			t.Error("ErrStaleTimestamp should not match ErrReplay")
+		}
+		if errors.Is(err, ErrUnknownKey) {
+			t.Error("ErrStaleTimestamp should not match ErrUnknownKey")
+		}
+	})
 }

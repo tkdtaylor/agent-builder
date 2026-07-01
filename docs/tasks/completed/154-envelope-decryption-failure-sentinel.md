@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-07-01
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 
@@ -85,14 +85,14 @@ graph, but re-run both fitness checks after the edit to confirm.
 
 ## Acceptance criteria
 
-- [ ] [REQ-154-01] TC-154-01: `errors.Is(err, envelope.ErrDecryptionFailed)` is `true` for a direct `Open` AEAD failure (wrong recipient key); descriptive message text preserved.
-- [ ] [REQ-154-01] TC-154-02: `errors.Is(err, envelope.ErrDecryptionFailed)` is `true` through the full `VerifyAndOpen` chain when only the `Open` step fails; the other four sentinels do NOT match this same error.
-- [ ] [REQ-154-02] TC-154-03: malformed-hex `Nonce` and malformed-hex `Payload` are classified identically to each other, per whichever choice this task documents.
-- [ ] [REQ-154-03] TC-154-04: the four pre-existing sentinel scenarios (unknown key, bad signature, replay, stale timestamp) each match only their own sentinel — no cross-contamination with `ErrDecryptionFailed` or each other.
-- [ ] [REQ-154-04] TC-154-05: a decrypt-failing inbound Telegram envelope produces exactly one `"decryption_failed"` audit reason (not `"envelope_rejected"`); any pre-existing adapter test asserting the old generic reason is located and updated.
-- [ ] [REQ-154-05] TC-154-06: a decrypt-failing inbound envelope through `internal/channel/worker`'s `Receiver` produces the same `"decryption_failed"` `Detail.Reason` via the audit sink.
-- [ ] [REQ-154-06] TC-154-07: `reply-open`'s wrong-opener-key case still prints `"decryption failed"` to stderr (exit 1, empty stdout) and now does so via an explicit `errors.Is(err, envelope.ErrDecryptionFailed)` branch in source, not the else-branch heuristic.
-- [ ] [REQ-154-07] TC-154-08: `go test -race -count=1 ./internal/envelope/... ./internal/channel/telegram/... ./internal/channel/worker/... ./examples/agent-cli/...` passes in full; `make check` passes; `make fitness-envelope-isolation` and `make fitness-worker-transport-isolation` both still PASS.
+- [x] [REQ-154-01] TC-154-01: `errors.Is(err, envelope.ErrDecryptionFailed)` is `true` for a direct `Open` AEAD failure (wrong recipient key); descriptive message text preserved.
+- [x] [REQ-154-01] TC-154-02: `errors.Is(err, envelope.ErrDecryptionFailed)` is `true` through the full `VerifyAndOpen` chain when only the `Open` step fails; the other four sentinels do NOT match this same error.
+- [x] [REQ-154-02] TC-154-03: malformed-hex `Nonce` and malformed-hex `Payload` are classified identically to each other, per whichever choice this task documents.
+- [x] [REQ-154-03] TC-154-04: the four pre-existing sentinel scenarios (unknown key, bad signature, replay, stale timestamp) each match only their own sentinel — no cross-contamination with `ErrDecryptionFailed` or each other.
+- [x] [REQ-154-04] TC-154-05: a decrypt-failing inbound Telegram envelope produces exactly one `"decryption_failed"` audit reason (not `"envelope_rejected"`); any pre-existing adapter test asserting the old generic reason is located and updated.
+- [x] [REQ-154-05] TC-154-06: a decrypt-failing inbound envelope through `internal/channel/worker`'s `Receiver` produces the same `"decryption_failed"` `Detail.Reason` via the audit sink.
+- [x] [REQ-154-06] TC-154-07: `reply-open`'s wrong-opener-key case still prints `"decryption failed"` to stderr (exit 1, empty stdout) and now does so via an explicit `errors.Is(err, envelope.ErrDecryptionFailed)` branch in source, not the else-branch heuristic.
+- [x] [REQ-154-07] TC-154-08: `go test -race -count=1 ./internal/envelope/... ./internal/channel/telegram/... ./internal/channel/worker/... ./examples/agent-cli/...` passes in full; `make check` passes; `make fitness-envelope-isolation` and `make fitness-worker-transport-isolation` both still PASS.
 
 ## Verification plan
 
@@ -132,6 +132,21 @@ graph, but re-run both fitness checks after the edit to confirm.
 - No `docs/spec/behaviors.md` change — that file does not currently document the
   channel-reject reason set at all; the classification detail lives in
   `interfaces.md`/`data-model.md` only.
+
+## Implementation notes
+
+**Malformed-hex classification decision:**
+
+Malformed-hex decode failures (bad hex in `Nonce` or `Payload` fields during `VerifyAndOpen`) 
+are NOT wrapped as `ErrDecryptionFailed`. They return bare errors from `hex.DecodeString()` 
+and are classified as unclassified fallback `"envelope_rejected"` by the audit classifiers.
+
+**Rationale:** These are input-validation failures that occur BEFORE the decrypt step. 
+Hex parsing happens before nonce/payload are used in the AEAD operation, so conflating them 
+with actual AEAD decrypt failures would be semantically inaccurate. Keeping them bare and 
+falling back to `"envelope_rejected"` is consistent and honest — they are malformed input, 
+not decrypt failures. Both `Nonce` and `Payload` malformed-hex cases are handled identically 
+and consistently (TC-154-03 verifies this).
 
 ## Out of scope
 
