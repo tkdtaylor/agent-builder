@@ -85,6 +85,15 @@ const (
 	// to detect and reject a stale value loudly (ADR 021, decision 2).
 	EnvSandboxRuntime = "AGENT_BUILDER_SANDBOX_RUNTIME"
 
+	// Router quota state persistence (ADR 043, task 162). Optional: when unset,
+	// the router's Usage/Availability state is in-memory only and resets on every
+	// process invocation (pre-task behavior, byte-for-byte unchanged). When set,
+	// resolveExecutor loads the file before the first Select and Run saves it
+	// after the dispatch's RecordDispatch/OnGateFailure calls complete, so a
+	// budgeted entry's accumulated quota state survives across successive
+	// `run`/`orchestrate` process invocations.
+	EnvRouterStatePath = "AGENT_BUILDER_ROUTER_STATE_PATH"
+
 	// defaultExecBoxLauncher is the standard Podman execution-box launcher path.
 	defaultExecBoxLauncher = "containment/execution-box/run.sh"
 )
@@ -132,6 +141,11 @@ type Config struct {
 	AuditCheckpointLogID     string // stable log identifier for the checkpoint
 	AuditCheckpointOut       string // path for checkpoint JSON output (empty = stdout)
 	AuditCheckpointPublicKey string // path to Ed25519 PEM public key (task 069 consume)
+
+	// Router quota state persistence (ADR 043, task 162). Empty => disabled: the
+	// router's Usage/Availability state stays in-memory only, exactly as before
+	// this task (additive, opt-in — never a default-on behavior change).
+	RouterStatePath string
 }
 
 // seamConfigAdapter wraps Config to implement recipe.SeamConfig (ADR 044, task 077).
@@ -220,6 +234,8 @@ func configFromEnvWithSource(getenv func(string) string, src secrets.SecretSourc
 		AuditCheckpointLogID:     strings.TrimSpace(getenv(EnvAuditCheckpointLogID)),
 		AuditCheckpointOut:       cleanPath(getenv(EnvAuditCheckpointOut)),
 		AuditCheckpointPublicKey: cleanPath(getenv(EnvAuditCheckpointPublicKey)),
+
+		RouterStatePath: cleanPath(getenv(EnvRouterStatePath)),
 	}
 	if config.ClaudeCLI == "" {
 		config.ClaudeCLI = "claude"
@@ -484,6 +500,15 @@ func recordDispatchWrap(r *router.Router, entryID string, exec supervisor.Execut
 //
 // It returns ErrNoEligibleExecutor (wrapped, descriptive) when no entry
 // qualifies, so runtime.Run can fail before any sandbox creation.
+//
+// When config.RouterStatePath is set (task 162), it calls router.LoadState(path)
+// immediately after constructing the router and BEFORE the first Select, so a
+// budgeted entry's accumulated Usage/Availability state (persisted by a previous
+// process invocation's Run via SaveState) is observed on the very first
+// selection. A missing file (first run — nothing persisted yet) is tolerated,
+// not a fail-fast error; any other LoadState error (a corrupted/malformed file)
+// IS a fail-fast error here, before any sandbox creation, matching LoadState's
+// own contract of never silently resetting to fresh state on corruption.
 func resolveExecutor(spec recipe.RoutingSpec, config Config) (supervisor.Executor, registry.RegistryEntry, *router.Router, error) {
 	catalog, err := buildCatalog(config)
 	if err != nil {
@@ -491,6 +516,11 @@ func resolveExecutor(spec recipe.RoutingSpec, config Config) (supervisor.Executo
 	}
 
 	r := router.New(catalog)
+	if config.RouterStatePath != "" {
+		if err := r.LoadState(config.RouterStatePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return nil, registry.RegistryEntry{}, nil, fmt.Errorf("run: load router state from %s=%q: %w", EnvRouterStatePath, config.RouterStatePath, err)
+		}
+	}
 	entry, err := r.Select(toRouterSpec(spec))
 	if err != nil {
 		return nil, registry.RegistryEntry{}, nil, fmt.Errorf("run: resolve executor for routing spec (min_capability=%d): %w", spec.MinCapability, err)
@@ -552,22 +582,33 @@ func newRouterEscalationHook(r *router.Router, initialEntryID string, spec recip
 // router's quality ladder on each failed attempt (task 160). It returns the
 // initial executor (used for the first attempt) alongside the policy.
 //
-// This is the single production wiring site: Run calls it, so a test that drives
-// buildRetryPolicy + NewRetryingLoop exercises the exact router-backed
+// This is the single production wiring site: Run calls it (via
+// buildRetryPolicyAndRouter, its router-returning superset), so a test that
+// drives buildRetryPolicy + NewRetryingLoop exercises the exact router-backed
 // escalation hook the live path uses (no dead wire). resolveExecutor runs here,
 // before any sandbox creation, so an unresolvable routing spec still fails the
 // run before a box is created or an audit event emitted.
 func buildRetryPolicy(spec recipe.RoutingSpec, config Config) (agentloop.RetryPolicy, supervisor.Executor, error) {
+	policy, exec, _, err := buildRetryPolicyAndRouter(spec, config)
+	return policy, exec, err
+}
+
+// buildRetryPolicyAndRouter is buildRetryPolicy's superset: it additionally
+// returns the *router.Router resolveExecutor constructed (task 162), so Run can
+// call SaveState on it after the dispatch's RecordDispatch/OnGateFailure calls
+// complete. buildRetryPolicy delegates to this function and discards the router
+// for callers that don't need it (existing tests, unchanged).
+func buildRetryPolicyAndRouter(spec recipe.RoutingSpec, config Config) (agentloop.RetryPolicy, supervisor.Executor, *router.Router, error) {
 	exec, entry, r, err := resolveExecutor(spec, config)
 	if err != nil {
-		return agentloop.RetryPolicy{}, nil, err
+		return agentloop.RetryPolicy{}, nil, nil, err
 	}
 	escalate := newRouterEscalationHook(r, entry.ID, spec, config)
 	policy, err := agentloop.NewRetryPolicy(config.MaxAttempts, escalate)
 	if err != nil {
-		return agentloop.RetryPolicy{}, nil, fmt.Errorf("run config: invalid %s: %w", EnvMaxAttempts, err)
+		return agentloop.RetryPolicy{}, nil, nil, fmt.Errorf("run config: invalid %s: %w", EnvMaxAttempts, err)
 	}
-	return policy, exec, nil
+	return policy, exec, r, nil
 }
 
 // toRouterSpec maps the recipe-leaf RoutingSpec to the router's equivalent value
@@ -735,7 +776,7 @@ func Run(ctx context.Context, config Config, stdout io.Writer) error {
 	// the audit sink is constructed, so an unresolvable routing spec (empty
 	// registry / all entries exhausted) fails the run without creating a box or
 	// emitting any audit event.
-	policy, exec, err := buildRetryPolicy(r.RoutingSpec, config)
+	policy, exec, rtr, err := buildRetryPolicyAndRouter(r.RoutingSpec, config)
 	if err != nil {
 		return err
 	}
@@ -870,8 +911,28 @@ func Run(ctx context.Context, config Config, stdout io.Writer) error {
 		options = append(options, supervisor.WithCheckpointSigner(cs))
 	}
 
-	if err := supervisor.New(options...).Run(ctx); err != nil {
-		return err
+	runErr := supervisor.New(options...).Run(ctx)
+
+	// Router quota state persistence (ADR 043, task 162). SaveState runs here,
+	// AFTER the dispatch's RecordDispatch/OnGateFailure calls have completed
+	// (they fire inside supervisor.Run, via the dispatchRecordingExecutor and the
+	// router-backed escalation hook across every retry attempt) — so the saved
+	// state reflects the full outcome of this dispatch. This fires REGARDLESS of
+	// whether the dispatch itself succeeded: RecordDispatch already recorded
+	// usage against the router's in-memory state even on a failed/escalated
+	// attempt, and that usage must persist exactly the same as on a success —
+	// never silently dropped because the task ultimately failed.
+	if config.RouterStatePath != "" {
+		if saveErr := rtr.SaveState(config.RouterStatePath); saveErr != nil {
+			if runErr != nil {
+				return fmt.Errorf("run: %w (additionally failed to persist router state to %s=%q: %v)", runErr, EnvRouterStatePath, config.RouterStatePath, saveErr)
+			}
+			return fmt.Errorf("run: persist router state to %s=%q: %w", EnvRouterStatePath, config.RouterStatePath, saveErr)
+		}
+	}
+
+	if runErr != nil {
+		return runErr
 	}
 	_, _ = fmt.Fprintf(stdout, "run completed: task %s\n", task.ID)
 	return nil
