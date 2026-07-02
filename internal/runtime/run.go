@@ -435,6 +435,37 @@ func defaultClaudeEntry(_ Config) registry.RegistryEntry {
 	}
 }
 
+// dispatchRecordingExecutor wraps a concrete supervisor.Executor so every call
+// to Run records exactly one Router.RecordDispatch(entryID) call for the entry
+// that built it, unconditionally of the attempt's outcome (task 161, the
+// AVAILABILITY axis's proactive half — distinct from task 160's quality-axis
+// OnGateFailure escalation). RecordDispatch is called BEFORE delegating to the
+// wrapped executor so it fires even when the underlying Run itself errors.
+//
+// It is constructed once per concrete executor build (resolveExecutor's initial
+// Select and newRouterEscalationHook's re-Select on gate failure) and then reused
+// unchanged across every RetryingLoop attempt that dispatches to that same
+// executor — including the graceful-degradation branch where the hook returns
+// the CurrentExecutor unmodified — so RecordDispatch fires exactly once per
+// attempt, never zero and never more than once.
+type dispatchRecordingExecutor struct {
+	router  *router.Router
+	entryID string
+	next    supervisor.Executor
+}
+
+func (e *dispatchRecordingExecutor) Run(ctx context.Context, t supervisor.Task) (supervisor.Result, error) {
+	e.router.RecordDispatch(e.entryID)
+	return e.next.Run(ctx, t)
+}
+
+// recordDispatchWrap wraps exec in a dispatchRecordingExecutor bound to r and
+// entryID, the single helper both resolveExecutor and newRouterEscalationHook
+// call after building a concrete executor for an entry (task 161).
+func recordDispatchWrap(r *router.Router, entryID string, exec supervisor.Executor) supervisor.Executor {
+	return &dispatchRecordingExecutor{router: r, entryID: entryID, next: exec}
+}
+
 // resolveExecutor resolves a recipe's RoutingSpec to a concrete
 // supervisor.Executor via the real registry+router (ADR 043). It builds the
 // catalog (buildCatalog), constructs a Router over it, and asks the router to
@@ -446,6 +477,10 @@ func defaultClaudeEntry(_ Config) registry.RegistryEntry {
 // SAME router instance whose escalation set (router.escalated) is scoped to this
 // one dispatch. Before task 160 the router was discarded after the initial
 // Select, so a gate-failing attempt could never climb the capability ladder.
+//
+// The returned executor is wrapped in a dispatchRecordingExecutor (task 161) so
+// every attempt that dispatches through it records exactly one
+// Router.RecordDispatch(entryID) call for the entry actually used.
 //
 // It returns ErrNoEligibleExecutor (wrapped, descriptive) when no entry
 // qualifies, so runtime.Run can fail before any sandbox creation.
@@ -465,7 +500,7 @@ func resolveExecutor(spec recipe.RoutingSpec, config Config) (supervisor.Executo
 	if err != nil {
 		return nil, registry.RegistryEntry{}, nil, err
 	}
-	return exec, entry, r, nil
+	return recordDispatchWrap(r, entry.ID, exec), entry, r, nil
 }
 
 // newRouterEscalationHook builds the production EscalationHook closure that
@@ -477,12 +512,14 @@ func resolveExecutor(spec recipe.RoutingSpec, config Config) (supervisor.Executo
 //   - records the current entry as gate-failed for this dispatch via
 //     router.OnGateFailure (the QUALITY axis — ADR 043), then
 //   - re-Selects the next-cheapest eligible entry that has not yet gate-failed
-//     and builds its concrete executor via buildExecutorForEntry, tracking the
-//     new entry ID in the closure's own state, or
+//     and builds its concrete executor via buildExecutorForEntry — wrapped in a
+//     dispatchRecordingExecutor (task 161) so the newly selected entry's usage is
+//     recorded too — tracking the new entry ID in the closure's own state, or
 //   - when every eligible entry has gate-failed (router.ErrNoEligibleExecutor),
 //     returns the CURRENT executor unchanged — graceful degradation matching
 //     BootstrapEscalationHook's behavior for the remaining attempts, never a
-//     hard error out of RetryingLoop.RunOnce.
+//     hard error out of RetryingLoop.RunOnce. The current executor is already
+//     wrapped from its own construction, so no re-wrap is needed here.
 //
 // The closure tracks currentEntryID itself (not derived from the opaque
 // supervisor.Executor value) and stays in sync because RetryingLoop.RunOnce only
@@ -506,7 +543,7 @@ func newRouterEscalationHook(r *router.Router, initialEntryID string, spec recip
 			return nil, err
 		}
 		currentEntryID = next.ID
-		return exec, nil
+		return recordDispatchWrap(r, next.ID, exec), nil
 	}
 }
 
