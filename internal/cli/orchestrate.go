@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"encoding/hex"
+	"os/exec"
 
+	"github.com/tkdtaylor/agent-builder/internal/armor"
 	"github.com/tkdtaylor/agent-builder/internal/audit"
 	"github.com/tkdtaylor/agent-builder/internal/channel/telegram"
 	"github.com/tkdtaylor/agent-builder/internal/channel/telegram/authz"
@@ -97,13 +99,14 @@ const (
 //   - AGENT_BUILDER_TELEGRAM_CHAT_ID     — Telegram chat ID the ReplyAdapter sends to
 //
 // Inbound (envelope-verify+armor+kind-derivation) and outbound (ReplyAdapter sealing)
-// use the same key material already present in the adapter. This is the FIRST live
-// inbound wiring of the Telegram adapter; when no armor binary is configured the
-// content guard defaults to a fail-open allowAllContentGuard (the load-bearing trust
-// gate on this path is the envelope Ed25519-verify + X25519-decrypt + replay-cache
-// pipeline, which is always enforced — armor is an additional injection filter over
-// already-authenticated operator plaintext). Operators SHOULD wire a real armor guard
-// here before production; see the operator follow-up note on this seam.
+// use the same key material already present in the adapter. AGENT_BUILDER_TELEGRAM_ARMOR_BIN
+// (task 158, ADR 064) wires a real armor.Guard as the ContentGuard for every auth mode
+// when resolvable. When no armor binary is configured: envelope/disabled retain the
+// fail-open allowAllContentGuard default (the load-bearing trust gate on that path is
+// the envelope Ed25519-verify + X25519-decrypt + replay-cache pipeline, always
+// enforced — armor is an additional injection filter over already-authenticated
+// operator plaintext); allowlist/pairing/open — which have no cryptographic auth gate
+// at all — fail assembly fast instead, since armor is their only content-level defense.
 const (
 	EnvTelegramBotToken   = "AGENT_BUILDER_TELEGRAM_BOT_TOKEN"
 	EnvTelegramBaseURL    = "AGENT_BUILDER_TELEGRAM_BASE_URL"
@@ -146,6 +149,22 @@ const (
 	// unparseable ⇒ the adapter's built-in 1s default. It only paces re-polls when a batch
 	// yields nothing deliverable; a batch that yields a message returns immediately.
 	EnvTelegramPollBackoff = "AGENT_BUILDER_TELEGRAM_POLL_BACKOFF"
+
+	// EnvTelegramArmorBin resolves the armor binary wired as the adapter's ContentGuard
+	// (task 158, ADR 064) — mirroring resolveAuditBin's exec.LookPath pattern
+	// (internal/runtime/run.go). Unset/blank ⇒ no armor configured; a configured value
+	// that does not resolve via exec.LookPath is a fail-fast errUsageConfig error.
+	//
+	// When resolvable, armor.NewGuard(armor.Config{Command: [resolvedPath]}) is wired for
+	// EVERY auth mode. When unresolvable:
+	//   - envelope/disabled: retains the pre-task fail-open allowAllContentGuard default —
+	//     the envelope-verify pipeline (Ed25519+X25519+replay-cache) is the load-bearing
+	//     gate, always enforced.
+	//   - allowlist/pairing/open (no cryptographic auth gate at all — ADR 063 Decision 2):
+	//     armor is the ONLY content-level defense alongside the sender-ID gate, so assembly
+	//     fails fast rather than silently fail-opening the one content-level control these
+	//     modes have.
+	EnvTelegramArmorBin = "AGENT_BUILDER_TELEGRAM_ARMOR_BIN"
 )
 
 // defaultTelegramBaseURL is the Telegram Bot API base URL used when
@@ -1253,6 +1272,24 @@ func assembleTelegramOwnerID(getenv func(string) string, mode authz.Mode) (int64
 	return ownerID, nil
 }
 
+// resolveTelegramArmorBin resolves AGENT_BUILDER_TELEGRAM_ARMOR_BIN to an executable
+// path, mirroring resolveAuditBin's exec.LookPath pattern (internal/runtime/run.go,
+// task 158 / ADR 064). Unset/blank ⇒ ("", nil) — no armor configured; the caller
+// (assembleTelegramInbound) decides fail-open vs. fail-closed per auth mode. A
+// configured value that does not resolve via exec.LookPath is a fail-fast
+// errUsageConfig error, mirroring resolveAuditBin's unresolvable-binary error shape.
+func resolveTelegramArmorBin(getenv func(string) string) (string, error) {
+	configured := strings.TrimSpace(getenv(EnvTelegramArmorBin))
+	if configured == "" {
+		return "", nil
+	}
+	resolved, err := exec.LookPath(configured)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s %q is not an executable armor binary: %v", errUsageConfig, EnvTelegramArmorBin, configured, err)
+	}
+	return resolved, nil
+}
+
 // openModeWarning is the mandatory startup WARNING (ADR 063 Decision 1 / task 153,
 // REQ-153-03) emitted to stderr exactly once, unconditionally, whenever the resolved
 // Telegram auth mode is "open". It names the concrete risk in the exact framing ADR
@@ -1375,16 +1412,36 @@ func assembleTelegramInbound(ctx context.Context, getenv func(string) string, si
 	var opXPub [32]byte
 	copy(opXPub[:], opX25519PubBytes)
 
-	// Armor content guard: default to fail-open allow-all when no armor binary is
-	// configured. This is a NEW fail-open default introduced with the first live
-	// Telegram inbound wiring (there was no prior no-armor fallback on the run path).
-	// The load-bearing trust gate on this path is the envelope-verify pipeline
-	// (Ed25519 verify + X25519 decrypt + replay-cache), which is always enforced;
-	// armor is an additional injection filter over already-authenticated operator
-	// plaintext, so fail-open here degrades that extra filter, not authentication.
-	// NOTE: operators SHOULD wire a real armor guard (see executorharness's
-	// NewArmorGuarded binding) before production use of AGENT_BUILDER_INBOUND=telegram.
+	// Armor content guard (task 158, ADR 064). AGENT_BUILDER_TELEGRAM_ARMOR_BIN resolves
+	// an executable armor binary; when resolvable, a REAL armor.Guard is wired as the
+	// adapter's ContentGuard for EVERY auth mode. An unresolvable configured value is a
+	// fail-fast errUsageConfig error (resolveTelegramArmorBin).
+	//
+	// When no armor binary is configured:
+	//   - envelope/disabled: retains the pre-task fail-open allowAllContentGuard default.
+	//     The load-bearing trust gate on this path is the envelope-verify pipeline
+	//     (Ed25519 verify + X25519 decrypt + replay-cache), which is always enforced;
+	//     armor is an additional injection filter over already-authenticated operator
+	//     plaintext, so fail-open here degrades that extra filter, not authentication.
+	//   - allowlist/pairing/open: these modes have NO cryptographic authentication gate
+	//     at all (ADR 063 Decision 2), so armor is not an additional filter for them — it
+	//     is the ONLY content-level defense alongside the sender-ID gate. Assembling with
+	//     one of these modes resolved and no armor binary configured is therefore a
+	//     fail-fast errUsageConfig error, never a silent fail-open guard.
+	armorBin, err := resolveTelegramArmorBin(getenv)
+	if err != nil {
+		return nil, nil, err
+	}
 	var guard telegram.ContentGuard = allowAllContentGuard{}
+	switch {
+	case armorBin != "":
+		guard = armor.NewGuard(armor.Config{Command: []string{armorBin}})
+	case authMode == authz.ModeEnvelope || authMode == authz.ModeDisabled:
+		// Unchanged pre-task fail-open default; see rationale above.
+	default:
+		return nil, nil, fmt.Errorf("%w: %s is required when %s=%s (no cryptographic auth gate on this mode; armor is the only content-level defense — see ADR 064)",
+			errUsageConfig, EnvTelegramArmorBin, EnvTelegramAuthMode, authMode)
+	}
 
 	// Pairing mode (ADR 063 Decision 3) needs a PLAINTEXT outbound notifier for the
 	// "pending" reply to an unknown sender and the approve/deny notification to the owner
@@ -1442,11 +1499,13 @@ func assembleTelegramInbound(ctx context.Context, getenv func(string) string, si
 	return adapter, replyAdapter, nil
 }
 
-// allowAllContentGuard is the fail-open content guard used when AGENT_BUILDER_INBOUND=telegram
-// but no armor binary is configured. It always ALLOWS content through — the
-// envelope-verify pipeline (Ed25519+X25519+AEAD) is the load-bearing gate; armor is
-// an optional additional filter. Operators SHOULD configure a real armor guard for
-// production use. This guard satisfies telegram.ContentGuard without importing armor.
+// allowAllContentGuard is the fail-open content guard used when AGENT_BUILDER_INBOUND=telegram,
+// no armor binary is configured (AGENT_BUILDER_TELEGRAM_ARMOR_BIN), and the resolved auth
+// mode is envelope or disabled (task 158, ADR 064) — the only modes where fail-open is
+// permitted; allowlist/pairing/open fail assembly instead (see assembleTelegramInbound). It
+// always ALLOWS content through — the envelope-verify pipeline (Ed25519+X25519+AEAD) is the
+// load-bearing gate on those two modes; armor is an additional filter. This guard satisfies
+// telegram.ContentGuard without importing armor.
 type allowAllContentGuard struct{}
 
 func (allowAllContentGuard) DecideContent(_ context.Context, candidate ingestion.ContentCandidate) (ingestion.Decision, error) {
@@ -1490,5 +1549,6 @@ Optional inbound auth mode (ADR 063; default "envelope" = today's behavior):
   AGENT_BUILDER_TELEGRAM_APPROVED_STORE path to 0600 JSON approved-sender store (required for allowlist/pairing)
   AGENT_BUILDER_TELEGRAM_APPROVED_IDS   comma-separated numeric sender IDs seeded into the store (allowlist)
   AGENT_BUILDER_TELEGRAM_OWNER_ID       numeric owner sender ID who approves/denies pending senders (required for pairing)
+  AGENT_BUILDER_TELEGRAM_ARMOR_BIN      armor binary wired as the ContentGuard on every mode (required for allowlist/pairing/open; else fail-open on envelope/disabled — ADR 064)
 `)
 }
