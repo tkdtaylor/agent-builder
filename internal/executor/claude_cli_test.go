@@ -412,7 +412,7 @@ func TestClaudeCLI_LocalEntry_SetsBaseURLAndNoCloudAuth(t *testing.T) {
 
 	task := supervisor.Task{ID: "091", Repo: "agent-builder", Spec: "docs/tasks/backlog/091-local-entry-translation-proxy.md"}
 
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}

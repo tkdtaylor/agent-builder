@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
@@ -118,8 +119,11 @@ func NewRetryingLoop(
 	}, nil
 }
 
-// RunOnce picks one task and retries it up to MaxAttempts before escalation.
-func (l *RetryingLoop) RunOnce() (RetryOutcome, error) {
+// RunOnce picks one task and retries it up to MaxAttempts before escalation. ctx
+// is the supervisor-threaded per-goal cancel context (task 155): the SAME ctx is
+// forwarded to every bounded-retry attempt's Loop.RunOnce, so a caller
+// cancellation reaches whichever attempt's executor is in-flight.
+func (l *RetryingLoop) RunOnce(ctx context.Context) (RetryOutcome, error) {
 	task, ok, err := l.source.Next()
 	if err != nil {
 		return RetryOutcome{}, fmt.Errorf("loop: pick next retry task: %w", err)
@@ -143,7 +147,7 @@ func (l *RetryingLoop) RunOnce() (RetryOutcome, error) {
 			return RetryOutcome{}, err
 		}
 
-		outcome, err := cycle.RunOnce()
+		outcome, err := cycle.RunOnce(ctx)
 		if err != nil {
 			return RetryOutcome{}, err
 		}

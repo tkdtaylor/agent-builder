@@ -185,7 +185,7 @@ func TestCodexCLI_RunInvokesSubprocessWithCorrectEnvAndArgs(t *testing.T) {
 
 	task := supervisor.Task{ID: "089", Repo: "agent-builder", Spec: "docs/tasks/backlog/089-codex-harness-adapter.md"}
 
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestCodexCLI_RunErrorsWhenSecretNotFound(t *testing.T) {
 
 	task := supervisor.Task{ID: "089", Repo: "agent-builder", Spec: "spec"}
 
-	_, err := cli.Run(task)
+	_, err := cli.Run(context.Background(), task)
 	if err == nil {
 		t.Fatal("Run() returned nil error, want non-nil error on missing secret")
 	}
@@ -289,7 +289,7 @@ func TestCodexCLI_RunSucceedsVariantA(t *testing.T) {
 	cli.cmdFactory = stubCommandFactory(t, stubOut, 0, nil)
 
 	task := supervisor.Task{ID: "089", Repo: "agent-builder", Spec: "spec"}
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run() unexpected error: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestCodexCLI_RunSubprocessNonZeroExitReturnsError(t *testing.T) {
 
 	task := supervisor.Task{ID: "089", Repo: "agent-builder", Spec: "spec"}
 
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err == nil {
 		t.Fatal("Run() returned nil error, want non-nil on subprocess exit 1")
 	}

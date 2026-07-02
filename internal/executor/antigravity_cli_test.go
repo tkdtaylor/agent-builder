@@ -123,7 +123,7 @@ func TestAntigravitySubscriptionModeRunsHeadless(t *testing.T) {
 
 	task := supervisor.Task{ID: "133", Repo: "agent-builder", Spec: "docs/tasks/backlog/133-antigravity-executor-harness.md"}
 
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestAntigravityExtractsBranch(t *testing.T) {
 	cli.cmdFactory = stubAntigravityCommandFactoryWithFileWrite(t, worktree, "work.txt", "content", stubOut, 0, nil)
 
 	task := supervisor.Task{ID: "133", Repo: "agent-builder", Spec: "spec"}
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}
@@ -276,7 +276,7 @@ func TestAntigravityBranchNameFallback(t *testing.T) {
 	cli.cmdFactory = stubAntigravityCommandFactoryWithFileWrite(t, worktree, "add.go", "package main", stubOut, 0, nil)
 
 	task := supervisor.Task{ID: "134", Repo: "agent-builder", Spec: "spec"}
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestAntigravityNoChangesIsError(t *testing.T) {
 	cli.cmdFactory = stubAntigravityCommandFactory(t, stubOut, 0, nil)
 
 	task := supervisor.Task{ID: "134", Repo: "agent-builder", Spec: "spec"}
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err == nil {
 		t.Fatal("Run() returned nil error, want ErrAntigravityNoChanges")
 	}
@@ -352,7 +352,7 @@ func TestAntigravityNonZeroExitErrors(t *testing.T) {
 
 	task := supervisor.Task{ID: "133", Repo: "agent-builder", Spec: "spec"}
 
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err == nil {
 		t.Fatal("Run() returned nil error, want non-nil on subprocess exit 1")
 	}
@@ -385,7 +385,7 @@ func TestAntigravityBlankWorktreeErrors(t *testing.T) {
 
 	task := supervisor.Task{ID: "133", Repo: "agent-builder", Spec: "spec"}
 
-	_, err := cli.Run(task)
+	_, err := cli.Run(context.Background(), task)
 	if err == nil {
 		t.Fatal("Run() returned nil error, want ErrAntigravityBlankWorktree")
 	}
@@ -562,7 +562,7 @@ func TestAntigravityCommitsWorktreeOntoBranch(t *testing.T) {
 	cli.cmdFactory = stubAntigravityCommandFactoryWithFileWrite(t, worktree, "add.go", "package main\nfunc main() {}", stubOut, 0, nil)
 
 	task := supervisor.Task{ID: "134", Repo: "agent-builder", Spec: "spec"}
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}
@@ -636,7 +636,7 @@ func TestAntigravityCommitWorksWithoutGitUser(t *testing.T) {
 	cli.cmdFactory = stubAntigravityCommandFactoryWithFileWrite(t, worktree, "test.go", "package test", stubOut, 0, nil)
 
 	task := supervisor.Task{ID: "134", Repo: "agent-builder", Spec: "spec"}
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}

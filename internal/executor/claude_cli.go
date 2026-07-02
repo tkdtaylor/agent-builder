@@ -200,8 +200,10 @@ func (e *ClaudeCLI) HandleToolCall(ctx context.Context, event executorharness.To
 }
 
 // Run invokes the Claude Code CLI subprocess and returns the branch it reports.
-func (e *ClaudeCLI) Run(task supervisor.Task) (supervisor.Result, error) {
-	return e.RunContext(context.Background(), task)
+// It forwards the supervisor-threaded ctx (task 155) into RunContext so a
+// caller cancellation reaches the in-flight subprocess via cmd.Cancel.
+func (e *ClaudeCLI) Run(ctx context.Context, task supervisor.Task) (supervisor.Result, error) {
+	return e.RunContext(ctx, task)
 }
 
 // RunContext invokes the Claude Code CLI subprocess and returns the branch it reports.

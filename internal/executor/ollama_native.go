@@ -108,9 +108,9 @@ func newOllamaNativeWithChatter(cfg OllamaNativeConfig, chatter Chatter, toolset
 // Run implements supervisor.Executor. It drives the in-process agentic loop:
 // initial prompt → Chat → tool_calls? → dispatch to tool set → append result →
 // repeat until no tool_calls OR hard iteration cap → extract branch → Result{Branch, OK}
-func (o *OllamaNative) Run(t supervisor.Task) (supervisor.Result, error) {
-	// Check for context cancellation early
-	ctx := context.Background() // TODO: context should come from supervisor
+func (o *OllamaNative) Run(ctx context.Context, t supervisor.Task) (supervisor.Result, error) {
+	// ctx is the supervisor-threaded per-goal cancel context (task 155); a
+	// caller cancellation aborts the in-process agentic loop and each Chat call.
 
 	// Initialize messages with the initial prompt
 	initialContent := fmt.Sprintf(

@@ -32,7 +32,7 @@ type fakeExecutor struct {
 	err    error
 }
 
-func (f fakeExecutor) Run(supervisor.Task) (supervisor.Result, error) {
+func (f fakeExecutor) Run(context.Context, supervisor.Task) (supervisor.Result, error) {
 	return f.result, f.err
 }
 
@@ -106,7 +106,7 @@ func TestSupervisorAuditProjectionSuccessOrder(t *testing.T) {
 		Audit:   sink,
 	}
 
-	if err := loop.RunInside(supervisor.BoxHandle{ID: "box-041"}, supervisor.Task{ID: "041"}, streams); err != nil {
+	if err := loop.RunInside(context.Background(), supervisor.BoxHandle{ID: "box-041"}, supervisor.Task{ID: "041"}, streams); err != nil {
 		t.Fatalf("TC-041-01: RunInside error = %v, want nil", err)
 	}
 
@@ -160,7 +160,7 @@ func TestSupervisorAuditProjectionEscalatedNoPublish(t *testing.T) {
 		Audit:   sink,
 	}
 
-	err := loop.RunInside(supervisor.BoxHandle{ID: "box-041"}, supervisor.Task{ID: "041"}, streams)
+	err := loop.RunInside(context.Background(), supervisor.BoxHandle{ID: "box-041"}, supervisor.Task{ID: "041"}, streams)
 	if err == nil {
 		t.Fatal("TC-041-01 escalate: RunInside error = nil, want escalation error")
 	}
@@ -204,7 +204,7 @@ func TestSupervisorAuditProjectionRawStaysInRecord(t *testing.T) {
 		Audit:   sink,
 	}
 
-	if err := loop.RunInside(supervisor.BoxHandle{ID: "box-041"}, supervisor.Task{ID: "041"}, streams); err != nil {
+	if err := loop.RunInside(context.Background(), supervisor.BoxHandle{ID: "box-041"}, supervisor.Task{ID: "041"}, streams); err != nil {
 		t.Fatalf("TC-041-02: RunInside error = %v, want nil", err)
 	}
 
@@ -252,7 +252,7 @@ func TestSupervisorAuditProjectionNilSinkNoOp(t *testing.T) {
 		Audit:   nil, // no sink configured
 	}
 
-	if err := loop.RunInside(supervisor.BoxHandle{ID: "box-041"}, supervisor.Task{ID: "041"}, streams); err != nil {
+	if err := loop.RunInside(context.Background(), supervisor.BoxHandle{ID: "box-041"}, supervisor.Task{ID: "041"}, streams); err != nil {
 		t.Fatalf("TC-041-02 nil sink: RunInside error = %v, want nil", err)
 	}
 	if !strings.Contains(command.String(), "finish task 041 outcome=completed") {
