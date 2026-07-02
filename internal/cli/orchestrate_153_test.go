@@ -93,7 +93,7 @@ func TestTC153_03_OpenModeExactLiteralOnly(t *testing.T) {
 		t.Errorf(`AUTH_MODE="open" resolved to %q, want ModeOpen`, mode)
 	}
 	if store != nil {
-		t.Errorf(`AUTH_MODE="open" built a store, want nil (open never consults the store)`, )
+		t.Errorf(`AUTH_MODE="open" built a store, want nil (open never consults the store)`)
 	}
 }
 
@@ -111,16 +111,21 @@ func tc153FullTelegramEnv(t *testing.T, mode string, extra map[string]string) fu
 	_ = orchEdPub
 
 	base := map[string]string{
-		EnvInbound:            "telegram",
-		EnvTelegramAuthMode:   mode,
-		EnvTelegramBotToken:   "test-bot-token-153",
-		EnvTelegramBaseURL:    "https://api.telegram.org",
-		EnvTelegramChatID:     "12345",
-		EnvTelegramSigningKey: hex.EncodeToString(opEdPriv.Public().(ed25519.PublicKey)),
-		EnvTelegramX25519Pub:  hex.EncodeToString(opXPriv[:]),
-		EnvTelegramOrchPriv:   hex.EncodeToString(orchXPriv[:]),
-		EnvTelegramOrchEdPriv: hex.EncodeToString(orchEdPriv),
+		EnvInbound:             "telegram",
+		EnvTelegramAuthMode:    mode,
+		EnvTelegramBotToken:    "test-bot-token-153",
+		EnvTelegramBaseURL:     "https://api.telegram.org",
+		EnvTelegramChatID:      "12345",
+		EnvTelegramSigningKey:  hex.EncodeToString(opEdPriv.Public().(ed25519.PublicKey)),
+		EnvTelegramX25519Pub:   hex.EncodeToString(opXPriv[:]),
+		EnvTelegramOrchPriv:    hex.EncodeToString(orchXPriv[:]),
+		EnvTelegramOrchEdPriv:  hex.EncodeToString(orchEdPriv),
 		EnvTelegramOpX25519Pub: hex.EncodeToString(opXPubReply[:]),
+		// Task 158/ADR 064: plaintext modes (open, among the modes exercised via this
+		// helper) fail assembly fast without a resolvable armor binary. "true" is a
+		// standard POSIX utility resolvable via exec.LookPath in any test environment;
+		// it is never actually invoked by these WARNING/assembly-only tests.
+		EnvTelegramArmorBin: "true",
 	}
 	for k, v := range extra {
 		base[k] = v
