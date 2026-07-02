@@ -3,6 +3,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -440,25 +441,96 @@ func defaultClaudeEntry(_ Config) registry.RegistryEntry {
 // Select the cheapest eligible entry at sufficient capability. The selected
 // entry's harness determines which concrete executor is constructed.
 //
+// It RETAINS and returns the *router.Router it constructs (task 160) so the
+// caller can drive gate-failure escalation across retry attempts through the
+// SAME router instance whose escalation set (router.escalated) is scoped to this
+// one dispatch. Before task 160 the router was discarded after the initial
+// Select, so a gate-failing attempt could never climb the capability ladder.
+//
 // It returns ErrNoEligibleExecutor (wrapped, descriptive) when no entry
 // qualifies, so runtime.Run can fail before any sandbox creation.
-func resolveExecutor(spec recipe.RoutingSpec, config Config) (supervisor.Executor, registry.RegistryEntry, error) {
+func resolveExecutor(spec recipe.RoutingSpec, config Config) (supervisor.Executor, registry.RegistryEntry, *router.Router, error) {
 	catalog, err := buildCatalog(config)
 	if err != nil {
-		return nil, registry.RegistryEntry{}, err
+		return nil, registry.RegistryEntry{}, nil, err
 	}
 
 	r := router.New(catalog)
 	entry, err := r.Select(toRouterSpec(spec))
 	if err != nil {
-		return nil, registry.RegistryEntry{}, fmt.Errorf("run: resolve executor for routing spec (min_capability=%d): %w", spec.MinCapability, err)
+		return nil, registry.RegistryEntry{}, nil, fmt.Errorf("run: resolve executor for routing spec (min_capability=%d): %w", spec.MinCapability, err)
 	}
 
 	exec, err := buildExecutorForEntry(entry, config)
 	if err != nil {
-		return nil, registry.RegistryEntry{}, err
+		return nil, registry.RegistryEntry{}, nil, err
 	}
-	return exec, entry, nil
+	return exec, entry, r, nil
+}
+
+// newRouterEscalationHook builds the production EscalationHook closure that
+// replaces agentloop.BootstrapEscalationHook on the live run/orchestrate
+// dispatch path (task 160). It captures the retained *router.Router, the entry
+// ID the initial Select returned, and the routing spec.
+//
+// On each failed non-terminal attempt the retry loop invokes the closure, which:
+//   - records the current entry as gate-failed for this dispatch via
+//     router.OnGateFailure (the QUALITY axis — ADR 043), then
+//   - re-Selects the next-cheapest eligible entry that has not yet gate-failed
+//     and builds its concrete executor via buildExecutorForEntry, tracking the
+//     new entry ID in the closure's own state, or
+//   - when every eligible entry has gate-failed (router.ErrNoEligibleExecutor),
+//     returns the CURRENT executor unchanged — graceful degradation matching
+//     BootstrapEscalationHook's behavior for the remaining attempts, never a
+//     hard error out of RetryingLoop.RunOnce.
+//
+// The closure tracks currentEntryID itself (not derived from the opaque
+// supervisor.Executor value) and stays in sync because RetryingLoop.RunOnce only
+// ever advances currentExecutor from a previous return of this same closure.
+func newRouterEscalationHook(r *router.Router, initialEntryID string, spec recipe.RoutingSpec, config Config) agentloop.EscalationHook {
+	currentEntryID := initialEntryID
+	routerSpec := toRouterSpec(spec)
+	return func(request agentloop.EscalationRequest) (supervisor.Executor, error) {
+		r.OnGateFailure(currentEntryID)
+		next, err := r.Select(routerSpec)
+		if err != nil {
+			if errors.Is(err, router.ErrNoEligibleExecutor) {
+				// Every eligible entry has gate-failed this dispatch: degrade
+				// gracefully to the current executor for the remaining attempts.
+				return request.CurrentExecutor, nil
+			}
+			return nil, fmt.Errorf("run: escalation re-select: %w", err)
+		}
+		exec, err := buildExecutorForEntry(next, config)
+		if err != nil {
+			return nil, err
+		}
+		currentEntryID = next.ID
+		return exec, nil
+	}
+}
+
+// buildRetryPolicy resolves the recipe's RoutingSpec to a concrete executor +
+// router and constructs the retry policy whose escalation hook climbs the
+// router's quality ladder on each failed attempt (task 160). It returns the
+// initial executor (used for the first attempt) alongside the policy.
+//
+// This is the single production wiring site: Run calls it, so a test that drives
+// buildRetryPolicy + NewRetryingLoop exercises the exact router-backed
+// escalation hook the live path uses (no dead wire). resolveExecutor runs here,
+// before any sandbox creation, so an unresolvable routing spec still fails the
+// run before a box is created or an audit event emitted.
+func buildRetryPolicy(spec recipe.RoutingSpec, config Config) (agentloop.RetryPolicy, supervisor.Executor, error) {
+	exec, entry, r, err := resolveExecutor(spec, config)
+	if err != nil {
+		return agentloop.RetryPolicy{}, nil, err
+	}
+	escalate := newRouterEscalationHook(r, entry.ID, spec, config)
+	policy, err := agentloop.NewRetryPolicy(config.MaxAttempts, escalate)
+	if err != nil {
+		return agentloop.RetryPolicy{}, nil, fmt.Errorf("run config: invalid %s: %w", EnvMaxAttempts, err)
+	}
+	return policy, exec, nil
 }
 
 // toRouterSpec maps the recipe-leaf RoutingSpec to the router's equivalent value
@@ -483,7 +555,11 @@ func toRouterSpec(spec recipe.RoutingSpec) router.RoutingSpec {
 // single-provider deployments. All other entries are configured via the
 // AGENT_BUILDER_REGISTRY_* env contract and are constructed through their
 // harness adapter, with credentials brokered by the env-backed SecretSource.
-func buildExecutorForEntry(entry registry.RegistryEntry, config Config) (supervisor.Executor, error) {
+//
+// It is a package-level var so tests can inject fake executors keyed by entry ID
+// (mirroring the buildCatalog seam) and assert WHICH executor served each retry
+// attempt as the router-backed escalation hook climbs the ladder (task 160).
+var buildExecutorForEntry = func(entry registry.RegistryEntry, config Config) (supervisor.Executor, error) {
 	if entry.ID == defaultClaudeEntryID {
 		return executor.NewClaudeCLI(executor.ClaudeCLIConfig{
 			CLIPath:    config.ClaudeCLI,
@@ -613,17 +689,16 @@ func Run(ctx context.Context, config Config, stdout io.Writer) error {
 	}
 
 	verifier := r.GateFactory()
-	policy, err := agentloop.NewRetryPolicy(config.MaxAttempts, agentloop.BootstrapEscalationHook)
-	if err != nil {
-		return fmt.Errorf("run config: invalid %s: %w", EnvMaxAttempts, err)
-	}
 
 	// Resolve the recipe's RoutingSpec to a concrete executor via the real
-	// registry+router (ADR 043, task 095). This runs BEFORE any sandbox creation
-	// and before the audit sink is constructed, so an unresolvable routing spec
-	// (empty registry / all entries exhausted) fails the run without creating a
-	// box or emitting any audit event.
-	exec, _, err := resolveExecutor(r.RoutingSpec, config)
+	// registry+router (ADR 043, task 095) and construct the retry policy whose
+	// escalation hook climbs the router's quality ladder on each gate failure
+	// (task 160), replacing the constant BootstrapEscalationHook that always
+	// retried the same executor. This runs BEFORE any sandbox creation and before
+	// the audit sink is constructed, so an unresolvable routing spec (empty
+	// registry / all entries exhausted) fails the run without creating a box or
+	// emitting any audit event.
+	policy, exec, err := buildRetryPolicy(r.RoutingSpec, config)
 	if err != nil {
 		return err
 	}

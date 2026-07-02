@@ -108,7 +108,7 @@ func TestResolveExecutorSelectsCheapestEligible(t *testing.T) {
 	config := Config{ClaudeCLI: "claude", Worktree: "/tmp/work", ClaudeToken: "sk-test"}
 	spec := recipe.RoutingSpec{MinCapability: 1, SensitivityHint: recipe.SensitivitySensitive}
 
-	exec, entry, err := resolveExecutor(spec, config)
+	exec, entry, _, err := resolveExecutor(spec, config)
 	if err != nil {
 		t.Fatalf("resolveExecutor error = %v, want nil", err)
 	}
@@ -140,7 +140,7 @@ func TestResolveExecutorSelectsHigherTierWhenCapabilityDemandsIt(t *testing.T) {
 
 	config := Config{ClaudeCLI: "claude", Worktree: "/tmp/work", ClaudeToken: "sk-test"}
 	// MinCapability 2 excludes the tier-1 local entry → only claude-oauth qualifies.
-	_, entry, err := resolveExecutor(recipe.RoutingSpec{MinCapability: 2}, config)
+	_, entry, _, err := resolveExecutor(recipe.RoutingSpec{MinCapability: 2}, config)
 	if err != nil {
 		t.Fatalf("resolveExecutor error = %v, want nil", err)
 	}
@@ -155,7 +155,7 @@ func TestResolveExecutorEmptyRegistryErrors(t *testing.T) {
 	withCatalog(t) // no entries
 
 	config := Config{ClaudeCLI: "claude", Worktree: "/tmp/work", ClaudeToken: "sk-test"}
-	exec, _, err := resolveExecutor(recipe.RoutingSpec{MinCapability: 1}, config)
+	exec, _, _, err := resolveExecutor(recipe.RoutingSpec{MinCapability: 1}, config)
 	if err == nil {
 		t.Fatal("resolveExecutor error = nil, want ErrNoEligibleExecutor")
 	}
