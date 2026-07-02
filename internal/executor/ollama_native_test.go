@@ -185,7 +185,7 @@ func TestTC10302_LoopExecutesWriteFileAndReturnsProducedBranch(t *testing.T) {
 	}
 
 	// Call Run
-	result, err := executor.Run(supervisor.Task{
+	result, err := executor.Run(context.Background(), supervisor.Task{
 		ID:   "103",
 		Repo: "test-repo",
 		Spec: "test-spec.md",
@@ -306,7 +306,7 @@ func TestTC10303_LoopStopsAtHardIterationCap(t *testing.T) {
 	}
 
 	// Call Run
-	result, err := executor.Run(supervisor.Task{
+	result, err := executor.Run(context.Background(), supervisor.Task{
 		ID:   "103",
 		Repo: "test-repo",
 		Spec: "test-spec.md",
@@ -395,7 +395,7 @@ func TestTC10304_LoopAppendsToolResultsAsMessages(t *testing.T) {
 	}
 
 	// Call Run
-	_, err = executor.Run(supervisor.Task{
+	_, err = executor.Run(context.Background(), supervisor.Task{
 		ID:   "103",
 		Repo: "test-repo",
 		Spec: "test-spec.md",
@@ -462,7 +462,7 @@ func TestTC10305_LoopReturnsErrorWhenContextCancelled(t *testing.T) {
 	chatter := &contextCancelChatter{}
 	executor, _ := newOllamaNativeWithChatter(cfg, chatter, toolDispatcher)
 
-	result, err := executor.Run(supervisor.Task{
+	result, err := executor.Run(context.Background(), supervisor.Task{
 		ID:   "103",
 		Repo: "test-repo",
 		Spec: "test-spec.md",
@@ -523,7 +523,7 @@ func TestTC10602_LoopForwardsObjectArgsToRealToolSet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newOllamaNativeWithChatter: %v", err)
 	}
-	result, err := exec.Run(supervisor.Task{ID: "106", Repo: "r", Spec: "s"})
+	result, err := exec.Run(context.Background(), supervisor.Task{ID: "106", Repo: "r", Spec: "s"})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -619,7 +619,7 @@ func TestOllamaNativeInitialMessageIncludesFailureSectionWhenPriorFailureSet(t *
 		PriorFailure: "Failed step: go-build\nOutput:\n./main.go:5: undefined: Foo\nFix these issues before producing the branch.",
 	}
 
-	_, err = executor.Run(task)
+	_, err = executor.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -708,7 +708,7 @@ func TestOllamaNativeInitialMessageOmitsFailureSectionWhenPriorFailureEmpty(t *t
 		// PriorFailure is zero-value ""
 	}
 
-	_, err = executor.Run(task)
+	_, err = executor.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
 	}
@@ -836,7 +836,7 @@ func TestCrossHarnessFailureSectionConsistency(t *testing.T) {
 		t.Fatalf("newOllamaNativeWithChatter: %v", err)
 	}
 
-	_, _ = executor.Run(task) // Run to populate the chatter's firstRequest
+	_, _ = executor.Run(context.Background(), task) // Run to populate the chatter's firstRequest
 
 	var ollamaOut string
 	if chatter.firstRequest != nil && len(chatter.firstRequest.Messages) > 0 {

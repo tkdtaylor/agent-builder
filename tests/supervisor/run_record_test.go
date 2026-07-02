@@ -187,7 +187,7 @@ type recordLoop struct {
 	duringRun func(supervisor.RunStreams) error
 }
 
-func (l recordLoop) RunInside(_ supervisor.BoxHandle, _ supervisor.Task, streams supervisor.RunStreams) error {
+func (l recordLoop) RunInside(_ context.Context, _ supervisor.BoxHandle, _ supervisor.Task, streams supervisor.RunStreams) error {
 	if l.duringRun == nil {
 		return nil
 	}

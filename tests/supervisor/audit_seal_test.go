@@ -75,7 +75,7 @@ type auditEmittingLoop struct {
 	err error
 }
 
-func (l auditEmittingLoop) RunInside(_ supervisor.BoxHandle, task supervisor.Task, streams supervisor.RunStreams) error {
+func (l auditEmittingLoop) RunInside(_ context.Context, _ supervisor.BoxHandle, task supervisor.Task, streams supervisor.RunStreams) error {
 	if streams.Audit != nil {
 		outcome := audit.OutcomeCompleted
 		if l.err != nil {

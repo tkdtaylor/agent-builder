@@ -1,6 +1,7 @@
 package loop
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -194,7 +195,7 @@ func TestRetryingLoopThreadsPriorFailure(t *testing.T) {
 	}
 
 	// Run once
-	outcome, err := loop.RunOnce()
+	outcome, err := loop.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("RunOnce failed: %v", err)
 	}
@@ -251,7 +252,7 @@ func TestRetryingLoopDoesNotSetPriorFailureOnSuccess(t *testing.T) {
 		t.Fatalf("failed to create retrying loop: %v", err)
 	}
 
-	outcome, err := loop.RunOnce()
+	outcome, err := loop.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("RunOnce failed: %v", err)
 	}
@@ -322,7 +323,7 @@ type capturingExecutor struct {
 	receivedTasks []*supervisor.Task
 }
 
-func (e *capturingExecutor) Run(t supervisor.Task) (supervisor.Result, error) {
+func (e *capturingExecutor) Run(_ context.Context, t supervisor.Task) (supervisor.Result, error) {
 	e.receivedTasks = append(e.receivedTasks, &t)
 	return supervisor.Result{OK: true, Branch: "test-branch"}, nil
 }

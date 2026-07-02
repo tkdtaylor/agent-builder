@@ -1,6 +1,7 @@
 package loop_test
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
@@ -20,7 +21,7 @@ func TestRunOnceDoneOutcomeCarriesBranchAndTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	outcome, err := cycle.RunOnce()
+	outcome, err := cycle.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
@@ -58,6 +59,34 @@ func TestRunOnceDoneOutcomeCarriesBranchAndTrace(t *testing.T) {
 	assertNoRetryDecisionFields(t, outcome)
 }
 
+// TC-155-04: Loop.RunOnce(ctx) forwards the SAME ctx to Executor.Run.
+func TestTC155_04_RunOnceForwardsContextToExecutor(t *testing.T) {
+	type ctxKey struct{}
+	const marker = "marker-155-04"
+
+	task := supervisor.Task{ID: "155", Repo: "agent-builder", Spec: "docs/tasks/backlog/155-executor-context-threading.md"}
+	source := &fakeSource{task: task, ok: true}
+	executor := &fakeExecutor{result: supervisor.Result{Branch: "task/155", OK: true}}
+	verifier := &fakeGate{verdict: gate.Verdict{OK: true}}
+
+	cycle, err := agentloop.New(source, executor, verifier, "/tmp/target-worktree")
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	ctx := context.WithValue(context.Background(), ctxKey{}, marker)
+	if _, err := cycle.RunOnce(ctx); err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+
+	if len(executor.ctxs) != 1 {
+		t.Fatalf("TC-155-04: executor call count = %d, want 1", len(executor.ctxs))
+	}
+	got, ok := executor.ctxs[0].Value(ctxKey{}).(string)
+	if !ok || got != marker {
+		t.Fatalf("TC-155-04: executor received ctx.Value = %v (ok=%v), want %q", got, ok, marker)
+	}
+}
+
 func TestRunOnceGateFailureSuspendsForPolicy(t *testing.T) {
 	task := supervisor.Task{ID: "012", Repo: "agent-builder", Spec: "docs/tasks/backlog/012-agent-loop.md"}
 	source := &fakeSource{task: task, ok: true}
@@ -75,7 +104,7 @@ func TestRunOnceGateFailureSuspendsForPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	outcome, err := cycle.RunOnce()
+	outcome, err := cycle.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
@@ -113,7 +142,7 @@ func TestRunOnceIdleSkipsExecutorAndGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	outcome, err := cycle.RunOnce()
+	outcome, err := cycle.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
@@ -148,7 +177,7 @@ func TestRunOnceExecutorErrorFailsBeforeVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	outcome, err := cycle.RunOnce()
+	outcome, err := cycle.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("RunOnce() error = %v", err)
 	}
@@ -189,7 +218,7 @@ func TestRunOnceTaskSourceErrorReturnsBeforeAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	outcome, err := cycle.RunOnce()
+	outcome, err := cycle.RunOnce(context.Background())
 	if err == nil {
 		t.Fatal("RunOnce() error = nil")
 	}
@@ -288,11 +317,13 @@ type fakeExecutor struct {
 	err    error
 	calls  int
 	tasks  []supervisor.Task
+	ctxs   []context.Context
 }
 
-func (e *fakeExecutor) Run(task supervisor.Task) (supervisor.Result, error) {
+func (e *fakeExecutor) Run(ctx context.Context, task supervisor.Task) (supervisor.Result, error) {
 	e.calls++
 	e.tasks = append(e.tasks, task)
+	e.ctxs = append(e.ctxs, ctx)
 	return e.result, e.err
 }
 

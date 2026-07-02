@@ -37,7 +37,7 @@ func stubClaudeExecFactory(t *testing.T, branch string, cap *capturedCmd) claude
 func runExecTask(t *testing.T, cli *ClaudeCLI) {
 	t.Helper()
 	task := supervisor.Task{ID: "144", Repo: "agent-builder", Spec: "docs/tasks/backlog/144-claude-honor-model-id.md"}
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}

@@ -1160,7 +1160,7 @@ type retryingInBoxLoop struct {
 	publishSecrets []string
 }
 
-func (l retryingInBoxLoop) RunInside(handle supervisor.BoxHandle, task supervisor.Task, streams supervisor.RunStreams) error {
+func (l retryingInBoxLoop) RunInside(ctx context.Context, handle supervisor.BoxHandle, task supervisor.Task, streams supervisor.RunStreams) error {
 	runID := auditRunID(task, handle)
 	writeCommand(streams, "containment=%s launcher=%s", handle.Backend, l.launcher)
 	emitAudit(streams, audit.AuditEvent{
@@ -1175,7 +1175,7 @@ func (l retryingInBoxLoop) RunInside(handle supervisor.BoxHandle, task superviso
 	if err != nil {
 		return err
 	}
-	outcome, err := runner.RunOnce()
+	outcome, err := runner.RunOnce(ctx)
 	if err != nil {
 		return err
 	}
@@ -1208,7 +1208,7 @@ func (l retryingInBoxLoop) RunInside(handle supervisor.BoxHandle, task superviso
 		if l.publisher == nil {
 			return fmt.Errorf("run: publish task %s: missing publisher", task.ID)
 		}
-		result, err := l.publisher.Publish(context.Background(), branchpub.Request{
+		result, err := l.publisher.Publish(ctx, branchpub.Request{
 			Task:     task,
 			Worktree: l.worktree,
 			Branch:   outcome.Branch,

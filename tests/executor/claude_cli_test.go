@@ -29,7 +29,7 @@ func TestClaudeCLIRunInvokesSubprocessAgainstWorktreeAndCapturesBranch(t *testin
 		AuthToken: "test-token-value",
 	})
 
-	result, err := claudeExecutor.Run(supervisor.Task{
+	result, err := claudeExecutor.Run(context.Background(), supervisor.Task{
 		ID:   "022",
 		Repo: "agent-builder",
 		Spec: "docs/tasks/completed/022-claude-cli-executor.md",
@@ -133,7 +133,7 @@ func TestClaudeCLIRunRejectsInvalidInputsBeforeSubprocess(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := tt.exec.Run(tt.task)
+			_, err := tt.exec.Run(context.Background(), tt.task)
 			if !errors.Is(err, tt.want) {
 				t.Fatalf("Run error = %v, want %v", err, tt.want)
 			}
@@ -158,7 +158,7 @@ func TestClaudeCLIRunReportsMissingBranch(t *testing.T) {
 		AuthToken: "test-token-value",
 	})
 
-	result, err := claudeExecutor.Run(supervisor.Task{ID: "022", Spec: "docs/tasks/completed/022-claude-cli-executor.md"})
+	result, err := claudeExecutor.Run(context.Background(), supervisor.Task{ID: "022", Spec: "docs/tasks/completed/022-claude-cli-executor.md"})
 	if !errors.Is(err, executor.ErrMissingBranch) {
 		t.Fatalf("TC-002 Run error = %v, want ErrMissingBranch", err)
 	}
@@ -178,7 +178,7 @@ func TestClaudeCLIRunReportsWhitespaceOnlyBranch(t *testing.T) {
 		AuthToken: "test-token-value",
 	})
 
-	result, err := claudeExecutor.Run(supervisor.Task{ID: "022", Spec: "docs/tasks/completed/022-claude-cli-executor.md"})
+	result, err := claudeExecutor.Run(context.Background(), supervisor.Task{ID: "022", Spec: "docs/tasks/completed/022-claude-cli-executor.md"})
 	if !errors.Is(err, executor.ErrMissingBranch) {
 		t.Fatalf("TC-002 whitespace-only branch error = %v, want ErrMissingBranch", err)
 	}
@@ -198,7 +198,7 @@ func TestClaudeCLIRunReportsFailureWithoutLeakingToken(t *testing.T) {
 		AuthToken: "test-token-value",
 	})
 
-	result, err := claudeExecutor.Run(supervisor.Task{ID: "022", Spec: "docs/tasks/completed/022-claude-cli-executor.md"})
+	result, err := claudeExecutor.Run(context.Background(), supervisor.Task{ID: "022", Spec: "docs/tasks/completed/022-claude-cli-executor.md"})
 	if err == nil {
 		t.Fatal("TC-003 Run error = nil, want subprocess failure")
 	}
@@ -233,7 +233,7 @@ func TestClaudeCLIFromEnvUsesDocumentedTokenVariable(t *testing.T) {
 		t.Fatal("TC-006 constructor returned nil executor")
 	}
 
-	result, err := claudeExecutor.Run(supervisor.Task{ID: "022", Spec: "docs/tasks/completed/022-claude-cli-executor.md"})
+	result, err := claudeExecutor.Run(context.Background(), supervisor.Task{ID: "022", Spec: "docs/tasks/completed/022-claude-cli-executor.md"})
 	if err != nil {
 		t.Fatalf("TC-006 Run with documented env token returned error: %v", err)
 	}
@@ -280,7 +280,7 @@ func TestClaudeIngestionPolicyDeclaresReviewedOrDisabledFailClosed(t *testing.T)
 		AuthToken:       "test-token-value",
 		IngestionPolicy: executor.ClaudeIngestionReviewed,
 	})
-	_, err := reviewedWithoutHarness.Run(supervisor.Task{ID: "029", Spec: "docs/tasks/backlog/029-claude-ingestion-control.md"})
+	_, err := reviewedWithoutHarness.Run(context.Background(), supervisor.Task{ID: "029", Spec: "docs/tasks/backlog/029-claude-ingestion-control.md"})
 	if !errors.Is(err, executor.ErrMissingClaudeIngestionHarness) {
 		t.Fatalf("TC-001 reviewed policy without harness Run error = %v, want ErrMissingClaudeIngestionHarness", err)
 	}
@@ -291,7 +291,7 @@ func TestClaudeIngestionPolicyDeclaresReviewedOrDisabledFailClosed(t *testing.T)
 		AuthToken:       "test-token-value",
 		IngestionPolicy: executor.ClaudeIngestionPolicy("prompt-only"),
 	})
-	_, err = unknownPolicy.Run(supervisor.Task{ID: "029", Spec: "docs/tasks/backlog/029-claude-ingestion-control.md"})
+	_, err = unknownPolicy.Run(context.Background(), supervisor.Task{ID: "029", Spec: "docs/tasks/backlog/029-claude-ingestion-control.md"})
 	if !errors.Is(err, executor.ErrUnsupportedClaudeIngestionPolicy) {
 		t.Fatalf("TC-001 unknown policy Run error = %v, want ErrUnsupportedClaudeIngestionPolicy", err)
 	}
@@ -424,7 +424,7 @@ func TestClaudeDisabledIngestionPolicyFailsClosedAndAllowsNormalSubprocess(t *te
 		t.Fatalf("TC-004 disabled tool result = %+v executed=%v, want disabled denial before execution", toolResult, executed)
 	}
 
-	result, err := claudeExecutor.Run(supervisor.Task{
+	result, err := claudeExecutor.Run(context.Background(), supervisor.Task{
 		ID:   "029",
 		Repo: "agent-builder",
 		Spec: "docs/tasks/backlog/029-claude-ingestion-control.md",

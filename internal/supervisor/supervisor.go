@@ -67,7 +67,7 @@ type Result struct {
 // router that picks an executor by quota/sensitivity/cost is a deferred v1 feature
 // designed against this seam.
 type Executor interface {
-	Run(t Task) (Result, error)
+	Run(ctx context.Context, t Task) (Result, error)
 }
 
 // Gate is the machine-checkable definition of done (tests + build + lint +
@@ -121,8 +121,13 @@ type ContainmentBox interface {
 }
 
 // InBoxLoop is the fakeable seam for one agent-loop run inside a created box.
+//
+// ctx is the per-goal cancel context threaded from Supervisor.Run (ADR 054 §5,
+// task 116/155). The implementation forwards it down to the executor so a
+// caller cancellation reaches the in-flight executor subprocess. The wall-clock
+// timeout arm remains independent (task 156).
 type InBoxLoop interface {
-	RunInside(BoxHandle, Task, RunStreams) error
+	RunInside(ctx context.Context, handle BoxHandle, t Task, streams RunStreams) error
 }
 
 // Supervisor is the outside-the-box dispatcher.
@@ -314,7 +319,7 @@ func (s *Supervisor) Run(ctx context.Context) (err error) {
 			return fmt.Errorf("supervisor: write run command: %w", commandErr)
 		}
 	}
-	loopResult := s.runLoop(handle, streams)
+	loopResult := s.runLoop(ctx, handle, streams)
 
 	// The run-loop select has THREE trigger arms (ADR 054 §5, task 116):
 	//   1. the loop finishing on its own (normal completion / failure),
@@ -394,7 +399,7 @@ type loopRunResult struct {
 	err error
 }
 
-func (s *Supervisor) runLoop(handle BoxHandle, streams RunStreams) <-chan loopRunResult {
+func (s *Supervisor) runLoop(ctx context.Context, handle BoxHandle, streams RunStreams) <-chan loopRunResult {
 	done := make(chan loopRunResult, 1)
 	go func() {
 		var err error
@@ -404,7 +409,7 @@ func (s *Supervisor) runLoop(handle BoxHandle, streams RunStreams) <-chan loopRu
 			}
 			done <- loopRunResult{err: err}
 		}()
-		if loopErr := s.loop.RunInside(handle, s.task, streams); loopErr != nil {
+		if loopErr := s.loop.RunInside(ctx, handle, s.task, streams); loopErr != nil {
 			err = fmt.Errorf("supervisor: run inside box: %w", loopErr)
 		}
 	}()

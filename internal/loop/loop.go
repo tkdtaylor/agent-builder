@@ -2,6 +2,7 @@
 package loop
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -110,8 +111,10 @@ func New(source TaskSource, executor supervisor.Executor, verifier supervisor.Ga
 	}, nil
 }
 
-// RunOnce executes one pick -> attempt -> verify cycle.
-func (l *Loop) RunOnce() (Outcome, error) {
+// RunOnce executes one pick -> attempt -> verify cycle. ctx is the
+// supervisor-threaded per-goal cancel context (task 155): it is forwarded to
+// Executor.Run so a caller cancellation reaches the in-flight executor.
+func (l *Loop) RunOnce(ctx context.Context) (Outcome, error) {
 	trace := []State{StatePick}
 
 	task, ok, err := l.source.Next()
@@ -126,7 +129,7 @@ func (l *Loop) RunOnce() (Outcome, error) {
 	}
 
 	trace = append(trace, StateAttempt)
-	result, err := l.executor.Run(task)
+	result, err := l.executor.Run(ctx, task)
 	if err != nil {
 		return Outcome{
 			Kind:    OutcomeFail,

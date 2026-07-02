@@ -119,7 +119,7 @@ func TestGeminiCLI_RunInvokesSubprocessWithCorrectEnvAndArgs(t *testing.T) {
 
 	task := supervisor.Task{ID: "090", Repo: "agent-builder", Spec: "docs/tasks/backlog/090-gemini-harness-adapter.md"}
 
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestGeminiCLI_RunErrorsWhenSecretNotFound(t *testing.T) {
 
 	task := supervisor.Task{ID: "090", Repo: "agent-builder", Spec: "spec"}
 
-	_, err := cli.Run(task)
+	_, err := cli.Run(context.Background(), task)
 	if err == nil {
 		t.Fatal("Run() returned nil error, want non-nil error on missing secret")
 	}
@@ -224,7 +224,7 @@ func TestGeminiCLI_RunSucceedsVariantA(t *testing.T) {
 	cli.cmdFactory = stubGeminiCommandFactory(t, stubOut, 0, nil)
 
 	task := supervisor.Task{ID: "090", Repo: "agent-builder", Spec: "spec"}
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run() unexpected error: %v", err)
 	}
@@ -262,7 +262,7 @@ func TestGeminiCLI_RunSubprocessNonZeroExitReturnsError(t *testing.T) {
 
 	task := supervisor.Task{ID: "090", Repo: "agent-builder", Spec: "spec"}
 
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err == nil {
 		t.Fatal("Run() returned nil error, want non-nil on subprocess exit 1")
 	}
@@ -379,7 +379,7 @@ func TestGeminiSubscriptionModeSkipsKeyAndRuns(t *testing.T) {
 
 	task := supervisor.Task{ID: "132", Repo: "agent-builder", Spec: "docs/tasks/backlog/132-gemini-subscription-oauth-auth.md"}
 
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}
@@ -479,7 +479,7 @@ func TestGeminiSubscriptionModeStripsStrayApiKey(t *testing.T) {
 
 	task := supervisor.Task{ID: "132", Repo: "agent-builder", Spec: "docs/tasks/backlog/132-gemini-subscription-oauth-auth.md"}
 
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}
@@ -545,7 +545,7 @@ func TestGeminiApiKeyModeUnchanged(t *testing.T) {
 
 	task := supervisor.Task{ID: "132", Repo: "agent-builder", Spec: "docs/tasks/backlog/132-gemini-subscription-oauth-auth.md"}
 
-	result, err := cli.Run(task)
+	result, err := cli.Run(context.Background(), task)
 	if err != nil {
 		t.Fatalf("Run() returned unexpected error: %v", err)
 	}
@@ -608,7 +608,7 @@ func TestGeminiApiKeyModeStillErrorsOnMissingSecret(t *testing.T) {
 
 	task := supervisor.Task{ID: "132", Repo: "agent-builder", Spec: "docs/tasks/backlog/132-gemini-subscription-oauth-auth.md"}
 
-	_, err := cli.Run(task)
+	_, err := cli.Run(context.Background(), task)
 	if err == nil {
 		t.Fatal("Run() returned nil error, want non-nil error on missing secret in API-key mode")
 	}

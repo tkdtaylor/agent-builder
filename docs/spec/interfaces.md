@@ -214,14 +214,14 @@ type Gate interface {
 
 ```go
 type Executor interface {
-	Run(t Task) (Result, error)
+	Run(ctx context.Context, t Task) (Result, error)
 }
 ```
 
-- **Implementors:** `*executor.ClaudeCLI` and test fakes.
+- **Implementors:** `*executor.ClaudeCLI`, `*executor.CodexCLI`, `*executor.GeminiCLI`, `*executor.AntigravityCLI`, `*executor.OllamaNative`, and test fakes.
 - **Consumers:** `loop.Loop` and retry/escalation policy code.
 - **Stability:** governed by `docs/tasks/test-specs/022-claude-cli-executor-test-spec.md` and updated with any task that changes executor inputs, branch output, or auth handling.
-- **Required behavior:** `Run` attempts exactly one task in the configured worktree and returns the produced branch in `Result.Branch`. `Result.OK` is true only when the subprocess exits successfully and reports a non-blank branch. Executor errors fail the attempt before Gate verification; callers decide retry/escalation.
+- **Required behavior:** `Run` attempts exactly one task in the configured worktree and returns the produced branch in `Result.Branch`. `Result.OK` is true only when the subprocess exits successfully and reports a non-blank branch. Executor errors fail the attempt before Gate verification; callers decide retry/escalation. The `ctx` parameter (task 155) is the supervisor-threaded per-goal cancel context: every implementor forwards it into its subprocess/HTTP call (`exec.CommandContext` / the injected `Chatter`) so a caller-cancelled context aborts the in-flight executor. No implementor builds its own `context.Background()` on this path.
 
 ### Concrete executor: `executor.ClaudeCLI`
 
@@ -1018,7 +1018,7 @@ type ContainmentBox interface {
 }
 
 type InBoxLoop interface {
-	RunInside(BoxHandle, Task, RunStreams) error
+	RunInside(ctx context.Context, handle BoxHandle, t Task, streams RunStreams) error
 }
 
 func WithTask(task Task) Option
@@ -1027,7 +1027,7 @@ func WithInBoxLoop(loop InBoxLoop) Option
 func WithLogger(logger *slog.Logger) Option
 func WithRunRecordPath(path string) Option
 func WithRunTimeout(timeout time.Duration) Option
-func (s *Supervisor) Run() error
+func (s *Supervisor) Run(ctx context.Context) error
 
 type RunStreams struct {
 	Stdout  io.Writer

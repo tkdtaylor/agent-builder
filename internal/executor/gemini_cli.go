@@ -64,8 +64,8 @@ func NewGeminiCLI(entry registry.RegistryEntry, secretSource secrets.SecretSourc
 
 // Run invokes the Gemini CLI subprocess and returns the branch it produces.
 // It resolves the API key at call time via secretSource.NamedProviderToken.
-func (g *GeminiCLI) Run(task supervisor.Task) (supervisor.Result, error) {
-	return g.run(context.Background(), task)
+func (g *GeminiCLI) Run(ctx context.Context, task supervisor.Task) (supervisor.Result, error) {
+	return g.run(ctx, task)
 }
 
 // run is the internal implementation that accepts an explicit context.

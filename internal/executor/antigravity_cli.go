@@ -60,8 +60,8 @@ func NewAntigravityCLI(entry registry.RegistryEntry, _ secrets.SecretSource, wor
 
 // Run invokes the Antigravity CLI subprocess and returns the branch it produces.
 // Subscription mode: no API key resolution; inherits env and keyring from ~/.antigravity.
-func (a *AntigravityCLI) Run(task supervisor.Task) (supervisor.Result, error) {
-	return a.run(context.Background(), task)
+func (a *AntigravityCLI) Run(ctx context.Context, task supervisor.Task) (supervisor.Result, error) {
+	return a.run(ctx, task)
 }
 
 // run is the internal implementation that accepts an explicit context.

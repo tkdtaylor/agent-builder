@@ -1,6 +1,7 @@
 package loop_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -21,7 +22,7 @@ func TestRetryPolicyHonorsConfiguredAttemptLimit(t *testing.T) {
 			policy := mustRetryPolicy(t, maxAttempts, agentloop.BootstrapEscalationHook)
 
 			runner := mustRetryingLoop(t, source, executor, verifier, writer, policy)
-			outcome, err := runner.RunOnce()
+			outcome, err := runner.RunOnce(context.Background())
 			if err != nil {
 				t.Fatalf("TC-001 RunOnce() error = %v", err)
 			}
@@ -40,6 +41,41 @@ func TestRetryPolicyHonorsConfiguredAttemptLimit(t *testing.T) {
 	}
 }
 
+// TC-155-05: RetryingLoop.RunOnce(ctx) threads the SAME ctx into every bounded
+// retry attempt's Executor.Run — not a fresh context.Background() per attempt.
+func TestTC155_05_RetryingLoopForwardsSameContextEveryAttempt(t *testing.T) {
+	type ctxKey struct{}
+	const marker = "marker-155-05"
+
+	task := retryTask("155")
+	source := &retrySource{tasks: []supervisor.Task{task}}
+	// OK:true so the gate is reached; gate fails every attempt => retry to the cap.
+	executor := &sequenceExecutor{results: []supervisor.Result{{Branch: "task/155", OK: true}}}
+	verifier := &retryGate{verdicts: []gate.Verdict{{OK: false}}}
+	writer := newRecordingStatusWriter()
+	policy := mustRetryPolicy(t, 3, agentloop.BootstrapEscalationHook)
+
+	runner := mustRetryingLoop(t, source, executor, verifier, writer, policy)
+	ctx := context.WithValue(context.Background(), ctxKey{}, marker)
+	outcome, err := runner.RunOnce(ctx)
+	if err != nil {
+		t.Fatalf("TC-155-05 RunOnce() error = %v", err)
+	}
+	if outcome.Kind != agentloop.RetryOutcomeEscalated {
+		t.Fatalf("TC-155-05 Kind = %q, want %q", outcome.Kind, agentloop.RetryOutcomeEscalated)
+	}
+
+	if len(executor.ctxs) != 3 {
+		t.Fatalf("TC-155-05 executor ctx captures = %d, want 3 (one per bounded attempt)", len(executor.ctxs))
+	}
+	for i, c := range executor.ctxs {
+		got, ok := c.Value(ctxKey{}).(string)
+		if !ok || got != marker {
+			t.Fatalf("TC-155-05 attempt %d ctx.Value = %v (ok=%v), want %q — retry rebuilt a context instead of threading the caller's", i+1, got, ok, marker)
+		}
+	}
+}
+
 func TestRetryPolicyZeroAndNegativeCountsAreExplicit(t *testing.T) {
 	if _, err := agentloop.NewRetryPolicy(-1, agentloop.BootstrapEscalationHook); !errors.Is(err, agentloop.ErrNegativeMaxAttempts) {
 		t.Fatalf("TC-001A NewRetryPolicy(-1) error = %v, want %v", err, agentloop.ErrNegativeMaxAttempts)
@@ -54,7 +90,7 @@ func TestRetryPolicyZeroAndNegativeCountsAreExplicit(t *testing.T) {
 	policy := mustRetryPolicy(t, 0, hook.Hook)
 
 	runner := mustRetryingLoop(t, source, executor, verifier, writer, policy)
-	outcome, err := runner.RunOnce()
+	outcome, err := runner.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("TC-001A RunOnce() error = %v", err)
 	}
@@ -86,7 +122,7 @@ func TestRetryPolicyEscalatesAndAdvancesAfterNFailures(t *testing.T) {
 	policy := mustRetryPolicy(t, 3, agentloop.BootstrapEscalationHook)
 
 	runner := mustRetryingLoop(t, source, executor, verifier, writer, policy)
-	outcome, err := runner.RunOnce()
+	outcome, err := runner.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("TC-002 RunOnce() error = %v", err)
 	}
@@ -117,7 +153,7 @@ func TestRetryPolicySuccessBeforeLimitDoesNotEscalate(t *testing.T) {
 	policy := mustRetryPolicy(t, 3, hook.Hook)
 
 	runner := mustRetryingLoop(t, source, first, verifier, writer, policy)
-	outcome, err := runner.RunOnce()
+	outcome, err := runner.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("TC-002A RunOnce() error = %v", err)
 	}
@@ -153,7 +189,7 @@ func TestRetryPolicyTerminatesAcrossFailingTasks(t *testing.T) {
 	runner := mustRetryingLoop(t, source, executor, verifier, writer, policy)
 	maxAllowedAttempts := len(tasks) * policy.MaxAttempts
 	for i := 0; i < len(tasks); i++ {
-		outcome, err := runner.RunOnce()
+		outcome, err := runner.RunOnce(context.Background())
 		if err != nil {
 			t.Fatalf("TC-003 RunOnce() #%d error = %v", i+1, err)
 		}
@@ -165,7 +201,7 @@ func TestRetryPolicyTerminatesAcrossFailingTasks(t *testing.T) {
 		}
 	}
 
-	idle, err := runner.RunOnce()
+	idle, err := runner.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("TC-003 idle RunOnce() error = %v", err)
 	}
@@ -192,7 +228,7 @@ func TestEscalationHookIsInvokedBetweenAttemptsOnly(t *testing.T) {
 	policy := mustRetryPolicy(t, 3, hook.Hook)
 
 	runner := mustRetryingLoop(t, source, executor, verifier, writer, policy)
-	if _, err := runner.RunOnce(); err != nil {
+	if _, err := runner.RunOnce(context.Background()); err != nil {
 		t.Fatalf("TC-004 RunOnce() error = %v", err)
 	}
 
@@ -227,7 +263,7 @@ func TestEscalationHookReturnValueControlsNextExecutor(t *testing.T) {
 	policy := mustRetryPolicy(t, 2, hook.Hook)
 
 	runner := mustRetryingLoop(t, source, first, verifier, writer, policy)
-	outcome, err := runner.RunOnce()
+	outcome, err := runner.RunOnce(context.Background())
 	if err != nil {
 		t.Fatalf("TC-004A RunOnce() error = %v", err)
 	}
@@ -300,11 +336,13 @@ type sequenceExecutor struct {
 	results []supervisor.Result
 	errs    []error
 	calls   int
+	ctxs    []context.Context
 }
 
-func (e *sequenceExecutor) Run(task supervisor.Task) (supervisor.Result, error) {
+func (e *sequenceExecutor) Run(ctx context.Context, task supervisor.Task) (supervisor.Result, error) {
 	index := e.calls
 	e.calls++
+	e.ctxs = append(e.ctxs, ctx)
 	if index < len(e.errs) && e.errs[index] != nil {
 		return supervisor.Result{}, e.errs[index]
 	}

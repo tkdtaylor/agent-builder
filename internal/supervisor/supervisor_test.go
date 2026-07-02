@@ -67,6 +67,36 @@ func TestRunDispatchesOneTaskAndLogsLifecycle(t *testing.T) {
 	}
 }
 
+// TC-155-03: Supervisor.Run passes its OWN ctx (not context.Background()) into
+// InBoxLoop.RunInside, so the per-goal cancel context reaches the in-box loop.
+func TestTC155_03_SupervisorForwardsContextToInBoxLoop(t *testing.T) {
+	type ctxKey struct{}
+	const marker = "marker-155-03"
+
+	task := Task{ID: "155", Repo: "agent-builder", Spec: "docs/tasks/backlog/155-executor-context-threading.md"}
+	callLog := []string{}
+	box := &fakeBox{handle: BoxHandle{ID: "box-155", Worktree: "/work"}, callLog: &callLog}
+	loop := &fakeInBoxLoop{callLog: &callLog}
+
+	ctx := context.WithValue(context.Background(), ctxKey{}, marker)
+	err := New(
+		WithTask(task),
+		WithContainmentBox(box),
+		WithInBoxLoop(loop),
+	).Run(ctx)
+	if err != nil {
+		t.Fatalf("TC-155-03: Run() error = %v, want nil", err)
+	}
+
+	if len(loop.ctxs) != 1 {
+		t.Fatalf("TC-155-03: RunInside call count = %d, want 1", len(loop.ctxs))
+	}
+	got, ok := loop.ctxs[0].Value(ctxKey{}).(string)
+	if !ok || got != marker {
+		t.Fatalf("TC-155-03: RunInside received ctx.Value = %v (ok=%v), want %q — Supervisor passed context.Background() instead of its own ctx", got, ok, marker)
+	}
+}
+
 func TestRunPassesCreatedBoxToLoopBeforeTeardown(t *testing.T) {
 	task := Task{ID: "017"}
 	callLog := []string{}
@@ -493,13 +523,15 @@ type fakeInBoxLoop struct {
 	// are race-free.
 	callLog *[]string
 	logMu   *sync.Mutex
+	ctxs    []context.Context
 }
 
-func (l *fakeInBoxLoop) RunInside(handle BoxHandle, task Task, streams RunStreams) error {
+func (l *fakeInBoxLoop) RunInside(ctx context.Context, handle BoxHandle, task Task, streams RunStreams) error {
 	l.mu.Lock()
 	l.calls++
 	l.handles = append(l.handles, handle)
 	l.tasks = append(l.tasks, task)
+	l.ctxs = append(l.ctxs, ctx)
 	l.mu.Unlock()
 	l.recordRun()
 	if l.duringRun != nil {
