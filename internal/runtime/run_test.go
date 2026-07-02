@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -707,5 +708,68 @@ func TestConfigFromEnvAllowsAntigravitySubscriptionEntryWithoutCloudKey(t *testi
 
 	if antigravityCLI == nil {
 		t.Fatal("AntigravityCLI is nil")
+	}
+}
+
+// TC-163-01: requireWritable creates a fresh audit chain logfile at mode 0600,
+// not the pre-task 0644.
+func TestTC163_01_RequireWritableCreatesFileAt0600(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chain.log")
+
+	if err := requireWritable(path); err != nil {
+		t.Fatalf("requireWritable(%q) returned error: %v", path, err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("os.Stat(%q) failed after requireWritable: %v", path, err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0o600); got != want {
+		t.Errorf("requireWritable(%q) created file with mode %o, want %o", path, got, want)
+	}
+}
+
+// TC-163-02: requireWritable tightens a pre-existing looser-permission file
+// (simulating an audit chain logfile created by a prior deployment before this
+// task's fix) to 0600 rather than leaving it at the looser mode it already had.
+func TestTC163_02_RequireWritableTightensPreExistingLoosePermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "chain.log")
+
+	// Pre-create the file at the pre-task 0644 mode, as a prior deployment would
+	// have left it on disk.
+	if err := os.WriteFile(path, []byte("existing chain content\n"), 0o644); err != nil {
+		t.Fatalf("failed to pre-create %q at 0644: %v", path, err)
+	}
+	// Sanity: confirm the pre-existing mode really is 0644 before the call under
+	// test — otherwise this test would pass vacuously regardless of the fix.
+	preInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("os.Stat(%q) failed before requireWritable: %v", path, err)
+	}
+	if preInfo.Mode().Perm() != 0o644 {
+		t.Fatalf("pre-existing file mode = %o, want 0644 (test setup invariant)", preInfo.Mode().Perm())
+	}
+
+	if err := requireWritable(path); err != nil {
+		t.Fatalf("requireWritable(%q) returned error: %v", path, err)
+	}
+
+	postInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("os.Stat(%q) failed after requireWritable: %v", path, err)
+	}
+	if got, want := postInfo.Mode().Perm(), os.FileMode(0o600); got != want {
+		t.Errorf("requireWritable(%q) left pre-existing file at mode %o, want tightened to %o", path, got, want)
+	}
+	// The pre-existing content must survive (requireWritable opens O_APPEND, not
+	// O_TRUNC — it must not destroy the chain it's probing).
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) failed: %v", path, err)
+	}
+	if string(content) != "existing chain content\n" {
+		t.Errorf("requireWritable(%q) altered file content: got %q", path, string(content))
 	}
 }

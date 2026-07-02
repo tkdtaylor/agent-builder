@@ -111,7 +111,7 @@ func (b *BlockSink) Append(ev AuditEvent) error {
 	// Invoke the block.
 	out, err := b.runner.Run(args)
 	if err != nil {
-		return fmt.Errorf("audit: emit %s failed: %w", ev.Action, err)
+		return fmt.Errorf("audit: emit %s failed: %w: %w", ev.Action, ErrBlockEmitFailed, err)
 	}
 	// Parse the {seq,hash} response — a malformed response is a hard error.
 	var resp emitResponse
@@ -214,6 +214,7 @@ func buildDecision(ev AuditEvent) string {
 	return ""
 }
 
-// ErrBlockEmitFailed is the sentinel error type for block subprocess failures.
-// Callers can use errors.As to distinguish block failures from validation errors.
+// ErrBlockEmitFailed is the sentinel error for block subprocess failures. Append
+// wraps it (%w) around the emit-failure return, so callers can use errors.Is to
+// distinguish a block subprocess failure from a *ValidationError.
 var ErrBlockEmitFailed = errors.New("audit: block emit failed")

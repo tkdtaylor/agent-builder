@@ -430,6 +430,17 @@ func (a *Adapter) processBatch(updates []Update) (supervisor.Message, bool) {
 
 		a.logger.Debug("envelope verified and decrypted", "plaintext_len", len(plaintext))
 
+		// Role assertion (task 163, mirroring task 098 SEC-001 on the worker
+		// transport): do not rely solely on key separation. VerifyAndOpen only
+		// proves the envelope was signed/encrypted by a trusted key pair; it does
+		// not itself assert the declared From/To roles match this leaf's expected
+		// direction.
+		if env.From != "operator" || env.To != "orchestrator" {
+			a.logger.Debug("envelope role mismatch", "from", env.From, "to", env.To)
+			a.emitAuditEvent("role_mismatch")
+			continue
+		}
+
 		msg, ok := a.processPlaintext(update, plaintext)
 		if !ok {
 			continue

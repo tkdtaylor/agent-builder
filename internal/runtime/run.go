@@ -1111,9 +1111,18 @@ func resolveAuditBin(configured string) (string, error) {
 // only verify the host side can write it so a misconfigured path fails loudly
 // up front rather than mid-run.
 func requireWritable(path string) error {
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644) //nolint:gosec // operator-supplied audit chain path
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // operator-supplied audit chain path
 	if err != nil {
 		return fmt.Errorf("run config: %s %q is not writable: %w", EnvAuditRecord, path, err)
+	}
+	// O_CREATE's mode argument only applies to a file this call creates; a
+	// pre-existing file (e.g. from a prior deployment running before this fix,
+	// which opened with 0o644) keeps its on-disk permissions untouched by
+	// O_CREATE|O_APPEND. Chmod unconditionally so both fresh and upgraded
+	// deployments end up at 0o600 (task 163).
+	if err := os.Chmod(path, 0o600); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("run config: %s %q permissions could not be tightened to 0600: %w", EnvAuditRecord, path, err)
 	}
 	return file.Close()
 }
