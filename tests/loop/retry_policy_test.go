@@ -282,6 +282,45 @@ func TestEscalationHookReturnValueControlsNextExecutor(t *testing.T) {
 	}
 }
 
+// TC-160-06: BootstrapEscalationHook remains exported, unchanged in behavior, and
+// independently usable — it returns request.CurrentExecutor unchanged, and a
+// RetryingLoop constructed directly with it (bypassing internal/runtime's
+// router-backed wiring) still retries the SAME executor every attempt. This is
+// the pre-task behavior task 160's router-backed hook replaces on the live path,
+// while leaving BootstrapEscalationHook available for any caller not wanting
+// router-driven escalation.
+func TestTC160_06_BootstrapEscalationHookUnchanged(t *testing.T) {
+	// Direct unit assertion: the hook echoes CurrentExecutor with no error.
+	bootstrap := &sequenceExecutor{results: []supervisor.Result{{Branch: "b", OK: false}}}
+	got, err := agentloop.BootstrapEscalationHook(agentloop.EscalationRequest{CurrentExecutor: bootstrap})
+	if err != nil {
+		t.Fatalf("TC-160-06 BootstrapEscalationHook error = %v, want nil", err)
+	}
+	if got != supervisor.Executor(bootstrap) {
+		t.Fatalf("TC-160-06 BootstrapEscalationHook returned a different executor, want request.CurrentExecutor unchanged")
+	}
+
+	// Integration assertion: a loop built with it retries the same executor.
+	task := retryTask("160")
+	source := &retrySource{tasks: []supervisor.Task{task}}
+	executor := &sequenceExecutor{results: []supervisor.Result{{Branch: "task/160", OK: true}}}
+	verifier := &retryGate{verdicts: []gate.Verdict{{OK: false}}}
+	writer := newRecordingStatusWriter()
+	policy := mustRetryPolicy(t, 3, agentloop.BootstrapEscalationHook)
+
+	runner := mustRetryingLoop(t, source, executor, verifier, writer, policy)
+	outcome, err := runner.RunOnce(context.Background())
+	if err != nil {
+		t.Fatalf("TC-160-06 RunOnce error = %v", err)
+	}
+	if outcome.Kind != agentloop.RetryOutcomeEscalated {
+		t.Fatalf("TC-160-06 Kind = %q, want %q", outcome.Kind, agentloop.RetryOutcomeEscalated)
+	}
+	if executor.calls != 3 {
+		t.Fatalf("TC-160-06 executor calls = %d, want 3 (same executor every attempt under BootstrapEscalationHook)", executor.calls)
+	}
+}
+
 func mustRetryPolicy(t *testing.T, maxAttempts int, hook agentloop.EscalationHook) agentloop.RetryPolicy {
 	t.Helper()
 
