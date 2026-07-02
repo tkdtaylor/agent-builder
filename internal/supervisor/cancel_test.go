@@ -38,8 +38,12 @@ func TestTC116_02_CancelArmTearsDownBoxViaKillTeardown(t *testing.T) {
 		handle:  BoxHandle{ID: "box-116", Worktree: "/work"},
 		callLog: &callLog,
 		logMu:   &logMu,
-		// A killed box's in-box loop terminates — unblock the loop so killAndJoin
-		// completes (the production box.Kill stops the real process).
+		// Unblock the fake loop so killAndJoin's <-loopResult read completes. In
+		// THIS test that unblock is driven by the fake's onKill callback. In
+		// PRODUCTION, termination is driven by the run-scoped context being
+		// cancelled (task 155/156) — the in-flight executor observes ctx.Done() and
+		// returns — NOT by sandboxBox.Kill, which is an intentional no-op (see
+		// internal/runtime/run.go). The fake stands in for that cancellation here.
 		onKill: func() { close(release) },
 	}
 	loop := &fakeInBoxLoop{
@@ -120,8 +124,10 @@ func TestTC116_05_CancelKillErrorIsJoinedAndSurfaced(t *testing.T) {
 		killErr: killErr,
 		callLog: &callLog,
 		logMu:   &logMu,
-		// Even on a kill error a real killed box's loop process dies — unblock the
-		// loop so the join completes; the supervisor still surfaces killErr as a leak.
+		// Unblock the fake loop so the join completes even on a kill error; the
+		// supervisor still surfaces killErr as a leak. As with TC-116-02, the real
+		// production unblock is the run-scoped context being cancelled (task
+		// 155/156), not sandboxBox.Kill (a no-op) — the fake's onKill stands in for it.
 		onKill: func() { close(release) },
 	}
 	loop := &fakeInBoxLoop{callLog: &callLog, logMu: &logMu, blockUntil: release}

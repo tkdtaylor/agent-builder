@@ -122,10 +122,12 @@ type ContainmentBox interface {
 
 // InBoxLoop is the fakeable seam for one agent-loop run inside a created box.
 //
-// ctx is the per-goal cancel context threaded from Supervisor.Run (ADR 054 §5,
-// task 116/155). The implementation forwards it down to the executor so a
-// caller cancellation reaches the in-flight executor subprocess. The wall-clock
-// timeout arm remains independent (task 156).
+// ctx is the run-scoped cancellable context threaded from Supervisor.Run (ADR
+// 054 §5, task 116/155/156). The implementation forwards it down to the executor
+// so a caller cancellation reaches the in-flight executor subprocess. As of task
+// 156 this is a supervisor-derived child context that the wall-clock TIMEOUT arm
+// also cancels, so a timeout terminates the in-flight executor the same way a
+// caller cancel does — the two triggers share the one context the executor sees.
 type InBoxLoop interface {
 	RunInside(ctx context.Context, handle BoxHandle, t Task, streams RunStreams) error
 }
@@ -250,6 +252,19 @@ func New(options ...Option) *Supervisor {
 // already drives, returning ErrRunCancelled. The wall-clock timeout remains the
 // independent backstop. A nil-equivalent context.Background() leaves Run behaving
 // exactly as the pre-116 no-cancel path (the ctx.Done() arm never fires).
+//
+// Run derives its OWN cancellable child context (runCtx) from ctx and threads
+// THAT — not the raw caller ctx — into the in-box loop (task 156). This lets both
+// termination triggers cancel the SAME context the in-flight executor observes:
+//   - a caller cancel cancels ctx, which cascades to runCtx automatically (runCtx
+//     is a child of ctx), so the executor observes it for free — the cancel arm is
+//     unchanged; and
+//   - the wall-clock TIMEOUT arm calls cancelRun() explicitly, so a context-aware
+//     executor is terminated on a timeout too, not only on a caller cancel.
+// Before task 156 the timeout arm cancelled nothing downstream: the timer firing
+// was unrelated to the threaded ctx, so a timed-out executor's subprocess ran to
+// completion and killAndJoin blocked on <-loopResult until the executor finished
+// on its own — the wall-clock kill was cosmetic.
 func (s *Supervisor) Run(ctx context.Context) (err error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -319,7 +334,16 @@ func (s *Supervisor) Run(ctx context.Context) (err error) {
 			return fmt.Errorf("supervisor: write run command: %w", commandErr)
 		}
 	}
-	loopResult := s.runLoop(ctx, handle, streams)
+	// Derive a supervisor-owned cancellable child context and thread THAT into the
+	// loop, not the raw caller ctx (task 156). runCtx is a child of ctx, so a caller
+	// cancel cascades to it automatically (the cancel arm keeps working unchanged);
+	// the timeout arm additionally calls cancelRun() to cancel the SAME context a
+	// context-aware in-flight executor observes, so a wall-clock timeout now actually
+	// terminates the executor instead of blocking on <-loopResult until it finishes
+	// on its own. The defer guarantees the child is always cancelled once Run returns.
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
+	loopResult := s.runLoop(runCtx, handle, streams)
 
 	// The run-loop select has THREE trigger arms (ADR 054 §5, task 116):
 	//   1. the loop finishing on its own (normal completion / failure),
@@ -350,6 +374,12 @@ func (s *Supervisor) Run(ctx context.Context) (err error) {
 		outcome = RunOutcomeTimedOut
 		timeoutErr := fmt.Errorf("%w after %s", ErrRunTimedOut, s.runTimeout)
 		s.logTimeout(handle, timeoutErr)
+		// Cancel the run-scoped context BEFORE killAndJoin so a context-aware
+		// in-flight executor observes the cancellation and returns, unblocking
+		// killAndJoin's <-loopResult read (task 156). Without this the timer firing
+		// cancels nothing downstream and killAndJoin blocks until the executor
+		// finishes on its own — the pre-156 cosmetic-timeout bug.
+		cancelRun()
 		err = s.killAndJoin(handle, timeoutErr, loopResult)
 		return err
 	}

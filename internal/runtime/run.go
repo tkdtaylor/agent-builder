@@ -1140,10 +1140,24 @@ func (b sandboxBox) Create(task supervisor.Task) (supervisor.BoxHandle, error) {
 	}, nil
 }
 
+// Kill is an intentional no-op. In the current architecture the CLI-shaped
+// executors invoke their subprocess directly via exec.CommandContext — there is no
+// persistent, separately-killable box-level process for this hook to terminate.
+// Real in-flight termination on a cancel or wall-clock timeout is achieved by the
+// supervisor cancelling the run-scoped context threaded through Executor.Run
+// (tasks 155-156), which the exec.CommandContext-based executors observe to kill
+// their subprocess — NOT by a box-level kill here. This returns nil so the
+// supervisor's kill/teardown ordering (task 116) stays intact; when a genuinely
+// separately-killable containment box exists, this is where its kill goes.
 func (b sandboxBox) Kill(supervisor.BoxHandle) error {
 	return nil
 }
 
+// Teardown is an intentional no-op, for the same reason as Kill: no persistent
+// box-level resource is held open across the run that needs explicit teardown here
+// (the ephemeral worktree/box lifecycle is managed elsewhere). It returns nil so
+// the supervisor's teardown defer completes cleanly; when a real box resource is
+// introduced, its teardown goes here.
 func (b sandboxBox) Teardown(supervisor.BoxHandle) error {
 	return nil
 }
