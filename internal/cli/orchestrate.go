@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"encoding/hex"
 
@@ -138,6 +139,13 @@ const (
 	// sender. It is normalized to the same canonical numeric form as approved-store entries.
 	// Ignored by every other mode.
 	EnvTelegramOwnerID = "AGENT_BUILDER_TELEGRAM_OWNER_ID"
+
+	// EnvTelegramPollBackoff is the ctx-aware wait between the adapter's internal
+	// getUpdates re-poll attempts (empty batch, all-rejected batch, or after a transport
+	// failure) — task 157. Parsed as a Go duration (e.g. "1s", "500ms"). Unset, blank, or
+	// unparseable ⇒ the adapter's built-in 1s default. It only paces re-polls when a batch
+	// yields nothing deliverable; a batch that yields a message returns immediately.
+	EnvTelegramPollBackoff = "AGENT_BUILDER_TELEGRAM_POLL_BACKOFF"
 )
 
 // defaultTelegramBaseURL is the Telegram Bot API base URL used when
@@ -276,6 +284,14 @@ type assembleOverrides struct {
 	onStatusWriter func(loop.StatusWriter)
 	clarifier      orchestrator.Clarifier
 	getenv         func(string) string
+	// ctx is the top-level control-loop context threaded into the Telegram inbound
+	// adapter at construction (task 157), so the adapter's internal getUpdates re-poll
+	// loop observes a genuine shutdown and Next() returns ok=false ONLY on cancel — not
+	// on an idle/rejected poll. The live path (runOrchestrate) sets this to the SAME
+	// context it later hands runControlLoop; a nil ctx defaults to context.Background().
+	// Only consulted on the env-built Telegram inbound path (a messageSource/source
+	// override bypasses it, since those sources carry their own termination contract).
+	ctx context.Context
 }
 
 // runOrchestrate is the CLI dispatch for the orchestrate subcommand. It parses
@@ -295,7 +311,15 @@ func runOrchestrate(config Config, args []string) int {
 		return usage(config.Stderr, fmt.Errorf("orchestrate accepts no positional arguments"))
 	}
 
-	oc, cleanup, err := assembleOrchestrate(config, assembleOverrides{})
+	// Task 157: one top-level context governs the whole control plane. It is threaded
+	// into the Telegram inbound adapter at assembly (via assembleOverrides.ctx) AND handed
+	// to runControlLoop below — the SAME context on both sides, so a cancel tears the
+	// adapter's internal re-poll loop and the control loop down together. defer cancel()
+	// releases the adapter's poll goroutine on every exit path.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	oc, cleanup, err := assembleOrchestrate(config, assembleOverrides{ctx: ctx})
 	if err != nil {
 		// SEC-003 fail-closed: a missing worker signing key (or any assembly error)
 		// exits non-zero BEFORE the goal-intake loop is ever entered.
@@ -311,7 +335,7 @@ func runOrchestrate(config Config, args []string) int {
 	}
 	defer cleanup()
 
-	if err := runControlLoop(context.Background(), oc); err != nil {
+	if err := runControlLoop(ctx, oc); err != nil {
 		writef(config.Stderr, "error: %v\n", err)
 		return ExitGeneric
 	}
@@ -562,7 +586,17 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 	case ov.source != nil:
 		source = goalSourceAsMessages(ov.source)
 	default:
-		inboundSrc, inboundReporter, err := inboundFromEnv(os.Getenv, config.Stdin, auditSink, logger, config.Stderr)
+		// Task 157: thread the top-level context into the Telegram adapter so its
+		// internal re-poll loop observes a genuine shutdown. ov.ctx carries the SAME
+		// context runControlLoop is later handed (set by runOrchestrate on the live path,
+		// and by the E2E harness for the cancel test); nil ⇒ never-cancelled default.
+		// getenv (ov.getenv-aware, defaulting to os.Getenv) is used here so a test can
+		// point AGENT_BUILDER_TELEGRAM_BASE_URL/_POLL_BACKOFF at a stub server.
+		inboundCtx := ov.ctx
+		if inboundCtx == nil {
+			inboundCtx = context.Background()
+		}
+		inboundSrc, inboundReporter, err := inboundFromEnv(inboundCtx, getenv, config.Stdin, auditSink, logger, config.Stderr)
 		if err != nil {
 			cleanup()
 			return orchestrateConfig{}, noop, fmt.Errorf("orchestrate: inbound channel: %w", err)
@@ -1114,14 +1148,14 @@ func (denyAllPolicy) Decide(policy.DecideRequest) (policy.DecideResponse, error)
 // the resolved Telegram auth mode is "open" — see assembleTelegramInbound. Production
 // passes config.Stderr; a nil warnOut is tolerated (the warning is simply discarded,
 // never a panic) so existing callers that do not care about the warning still compile.
-func inboundFromEnv(getenv func(string) string, stdin io.Reader, sink audit.Sink, logger *slog.Logger, warnOut io.Writer) (supervisor.MessageSource, supervisor.Reporter, error) {
+func inboundFromEnv(ctx context.Context, getenv func(string) string, stdin io.Reader, sink audit.Sink, logger *slog.Logger, warnOut io.Writer) (supervisor.MessageSource, supervisor.Reporter, error) {
 	choice := strings.TrimSpace(getenv(EnvInbound))
 	switch choice {
 	case "", inboundEnv:
 		return newEnvMessageSource(getenv, stdin), nil, nil
 
 	case inboundTelegram:
-		src, rep, err := assembleTelegramInbound(getenv, sink, logger, warnOut)
+		src, rep, err := assembleTelegramInbound(ctx, getenv, sink, logger, warnOut)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -1239,7 +1273,13 @@ const openModeWarning = "WARNING: AGENT_BUILDER_TELEGRAM_AUTH_MODE=open — any 
 // regardless of what else is configured (e.g. an unrelated APPROVED_STORE value present
 // alongside "open" does not suppress or duplicate it). A nil warnOut is tolerated (the
 // warning is simply discarded), so a caller that does not care about it never panics.
-func assembleTelegramInbound(getenv func(string) string, sink audit.Sink, logger *slog.Logger, warnOut io.Writer) (*telegram.Adapter, *telegram.ReplyAdapter, error) {
+//
+// ctx is the control loop's top-level context (task 157). It is wired into the adapter
+// as its shutdown-observing seam so telegram.Adapter.Next re-polls internally on an idle
+// or fully-rejected batch and returns ok=false ONLY when this context fires — never on a
+// single empty/rejected poll. Callers MUST pass the SAME context they later hand to the
+// control loop, so a cancel tears down both the adapter and the loop together.
+func assembleTelegramInbound(ctx context.Context, getenv func(string) string, sink audit.Sink, logger *slog.Logger, warnOut io.Writer) (*telegram.Adapter, *telegram.ReplyAdapter, error) {
 	// Resolve the inbound auth mode (ADR 063) and, for store-consulting modes, build+seed
 	// the persisted approved-sender store. Fail-fast on an unknown mode / blank-or-bad
 	// store path before decoding any crypto key material.
@@ -1362,6 +1402,15 @@ func assembleTelegramInbound(getenv func(string) string, sink audit.Sink, logger
 		ownerChatID = strconv.FormatInt(ownerID, 10)
 	}
 
+	// Task 157: the adapter's re-poll/backoff interval. Unset/blank/unparseable ⇒ the
+	// adapter's built-in 1s default (a zero PollBackoff triggers the NewAdapter default).
+	var pollBackoff time.Duration
+	if raw := strings.TrimSpace(getenv(EnvTelegramPollBackoff)); raw != "" {
+		if d, perr := time.ParseDuration(raw); perr == nil && d > 0 {
+			pollBackoff = d
+		}
+	}
+
 	adapter := telegram.NewAdapter(telegram.Config{
 		BotToken:          botToken,
 		BaseURL:           baseURL,
@@ -1371,6 +1420,8 @@ func assembleTelegramInbound(getenv func(string) string, sink audit.Sink, logger
 		ContentGuard:      guard,
 		AuditSink:         sink,
 		Logger:            logger,
+		Ctx:               ctx,
+		PollBackoff:       pollBackoff,
 		AuthMode:          authMode,
 		AuthStore:         authStore,
 		OwnerID:           ownerID,

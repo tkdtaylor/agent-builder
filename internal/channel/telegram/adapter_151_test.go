@@ -121,6 +121,7 @@ func TestTC151_01_UnsetAndEnvelopeModeIdenticalToPreTask(t *testing.T) {
 		srv := singleUpdateServer(t, envJSON, 12345)
 		guard := &mode151Guard{}
 		adapter := telegram.NewAdapter(telegram.Config{
+			Ctx:               tc157Done(),
 			BotToken:          "test-token",
 			BaseURL:           srv.URL,
 			HTTPClient:        srv.Client(),
@@ -172,6 +173,7 @@ func TestTC151_02_EnvelopeModeRejectsPlaintext(t *testing.T) {
 	sink := audit.NewFakeSink()
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           srv.URL,
 		HTTPClient:        srv.Client(),
@@ -212,6 +214,7 @@ func TestTC151_03_AllowlistAcceptsApprovedSender(t *testing.T) {
 	sink := audit.NewFakeSink()
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           srv.URL,
 		HTTPClient:        srv.Client(),
@@ -257,6 +260,7 @@ func TestTC151_04_AllowlistRejectsUnapprovedSender(t *testing.T) {
 	sink := audit.NewFakeSink()
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           srv.URL,
 		HTTPClient:        srv.Client(),
@@ -294,6 +298,7 @@ func TestTC151_04_AllowlistUnapprovedEnvelopeShapedStillRejected(t *testing.T) {
 	sink := audit.NewFakeSink()
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           srv.URL,
 		HTTPClient:        srv.Client(),
@@ -333,6 +338,7 @@ func TestTC151_05_AllowlistOversizedPlaintextRejected(t *testing.T) {
 	sink := audit.NewFakeSink()
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           srv.URL,
 		HTTPClient:        srv.Client(),
@@ -370,6 +376,7 @@ func TestTC151_06_DisabledModeRejectsEverything(t *testing.T) {
 	newDisabledAdapter := func(text string, sink *audit.FakeSink, guard *mode151Guard) *telegram.Adapter {
 		srv := singleUpdateServer(t, text, 42)
 		return telegram.NewAdapter(telegram.Config{
+			Ctx:               tc157Done(),
 			BotToken:          "test-token",
 			BaseURL:           srv.URL,
 			HTTPClient:        srv.Client(),

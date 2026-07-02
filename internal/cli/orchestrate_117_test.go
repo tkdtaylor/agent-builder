@@ -9,6 +9,7 @@ package cli
 //   D) AGENT_BUILDER_INBOUND=<unknown> → ExitUsage error.
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/hex"
@@ -26,7 +27,7 @@ func TestTC117_04A_DefaultEnvInboundIsEnvStdin(t *testing.T) {
 	sink := audit.NewFakeSink()
 
 	// Case 1: unset
-	src, rep, err := inboundFromEnv(func(string) string { return "" }, strings.NewReader(""), sink, nil, nil)
+	src, rep, err := inboundFromEnv(context.Background(), func(string) string { return "" }, strings.NewReader(""), sink, nil, nil)
 	if err != nil {
 		t.Fatalf("TC-117-04A (unset): inboundFromEnv error: %v", err)
 	}
@@ -38,7 +39,7 @@ func TestTC117_04A_DefaultEnvInboundIsEnvStdin(t *testing.T) {
 	}
 
 	// Case 2: explicitly "env"
-	src2, rep2, err2 := inboundFromEnv(func(key string) string {
+	src2, rep2, err2 := inboundFromEnv(context.Background(), func(key string) string {
 		if key == EnvInbound {
 			return "env"
 		}
@@ -91,7 +92,7 @@ func TestTC117_04B_TelegramInboundAssembled(t *testing.T) {
 		return ""
 	}
 
-	src, rep, err := inboundFromEnv(getenv, nil, sink, nil, nil)
+	src, rep, err := inboundFromEnv(context.Background(), getenv, nil, sink, nil, nil)
 	if err != nil {
 		t.Fatalf("TC-117-04B: inboundFromEnv error: %v", err)
 	}
@@ -162,7 +163,7 @@ func TestTC117_04C_MissingTelegramVarFailsFast(t *testing.T) {
 				}
 				return allVars[key]
 			}
-			_, _, err := inboundFromEnv(getenv, nil, sink, nil, nil)
+			_, _, err := inboundFromEnv(context.Background(), getenv, nil, sink, nil, nil)
 			if err == nil {
 				t.Errorf("TC-117-04C: expected error when %s is missing, got nil", missing)
 			}
@@ -178,7 +179,7 @@ func TestTC117_04C_MissingTelegramVarFailsFast(t *testing.T) {
 // value returns an ExitUsage-type error (errUsageConfig).
 func TestTC117_04D_UnknownInboundIsUsageError(t *testing.T) {
 	sink := audit.NewFakeSink()
-	_, _, err := inboundFromEnv(func(key string) string {
+	_, _, err := inboundFromEnv(context.Background(), func(key string) string {
 		if key == EnvInbound {
 			return "grpc" // unknown value
 		}

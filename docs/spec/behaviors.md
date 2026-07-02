@@ -1,7 +1,7 @@
 # Behaviors
 
 **Project:** agent-builder
-**Last updated:** 2026-07-01 (through task 152 / B-039 — Telegram `pairing` mode owner-approve flow; async control plane, conversational intake + clarifier, channel escalation, dynamic model-tier classifier)
+**Last updated:** 2026-07-02 (through task 157 / B-040 — Telegram `Adapter.Next` durable internal re-poll; auth modes; async control plane, conversational intake + clarifier, channel escalation, dynamic model-tier classifier)
 
 What the system does, observably. Each behavior describes a triggering condition, the system's response, and any externally-visible side effects. This is the "you can verify this from outside the process" view.
 
@@ -275,6 +275,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Side effects:** plaintext "pending" and owner-notification messages are sent via a `PairingNotifier` (production: `PlaintextNotifier`, POSTing plaintext `sendMessage`) — distinct from the envelope-sealing `ReplyAdapter`, because an unknown sender holds no envelope key. A nil notifier or a failed send is logged, never fatal to the poll loop; the audit event fires regardless. In a 1:1 owner DM the owner's chat ID equals `AGENT_BUILDER_TELEGRAM_OWNER_ID`.
 - **Failure modes:** `pairing` mode with an unset/blank/non-numeric `AGENT_BUILDER_TELEGRAM_OWNER_ID` is a fail-fast `ExitUsage` configuration error at assembly (an owner-less pairing mode has no one who can ever approve a sender). A store Add/Persist failure on approve is audited and reported to the owner without crashing the loop. Plaintext modes' permanent confidentiality/replay tradeoff (ADR 063 Decision 2) applies; armor, size caps, and audit remain load-bearing on every accepted plaintext.
 - **References:** ADR 063 (Decisions 3/4); task 152; `docs/tasks/test-specs/152-telegram-pairing-mode-test-spec.md`; `docs/spec/configuration.md` (`AGENT_BUILDER_TELEGRAM_OWNER_ID`).
+
+### B-040: Telegram `Adapter.Next` re-polls internally and terminates only on genuine shutdown
+
+- **Trigger:** the control loop (`internal/cli`, `runControlLoop`) reads inbound commands by calling `telegram.Adapter.Next()` in a loop; `Next()` polls the Telegram `getUpdates` endpoint.
+- **Response:** `Next()` returns `ok=false` (with `err=nil`) **only** on genuine adapter shutdown — when the adapter's shutdown context (set at construction from the control loop's top-level context, ADR 054) is cancelled. An idle poll (an empty `getUpdates` batch) or a fully-rejected batch (every update rejected — bad envelope, unapproved sender, armor block, oversized) does **not** terminate `Next()`: it re-polls internally after a bounded, context-aware backoff until a deliverable message arrives or shutdown fires. A hard `getUpdates` transport failure is likewise retried after the backoff rather than propagating as a fatal `Next()` error, still honouring the shutdown context. Consequently a single junk message can no longer exit the control plane (closes a remote unauthenticated control-plane DoS), and the control plane runs durably against a live bot across arbitrarily many idle polls.
+- **Side effects:** offset advancement and every per-rejection `audit.ActionChannelReject` event are unchanged and fire on each processed batch; a batch is always fully processed (side effects included) before the loop re-checks for shutdown, so a racing cancel never skips a batch's audit/offset effects. The re-poll/backoff interval defaults to 1s and is overridable via `AGENT_BUILDER_TELEGRAM_POLL_BACKOFF`.
+- **Failure modes:** an omitted shutdown context defaults to a never-cancelled `context.Background()` (no nil-context panic) — an adapter constructed without a context simply never self-terminates, which is the correct default for a live channel. On cancel, `Next()` returns within one poll+backoff of the shutdown signal.
+- **References:** task 157; `docs/tasks/test-specs/157-telegram-adapter-no-terminate-on-idle-test-spec.md`; the precedent contract in `envMessageSource.Next` (`internal/cli/router.go`) and the outbound counterpart task 147; `docs/spec/configuration.md` (`AGENT_BUILDER_TELEGRAM_POLL_BACKOFF`).
 
 ---
 

@@ -34,6 +34,7 @@ func TestTC153_01_OpenModeAcceptsAnyNeverSeenSender(t *testing.T) {
 		sink := audit.NewFakeSink()
 
 		adapter := telegram.NewAdapter(telegram.Config{
+			Ctx:               tc157Done(),
 			BotToken:          "test-token",
 			BaseURL:           srv.URL,
 			HTTPClient:        srv.Client(),
@@ -81,6 +82,7 @@ func TestTC153_01_OpenModeNewGoalFromUnknownSender(t *testing.T) {
 	sink := audit.NewFakeSink()
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           srv.URL,
 		HTTPClient:        srv.Client(),
@@ -123,6 +125,7 @@ func TestTC153_02_OpenModeOversizedPlaintextRejectedBeforeArmor(t *testing.T) {
 	sink := audit.NewFakeSink()
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           srv.URL,
 		HTTPClient:        srv.Client(),

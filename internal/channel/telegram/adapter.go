@@ -57,6 +57,16 @@ type Adapter struct {
 	maxMessageBytes   int64
 	guardTimeout      time.Duration
 
+	// ctx is the shutdown-observing seam (task 157). Next() re-polls getUpdates
+	// internally on an empty or fully-rejected batch and returns ok=false ONLY when
+	// this context is Done — never merely because one poll yielded nothing deliverable.
+	// Defaults to context.Background() when omitted (no nil-context panic).
+	ctx context.Context
+	// pollBackoff is the ctx-aware wait between internal re-poll attempts (empty batch,
+	// all-rejected batch, or after a transport failure), so Next() neither spins nor
+	// hammers a failing endpoint. Default: 1s.
+	pollBackoff time.Duration
+
 	// authMode selects the inbound auth mode (ADR 063). Unset ⇒ authz.ModeEnvelope,
 	// which reproduces today's adapter exactly (VerifyAndOpen runs, sender ID ignored).
 	authMode authz.Mode
@@ -113,6 +123,18 @@ type Config struct {
 	// GuardTimeout is the timeout for armor guard DecideContent calls.
 	// Default: 5 seconds if not set.
 	GuardTimeout time.Duration
+	// Ctx is the shutdown-observing context (task 157). Next() re-polls getUpdates
+	// internally on an empty or fully-rejected batch and returns ok=false ONLY when
+	// this context is Done — so a single idle poll or a fully-rejected batch never
+	// terminates the control plane (REQ-157-02/03/04). It is set at construction from
+	// the SAME top-level context the control loop observes. nil ⇒ context.Background()
+	// (no caller regresses to a nil-context panic).
+	Ctx context.Context
+	// PollBackoff is the ctx-aware wait between internal re-poll attempts (empty batch,
+	// all-rejected batch, or after a transport failure). A hard getUpdates transport
+	// failure is retried after this backoff rather than propagating as a fatal Next()
+	// error (REQ-157-05). Default: 1 second if not set.
+	PollBackoff time.Duration
 	// AuthMode selects the inbound auth mode (ADR 063). The zero value ("") is treated
 	// as authz.ModeEnvelope — today's behavior, byte-for-byte, when unset.
 	AuthMode authz.Mode
@@ -166,6 +188,12 @@ func NewAdapter(config Config) *Adapter {
 	if config.AuthMode == "" {
 		config.AuthMode = authz.ModeEnvelope // unset ⇒ strong-security default (ADR 063 Decision 1)
 	}
+	if config.Ctx == nil {
+		config.Ctx = context.Background() // task 157: omitted ⇒ never-cancelled default, no nil panic
+	}
+	if config.PollBackoff <= 0 {
+		config.PollBackoff = time.Second // task 157: default re-poll/backoff interval
+	}
 	return &Adapter{
 		botToken:          config.BotToken,
 		baseURL:           config.BaseURL,
@@ -180,6 +208,8 @@ func NewAdapter(config Config) *Adapter {
 		maxBodyBytes:      config.MaxBodyBytes,
 		maxMessageBytes:   config.MaxMessageBytes,
 		guardTimeout:      config.GuardTimeout,
+		ctx:               config.Ctx,
+		pollBackoff:       config.PollBackoff,
 		authMode:          config.AuthMode,
 		authStore:         config.AuthStore,
 		ownerID:           config.OwnerID,
@@ -190,19 +220,88 @@ func NewAdapter(config Config) *Adapter {
 }
 
 // Next implements supervisor.MessageSource.Next.
-// It polls getUpdates, processes each update through the envelope → armor pipeline,
-// derives the MessageKind and GoalID at the adapter edge from the plaintext and
-// reply-to context, and returns the next typed supervisor.Message.
-// Offset is advanced on every update (even rejected ones).
+//
+// It polls getUpdates in an INTERNAL loop (task 157), processing each update through
+// the envelope → armor pipeline and deriving the MessageKind/GoalID at the adapter
+// edge, and returns the next deliverable typed supervisor.Message.
+//
+// Termination contract (task 157, mirroring envMessageSource.Next): Next() returns
+// ok=false (err=nil) ONLY when the adapter's shutdown context fires — NEVER merely
+// because one poll batch was empty (idle poll) or every update in it was rejected
+// (bad envelope, unapproved sender, armor block, oversized). An empty or fully-
+// rejected batch re-polls internally after a ctx-aware backoff, so a single junk
+// message or a quiet poll can no longer terminate the control plane (closes the
+// remote-DoS + non-durability findings). A hard getUpdates transport failure is
+// likewise retried after the backoff rather than surfacing as a fatal Next() error,
+// still respecting the shutdown context.
+//
+// Offset is advanced on every update (even rejected ones) and persists across the
+// internal re-poll iterations, so already-seen updates are not re-fetched.
+//
+// The shutdown context is observed BETWEEN polls (via waitOrShutdown), not mid-poll:
+// a batch is always fully processed (offset + audit side effects) before the loop
+// re-checks for shutdown. A context already cancelled at entry therefore performs
+// exactly ONE poll and then returns ok=false — a deliberate property so a batch's
+// side effects are never skipped by a racing cancel.
 func (a *Adapter) Next() (supervisor.Message, bool, error) {
-	updates, err := a.getUpdates()
-	if err != nil {
-		a.logger.Error("getUpdates failed", "error", err)
-		return supervisor.Message{}, false, err
+	for {
+		updates, err := a.getUpdates()
+		if err != nil {
+			// Transport failure is NOT fatal to the control plane (REQ-157-05): log,
+			// back off (ctx-aware), and retry. Only a shutdown during the backoff ends
+			// the loop.
+			a.logger.Error("getUpdates failed; retrying after backoff", "error", err, "backoff", a.pollBackoff)
+			if !a.waitOrShutdown(a.pollBackoff) {
+				a.logger.Debug("adapter shutdown during transport-error backoff, terminating Next")
+				return supervisor.Message{}, false, nil
+			}
+			continue
+		}
+
+		a.logger.Debug("received updates", "count", len(updates))
+
+		if msg, ok := a.processBatch(updates); ok {
+			return msg, true, nil
+		}
+
+		// Batch yielded no deliverable message (empty or all-rejected). Re-poll after a
+		// ctx-aware backoff instead of returning ok=false (REQ-157-02/03).
+		a.logger.Debug("no deliverable message from batch; re-polling")
+		if !a.waitOrShutdown(a.pollBackoff) {
+			a.logger.Debug("adapter shutdown during re-poll backoff, terminating Next")
+			return supervisor.Message{}, false, nil
+		}
 	}
+}
 
-	a.logger.Debug("received updates", "count", len(updates))
+// waitOrShutdown blocks for d, returning true if the wait completed normally and false
+// if the adapter's shutdown context fired first. It bounds Next()'s internal re-poll so
+// it neither spins nor outlives a cancel. A non-positive d still honours a cancel.
+func (a *Adapter) waitOrShutdown(d time.Duration) bool {
+	if d <= 0 {
+		select {
+		case <-a.ctx.Done():
+			return false
+		default:
+			return true
+		}
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-a.ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
 
+// processBatch scans one getUpdates batch through the unchanged envelope/authz → armor
+// pipeline, advancing the offset on every update (even rejected ones) and emitting the
+// existing per-rejection audit events. It returns (msg, true) for the FIRST update that
+// yields a deliverable message, or (zero, false) when the whole batch is empty or every
+// update was rejected — in which case Next() re-polls rather than terminating (task 157).
+func (a *Adapter) processBatch(updates []Update) (supervisor.Message, bool) {
 	for _, update := range updates {
 		// Advance offset before processing (even if this update is rejected)
 		a.offset = int64(update.UpdateID) + 1
@@ -280,7 +379,7 @@ func (a *Adapter) Next() (supervisor.Message, bool, error) {
 			}
 			a.emitAuditEvent(string(decision.Reason))
 			a.logger.Debug("message derived (plaintext path)", "kind", msg.Kind, "goal_id", msg.GoalID)
-			return msg, true, nil
+			return msg, true
 
 		case authz.ActionRouteEnvelope:
 			// Fall through to the envelope pipeline below (unchanged from pre-task behavior).
@@ -336,12 +435,13 @@ func (a *Adapter) Next() (supervisor.Message, bool, error) {
 			continue
 		}
 		a.logger.Debug("message derived", "kind", msg.Kind, "goal_id", msg.GoalID)
-		return msg, true, nil
+		return msg, true
 	}
 
-	// No valid message from this batch.
-	a.logger.Debug("no valid message from updates")
-	return supervisor.Message{}, false, nil
+	// No deliverable message from this batch (empty or every update rejected). The caller
+	// (Next) re-polls rather than treating this as source exhaustion (task 157).
+	a.logger.Debug("no deliverable message from updates")
+	return supervisor.Message{}, false
 }
 
 // processPlaintext runs verified/accepted plaintext through the armor + derive pipeline
