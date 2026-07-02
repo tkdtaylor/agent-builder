@@ -226,6 +226,40 @@ func TestBlockSinkNonZeroExitIsError(t *testing.T) {
 	}
 }
 
+// TC-163-05: a real emit failure (non-zero exit from the block subprocess) is
+// wrapped with %w around audit.ErrBlockEmitFailed, so errors.Is matches it. Before
+// task 163 the emit-failure fmt.Errorf call had no %w around the sentinel, so this
+// assertion was false; a regression that drops the %w must fail this test.
+func TestTC163_05_ErrBlockEmitFailedIsMatchable(t *testing.T) {
+	r := newRecordingRunner()
+	r.exitErr = &exec.ExitError{} // simulate a real block subprocess failure
+	sink := audit.NewBlockSinkWithRunner("/tmp/test-163.log", r)
+
+	err := sink.Append(makeEventFor(audit.ActionPick))
+	if err == nil {
+		t.Fatal("Append returned nil when exec failed; expected non-nil error")
+	}
+	if !errors.Is(err, audit.ErrBlockEmitFailed) {
+		t.Fatalf("errors.Is(err, audit.ErrBlockEmitFailed) = false, want true; err = %v", err)
+	}
+	// The descriptive message text is preserved (not replaced by the sentinel wrap).
+	if !strings.Contains(err.Error(), "audit: emit") {
+		t.Errorf("err.Error() = %q, want it to still contain the descriptive %q emit message", err.Error(), "audit: emit")
+	}
+	// A distinct, unrelated error (e.g. the malformed-response path) must NOT match
+	// the sentinel — proves the match is specific to the emit-failure branch.
+	r2 := newRecordingRunner()
+	r2.malformed = true
+	sink2 := audit.NewBlockSinkWithRunner("/tmp/test-163b.log", r2)
+	err2 := sink2.Append(makeEventFor(audit.ActionPick))
+	if err2 == nil {
+		t.Fatal("Append returned nil for malformed response; expected non-nil error")
+	}
+	if errors.Is(err2, audit.ErrBlockEmitFailed) {
+		t.Error("errors.Is(err2, audit.ErrBlockEmitFailed) = true for the malformed-response path, want false (distinct failure mode)")
+	}
+}
+
 // TC-039-03: malformed response (non-JSON) surfaces as an error.
 func TestBlockSinkMalformedResponseIsError(t *testing.T) {
 	r := newRecordingRunner()

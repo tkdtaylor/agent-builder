@@ -707,12 +707,13 @@ Remote            string    git remote used for publication (publish events)
 Attempt           int       1-based attempt number (attempt/escalate events)
 PolicyDecision    string    policy engine decision string — "allow", "deny", or "require_approval" (policy-decision events; task 073)
 PolicyReason      string    human-readable reason from the policy engine response (policy-decision events; task 073)
-Reason            string    free-text reason for rejection or diagnostic events, e.g. "unknown_key", "replay_detected", "decryption_failed", "armor_blocked" (channel-reject events; task 080)
+Reason            string    free-text reason for rejection or diagnostic events, e.g. "unknown_key", "replay_detected", "decryption_failed", "armor_blocked", "role_mismatch" (channel-reject events; task 080)
 ```
 
 - **Identity:** embedded in `AuditEvent`; carries only the non-zero fields relevant to the action. `PolicyDecision` and `PolicyReason` are set only for `ActionPolicyDecision` events; `Reason` is set only for `ActionChannelReject` events; they are zero-valued on all other event types.
 - **Lifecycle:** constructed at the call site with named fields (no `map[string]any`).
 - **Channel-reject note:** `ActionChannelReject` events are emitted to the `audit.Sink` seam by secure channel implementations (Telegram adapter in task 080, orchestrator↔worker transport in task 083). Serialization of `Reason` to the audit-trail block's CLI format is deferred to orchestrator integration (task 081) — no live `BlockSink` path today silently drops the field.
+- **`role_mismatch` reason (task 098 for the worker transport, task 163 for the Telegram leaf):** emitted when a verified/decrypted envelope's declared `From`/`To` roles do not match the expected direction — `orchestrator.Receiver.verifyOpen` on the orchestrator↔worker transport, and `telegram.Adapter`'s envelope-mode inbound path (`From == "operator" && To == "orchestrator"` expected). Distinct from `"envelope_rejected"`/the `VerifyAndOpen` classification reasons, which fire on a cryptographic failure — `role_mismatch` fires on an otherwise VALID envelope carrying the wrong declared roles (defense-in-depth beyond key separation alone).
 
 #### Value: `audit.AuditVerdict`
 

@@ -547,6 +547,15 @@ type MessageSource interface {
   cancellable context, threads it through `assembleOrchestrate`/`inboundFromEnv`/`assembleTelegramInbound`
   into `NewAdapter`, and hands the same context to `runControlLoop`, so one cancel tears
   down both the adapter's poll loop and the control loop.
+- **Inbound envelope role assertion (task 163):** on the envelope-mode path, after
+  `envelope.VerifyAndOpen` succeeds the adapter also asserts `env.From == "operator" &&
+  env.To == "orchestrator"`, mirroring `internal/channel/worker/transport.go`'s
+  `Receiver.verifyOpen` (task 098 SEC-001 — do not rely solely on key separation for role
+  correctness). A role-mismatched envelope that otherwise passes `VerifyAndOpen` is
+  rejected before `processPlaintext`/armor is ever invoked, and the rejection emits an
+  `audit.ActionChannelReject` event whose `Detail.Reason` is the distinct string
+  `"role_mismatch"` (not the generic `"envelope_rejected"` fallback), matching the worker
+  transport's reason string for the same underlying check.
 - **Consumers:** `cli.runControlLoop` — the single control-loop goroutine is the ONLY
   reader of the seam (no concurrent `Next()` races, ADR 054 §1). It routes each
   `Message` by `Kind`: `MsgNewGoal` → create the goal's command mailbox, register it
