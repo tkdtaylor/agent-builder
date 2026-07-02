@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-07-01 (task 153 — Telegram `open` mode closes out the sender-ID auth-mode branch: an explicit-opt-in footgun value that accepts plaintext from any sender with no gate at all, plus a mandatory startup `WARNING`; no new box/edge — it is another branch alongside `allowlist`/`pairing` on the existing decision point, ADR 063 Decision 1. Builds on task 152's `pairing` mode (owner-gated in-chat approve/deny, persisted approval, `PairingNotifier` edge) and task 151's `envelope`/`disabled`/`allowlist` branch)
+**Last updated:** 2026-07-02 (drift audit — Command Surface box now lists all six dispatched subcommands `run/orchestrate/ask/version/verify/verify-checkpoint`; previously omitted `orchestrate` and `ask`, both live in `internal/cli/cli.go` and the `architecture.md` catalog. No box/edge change. Prior: task 153 — Telegram `open` mode closes out the sender-ID auth-mode branch: an explicit-opt-in footgun value that accepts plaintext from any sender with no gate at all, plus a mandatory startup `WARNING`; another branch alongside `allowlist`/`pairing` on the existing decision point, ADR 063 Decision 1)
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -113,7 +113,7 @@ C4Component
 
     Container_Boundary(boundary, "agent-builder CLI") {
         Component(main, "Main", "cmd/agent-builder", "Entrypoint and process exit handling")
-        Component(cli, "Command Surface", "internal/cli", "Flag parsing and run/version/verify/verify-checkpoint dispatch with exit codes")
+        Component(cli, "Command Surface", "internal/cli", "Flag parsing and run/orchestrate/ask/version/verify/verify-checkpoint dispatch with exit codes")
         Component(orchestrator, "Tier-1 Orchestrator", "internal/orchestrator", "Goal → Planner plan → policy spawn-plan gate (pause/resume approval) → per-sub-goal spawn-worker gate + self-repo deny → CONCURRENT dispatch via runtime.Run (one goroutine per sub-goal, all start before any completes, best-effort partial failure, race-safe shared audit chain + PlanStore — task 086) → typed PlanResult over Reporter. Itself contained (exec-sandbox, default-deny egress) and emits a fleet-audit chain across both tiers (task 085). Authors no code; no direct executor import (ADR 042/046/050)")
         Component(runtime, "Default Run Wiring", "internal/runtime", "CLI bootstrap that composes configured Phase 0 adapters")
         Component(supervisor, "Supervisor", "internal/supervisor", "Trusted outside-the-box dispatcher, lifecycle logger, run-record writer, and stable seams")

@@ -26,10 +26,10 @@ The Secure Agent Ecosystem ships its security as small, standalone, independentl
 | [armor](https://github.com/tkdtaylor/armor) | LLM-guard on the web-ingestion + tool-call path — prompt-injection / jailbreak / exfil detection | ✅ fail-closed ingestion guard |
 | [dep-scan](https://github.com/tkdtaylor/dep-scan) | Supply-chain CVE scan of dependencies (SARIF / CycloneDX / SPDX / VEX) | ✅ blocking step in the verification gate |
 | [code-scanner](https://github.com/tkdtaylor/code-scanner) | Malware / supply-chain scan of code and skills before they run | ✅ blocking step in the verification gate |
-| [memory-guard](https://github.com/tkdtaylor/memory-guard) | Memory-I/O gate against poisoning — write-gate plus post-deletion residue verification (OWASP Agentic ASI06) | ◻️ not yet composed (deferred) |
-| [agent-mesh](https://github.com/tkdtaylor/agent-mesh) | Secure inter-agent comms — Ed25519-signed envelopes with a replay-prevention window | ◻️ not yet composed (deferred) |
+| [memory-guard](https://github.com/tkdtaylor/memory-guard) | Memory-I/O gate against poisoning — write-gate plus post-deletion residue verification (OWASP Agentic ASI06) | ◻️ not yet composed (targeted, ADR 042) |
+| [agent-mesh](https://github.com/tkdtaylor/agent-mesh) | Secure inter-agent comms — Ed25519-signed envelopes with a replay-prevention window | ◻️ not yet composed (targeted, ADR 042) |
 
-The two ◻️ blocks exist and are usable, but agent-builder doesn't wire them yet: memory-guard waits on a live agent memory store worth guarding, agent-mesh on a multi-agent substrate that doesn't exist here yet. The roadmap's block-adoption table is the source of truth for exactly what is wired and at what verification level (see the [roadmap](docs/plans/roadmap.md)).
+The two ◻️ blocks exist and are usable, but agent-builder doesn't wire them yet: both were promoted off Deferred to **Targeted** by the secure-orchestrator decision (ADR 042) — memory-guard to guard the orchestrator's long-lived goal/fleet state, agent-mesh for the orchestrator↔worker transport the two-tier orchestrator now provides. Adoption is a follow-on task cluster. The roadmap's block-adoption table is the source of truth for exactly what is wired and at what verification level (see the [roadmap](docs/plans/roadmap.md)).
 
 ## Develop locally
 

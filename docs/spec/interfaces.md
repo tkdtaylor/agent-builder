@@ -255,7 +255,7 @@ func NewClaudeCLI(config ClaudeCLIConfig) *ClaudeCLI
 func NewClaudeCLIFromEnv(worktree string) *ClaudeCLI
 func NewClaudeCLIFromEntry(entry registry.RegistryEntry, secretSource secrets.SecretSource, worktree string) *ClaudeCLI
 func (e *ClaudeCLI) IngestionPolicy() ClaudeIngestionPolicy
-func (e *ClaudeCLI) Run(task supervisor.Task) (supervisor.Result, error)
+func (e *ClaudeCLI) Run(ctx context.Context, task supervisor.Task) (supervisor.Result, error)
 func (e *ClaudeCLI) HandleWebContent(ctx context.Context, event executorharness.WebContentEvent, continuation executorharness.ContentContinuation) executorharness.ContentResult
 func (e *ClaudeCLI) HandleToolCall(ctx context.Context, event executorharness.ToolCallEvent, toolExecutor executorharness.ToolExecutor) executorharness.ToolCallResult
 ```
@@ -273,7 +273,7 @@ func (e *ClaudeCLI) HandleToolCall(ctx context.Context, event executorharness.To
 const CodexAPIKeyEnv = "OPENAI_API_KEY"
 
 func NewCodexCLI(entry registry.RegistryEntry, secretSource secrets.SecretSource, worktree string) *CodexCLI
-func (c *CodexCLI) Run(task supervisor.Task) (supervisor.Result, error)
+func (c *CodexCLI) Run(ctx context.Context, task supervisor.Task) (supervisor.Result, error)
 ```
 
 - **Outbound call:** `codex --model <model-id> --approval-policy never-require <prompt>` with `cmd.Dir` set to the configured worktree.
@@ -289,7 +289,7 @@ func (c *CodexCLI) Run(task supervisor.Task) (supervisor.Result, error)
 const GeminiAPIKeyEnv = "GEMINI_API_KEY"
 
 func NewGeminiCLI(entry registry.RegistryEntry, secretSource secrets.SecretSource, worktree string) *GeminiCLI
-func (g *GeminiCLI) Run(task supervisor.Task) (supervisor.Result, error)
+func (g *GeminiCLI) Run(ctx context.Context, task supervisor.Task) (supervisor.Result, error)
 ```
 
 - **Outbound call:** `gemini --model <model-id> <prompt>` with `cmd.Dir` set to the configured worktree.
@@ -503,7 +503,7 @@ var ErrUnknownHarness error
   - **Quota-free backstop:** `RecordDispatch`, `OnRateLimit`, and `OnQuotaExhausted` are all silent no-ops for an entry with `Budget.Limit == 0` (every local entry — `IsUnlimited()` true) and for an unknown entry ID. A local entry is never marked exhausted.
   - **State persistence:** `SaveState(path)` writes current `Usage` and `Availability` for all entries as a plain-text (JSON) file. `LoadState(path)` restores that state; a corrupted or malformed file returns a descriptive error, never a silent zero value.
   - **Clock seam:** `New` uses the real wall clock (`time.Now()`). `NewWithClock` takes an explicit `Clock` so tests can inject `FakeClock` and advance time programmatically without `time.Sleep`.
-  - **`ResolveExecutor`:** selects an entry via `Select`, then constructs the concrete `supervisor.Executor` for the entry's harness (`HarnessClaudeCLI` → `executor.NewClaudeCLIFromEntry`, `HarnessCodexCLI` → `executor.NewCodexCLI`, `HarnessGeminiCLI` → `executor.NewGeminiCLI`, `HarnessOllamaNative` → `executor.NewOllamaNative`), returning it alongside the selected entry so the caller can feed the entry ID back into the fallback hooks. Returns `ErrNoEligibleExecutor` when selection fails, or `ErrUnknownHarness` for an unrecognized harness driver. This is the executor-side boundary: the caller receives a `supervisor.Executor` seam, not a router. **Note:** the live executor-construction path used by both `run` and `orchestrate` is `runtime.buildExecutorForEntry`, which covers all five harness drivers including `HarnessAntigravityCLI` (`agy`); `ResolveExecutor` is a secondary constructor.
+  - **`ResolveExecutor`:** selects an entry via `Select`, then constructs the concrete `supervisor.Executor` for the entry's harness. As a secondary constructor it resolves **only** the three cloud-CLI drivers (`HarnessClaudeCLI` → `executor.NewClaudeCLIFromEntry`, `HarnessCodexCLI` → `executor.NewCodexCLI`, `HarnessGeminiCLI` → `executor.NewGeminiCLI`); it returns the selected entry alongside the executor so the caller can feed the entry ID back into the fallback hooks. Returns `ErrNoEligibleExecutor` when selection fails, or `ErrUnknownHarness` for any other harness driver — including `HarnessOllamaNative` and `HarnessAntigravityCLI`, which are **not** reachable through `ResolveExecutor`. This is the executor-side boundary: the caller receives a `supervisor.Executor` seam, not a router. **Note:** the live executor-construction path used by both `run` and `orchestrate` is `runtime.buildExecutorForEntry`, which covers all five harness drivers (including `HarnessOllamaNative` and `HarnessAntigravityCLI` / `agy`); `ResolveExecutor` is the secondary constructor and does not.
 
 ### Interface: `supervisor.MessageSource` (typed inbound seam)
 
