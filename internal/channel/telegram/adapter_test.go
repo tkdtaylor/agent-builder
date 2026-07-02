@@ -125,6 +125,7 @@ func TestTC080_01_WellFormedEnvelopeDecrypted(t *testing.T) {
 
 	// Create adapter
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           stubServer.URL,
 		HTTPClient:        stubServer.Client(),
@@ -296,6 +297,7 @@ func TestTC080_02_UnknownEdKeyRejectedBeforeArmor(t *testing.T) {
 
 	// Create adapter with the OPERATOR's public key as trusted (NOT attacker's)
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           stubServer.URL,
 		HTTPClient:        stubServer.Client(),
@@ -453,6 +455,7 @@ func TestTC080_03_ReplayedNonceRejected(t *testing.T) {
 	// Create adapter with SHARED replay cache (persistence across calls)
 	sharedCache := envelope.NewReplayCache(60 * time.Second)
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           stubServer.URL,
 		HTTPClient:        stubServer.Client(),
@@ -621,6 +624,7 @@ func TestTC080_04_ArmorBlocksPromptInjection(t *testing.T) {
 	stubAudit := audit.NewFakeSink()
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           stubServer.URL,
 		HTTPClient:        stubServer.Client(),
@@ -763,6 +767,7 @@ func TestTC080_06_NoBotTokenInLogs(t *testing.T) {
 	stubAudit := audit.NewFakeSink()
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          botTokenSentinel,
 		BaseURL:           stubServer.URL,
 		HTTPClient:        stubServer.Client(),
@@ -907,6 +912,7 @@ func TestTC097_01a_OversizedBodyRejected(t *testing.T) {
 
 	// Create adapter with small MaxBodyBytes limit (1024 bytes)
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           stubServer.URL,
 		HTTPClient:        stubServer.Client(),
@@ -919,13 +925,19 @@ func TestTC097_01a_OversizedBodyRejected(t *testing.T) {
 		MaxBodyBytes:      1024,
 	})
 
-	// Call getUpdates — should fail with truncation error
-	_, _, err := adapter.Next()
-	if err == nil {
-		t.Errorf("expected error on oversized body, got nil")
+	// Under the task-157 contract, an undecodable/oversized getUpdates body is a
+	// TRANSIENT transport failure that is retried internally, not a fatal Next() error.
+	// The no-OOM guarantee is unchanged (LimitReader bounds the read regardless); the
+	// only observable change is that the failure no longer surfaces as a Next() error.
+	// With the pre-cancelled shutdown context (tc157Done) the adapter performs exactly
+	// one (failed) poll and then returns ok=false, err=nil — proving the oversized body
+	// was tolerated without OOM, panic, or a spurious message.
+	_, ok, err := adapter.Next()
+	if err != nil {
+		t.Errorf("task 157: oversized body should be retried (transient), not a fatal Next() error; got %v", err)
 	}
-	if err != nil && !strings.Contains(err.Error(), "decode") {
-		t.Logf("error message: %v", err)
+	if ok {
+		t.Errorf("oversized body must not yield a deliverable message")
 	}
 }
 
@@ -1023,6 +1035,7 @@ func TestTC097_01b_OverlengthMessageSkipped(t *testing.T) {
 	stubAudit := audit.NewFakeSink()
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           stubServer.URL,
 		HTTPClient:        stubServer.Client(),
@@ -1148,6 +1161,7 @@ func TestTC097_01c_NormalMessagePasses(t *testing.T) {
 	stubAudit := audit.NewFakeSink()
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           stubServer.URL,
 		HTTPClient:        stubServer.Client(),
@@ -1157,7 +1171,7 @@ func TestTC097_01c_NormalMessagePasses(t *testing.T) {
 		ContentGuard:      stubGuard,
 		ReplayCache:       envelope.NewReplayCache(60 * time.Second),
 		AuditSink:         stubAudit,
-		MaxBodyBytes:      4 * 1024 * 1024,  // Generous limits
+		MaxBodyBytes:      4 * 1024 * 1024, // Generous limits
 		MaxMessageBytes:   64 * 1024,
 	})
 
@@ -1273,6 +1287,7 @@ func TestTC097_02a_GuardTimeoutDropsGoal(t *testing.T) {
 	stubAudit := audit.NewFakeSink()
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           stubServer.URL,
 		HTTPClient:        stubServer.Client(),
@@ -1403,6 +1418,7 @@ func TestTC097_02b_FastGuardNoTimeout(t *testing.T) {
 	stubAudit := audit.NewFakeSink()
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           stubServer.URL,
 		HTTPClient:        stubServer.Client(),
@@ -1506,6 +1522,7 @@ func TestTC097_03a_SentinelErrorsMatchViaIs(t *testing.T) {
 		t.Errorf("errors.Is(invalidKeyErr, ErrBadSignature) returned true, expected false")
 	}
 }
+
 // TestTC097_03b — Adapter classifies each sentinel to specific audit reason
 func TestTC097_03b_SentinelClassificationToAuditReason(t *testing.T) {
 	operatorEdPub, operatorEdPriv, err := ed25519.GenerateKey(rand.Reader)
@@ -1550,9 +1567,9 @@ func TestTC097_03b_SentinelClassificationToAuditReason(t *testing.T) {
 	}
 
 	testCases := []struct {
-		name             string
-		sentinelErr      error
-		expectedReason   string
+		name           string
+		sentinelErr    error
+		expectedReason string
 	}{
 		{"ErrUnknownKey", envelope.ErrUnknownKey, "unknown_key"},
 		{"ErrBadSignature", envelope.ErrBadSignature, "unknown_key"},
@@ -1650,6 +1667,7 @@ func TestTC097_03b_SentinelClassificationToAuditReason(t *testing.T) {
 			}
 
 			adapter := telegram.NewAdapter(telegram.Config{
+				Ctx:               tc157Done(),
 				BotToken:          "test-token",
 				BaseURL:           stubServer2.URL,
 				HTTPClient:        stubServer2.Client(),
@@ -1756,12 +1774,13 @@ func TestTC154_05_DecryptFailureClassifiedAsDecryptionFailed(t *testing.T) {
 	stubAudit := audit.NewFakeSink()
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token",
 		BaseURL:           stubServer.URL,
 		HTTPClient:        stubServer.Client(),
 		TrustedSigningKey: operatorEdPub,
 		TrustedX25519Pub:  operatorX25519Pub,
-		OrchestratorPriv:  orchX25519Priv,  // This won't match wrongRecipPub, so decrypt fails
+		OrchestratorPriv:  orchX25519Priv, // This won't match wrongRecipPub, so decrypt fails
 		ContentGuard:      stubGuard,
 		ReplayCache:       envelope.NewReplayCache(60 * time.Second),
 		AuditSink:         stubAudit,

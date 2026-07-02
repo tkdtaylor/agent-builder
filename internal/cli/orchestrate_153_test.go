@@ -31,6 +31,7 @@ package cli
 // closed out (present tense, no future-tense "planned" language) in this task's commit.
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"strings"
@@ -137,7 +138,7 @@ func TestTC153_05_OpenModeEmitsMandatoryWarning_OthersDoNot(t *testing.T) {
 	// (a) open mode: exactly one WARNING line naming the risk phrase.
 	var stderr strings.Builder
 	getenv := tc153FullTelegramEnv(t, "open", nil)
-	src, rep, err := inboundFromEnv(getenv, nil, sink, nil, &stderr)
+	src, rep, err := inboundFromEnv(context.Background(), getenv, nil, sink, nil, &stderr)
 	if err != nil {
 		t.Fatalf("open mode assembly error: %v", err)
 	}
@@ -172,7 +173,7 @@ func TestTC153_05_OpenModeEmitsMandatoryWarning_OthersDoNot(t *testing.T) {
 		t.Run(tc.mode, func(t *testing.T) {
 			var stderrOther strings.Builder
 			getenv := tc153FullTelegramEnv(t, tc.mode, tc.extra)
-			_, _, err := inboundFromEnv(getenv, nil, sink, nil, &stderrOther)
+			_, _, err := inboundFromEnv(context.Background(), getenv, nil, sink, nil, &stderrOther)
 			if err != nil {
 				t.Fatalf("%s mode assembly error: %v", tc.mode, err)
 			}
@@ -195,7 +196,7 @@ func TestTC153_05_WarningFiresRegardlessOfUnrelatedStoreVar(t *testing.T) {
 	getenv := tc153FullTelegramEnv(t, "open", map[string]string{
 		EnvTelegramApprovedStore: dir + "/unused.json",
 	})
-	_, _, err := inboundFromEnv(getenv, nil, sink, nil, &stderr)
+	_, _, err := inboundFromEnv(context.Background(), getenv, nil, sink, nil, &stderr)
 	if err != nil {
 		t.Fatalf("open mode (with stray APPROVED_STORE) assembly error: %v", err)
 	}

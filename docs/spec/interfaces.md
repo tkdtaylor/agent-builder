@@ -534,7 +534,19 @@ type MessageSource interface {
 - **Implementors:** `*cli.envMessageSource` (the env/stdin line-oriented local-test
   source — see `docs/spec/configuration.md` for the grammar); `cli.goalSourceAdapter`
   (adapts a goal-only `GoalSource` into a `MessageSource` yielding each goal as a
-  `MsgNewGoal`, preserving the goal-only test/producer path).
+  `MsgNewGoal`, preserving the goal-only test/producer path); `*telegram.Adapter` (the
+  live Telegram inbound channel, `AGENT_BUILDER_INBOUND=telegram`).
+- **`telegram.Adapter` construction + termination contract (task 157):** `telegram.NewAdapter(telegram.Config{…})`
+  takes two shutdown-related fields — `Ctx context.Context` (the shutdown-observing seam,
+  set at assembly from the control loop's top-level context; nil ⇒ `context.Background()`)
+  and `PollBackoff time.Duration` (the context-aware wait between internal `getUpdates`
+  re-poll attempts; ≤0 ⇒ 1s). `Adapter.Next()` re-polls internally on an empty or
+  fully-rejected batch and returns `ok=false` **only** when `Ctx` is cancelled — never on
+  a single idle/rejected poll, and it retries a transport failure rather than returning a
+  fatal error (behavior B-040). The `Ctx` is wired end-to-end: `runOrchestrate` creates one
+  cancellable context, threads it through `assembleOrchestrate`/`inboundFromEnv`/`assembleTelegramInbound`
+  into `NewAdapter`, and hands the same context to `runControlLoop`, so one cancel tears
+  down both the adapter's poll loop and the control loop.
 - **Consumers:** `cli.runControlLoop` — the single control-loop goroutine is the ONLY
   reader of the seam (no concurrent `Next()` races, ADR 054 §1). It routes each
   `Message` by `Kind`: `MsgNewGoal` → create the goal's command mailbox, register it

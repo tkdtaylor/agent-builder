@@ -61,6 +61,7 @@ func TestTC117_01_AdapterNextEmitsTypedMessage(t *testing.T) {
 	})
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token-117",
 		BaseURL:           srv.URL,
 		HTTPClient:        srv.Client(),
@@ -157,6 +158,7 @@ func TestTC117_02_KindDerivation(t *testing.T) {
 
 		srv := tc117GetUpdatesServerMulti(t, update1, update2)
 		adapter := telegram.NewAdapter(telegram.Config{
+			Ctx:               tc157Done(),
 			BotToken:          "test-token-117b",
 			BaseURL:           srv.URL,
 			HTTPClient:        srv.Client(),
@@ -202,6 +204,7 @@ func TestTC117_02_KindDerivation(t *testing.T) {
 
 		srv := tc117GetUpdatesServerMulti(t, update1, update2)
 		adapter := telegram.NewAdapter(telegram.Config{
+			Ctx:               tc157Done(),
 			BotToken:          "test-token-117c",
 			BaseURL:           srv.URL,
 			HTTPClient:        srv.Client(),
@@ -242,6 +245,7 @@ func TestTC117_02_KindDerivation(t *testing.T) {
 
 		srv := tc117GetUpdatesServerMulti(t, update1, update2)
 		adapter := telegram.NewAdapter(telegram.Config{
+			Ctx:               tc157Done(),
 			BotToken:          "test-token-117d",
 			BaseURL:           srv.URL,
 			HTTPClient:        srv.Client(),
@@ -282,6 +286,7 @@ func TestTC117_02_KindDerivation(t *testing.T) {
 
 		srv := tc117GetUpdatesServerMulti(t, update1, update2, update3, update4)
 		adapter := telegram.NewAdapter(telegram.Config{
+			Ctx:               tc157Done(),
 			BotToken:          "test-token-117-confirm",
 			BaseURL:           srv.URL,
 			HTTPClient:        srv.Client(),
@@ -455,6 +460,7 @@ func TestTC117_05_PerMessageGoalIDs(t *testing.T) {
 
 	srv := tc117GetUpdatesServerMulti(t, updateA, updateB, updateC)
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token-117e",
 		BaseURL:           srv.URL,
 		HTTPClient:        srv.Client(),
@@ -542,6 +548,7 @@ func TestTC117_06_PipelineUnchangedTamperedDropped(t *testing.T) {
 	})
 
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token-117f",
 		BaseURL:           srv.URL,
 		HTTPClient:        srv.Client(),
@@ -602,6 +609,7 @@ func TestTC117_06_ArmorBlockDropped(t *testing.T) {
 
 	// Armor blocks everything
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token-117g",
 		BaseURL:           srv.URL,
 		HTTPClient:        srv.Client(),
@@ -774,6 +782,7 @@ func tc117OneUpdate(t *testing.T,
 	update := tc117MakeUpdateJSON(t, opEdPriv, opXPriv, orchXPub, updateID, msgID, chatID, replyTo, plaintext)
 	srv := tc117GetUpdatesServer(t, []map[string]interface{}{update})
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:               tc157Done(),
 		BotToken:          "test-token-one-update",
 		BaseURL:           srv.URL,
 		HTTPClient:        srv.Client(),

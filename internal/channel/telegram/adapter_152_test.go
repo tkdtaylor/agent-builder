@@ -80,6 +80,7 @@ func newPairingHarness(t *testing.T, srv *httptest.Server, ownerID int64, storeP
 	notifier := telegram.NewFakeNotifier()
 	guard := &mode151Guard{}
 	adapter := telegram.NewAdapter(telegram.Config{
+		Ctx:          tc157Done(),
 		BotToken:     "test-token",
 		BaseURL:      srv.URL,
 		HTTPClient:   srv.Client(),
@@ -271,7 +272,7 @@ func TestTC152_04_OwnerDenyDoesNotApproveAndAllowsReRequest(t *testing.T) {
 	dir := t.TempDir()
 	storePath := filepath.Join(dir, "approved.json")
 	srv := scriptedServer(t,
-		pairingUpdate{text: "deny 77", senderID: 1},   // owner denies
+		pairingUpdate{text: "deny 77", senderID: 1},         // owner denies
 		pairingUpdate{text: "let me back in", senderID: 77}, // denied sender re-requests
 	)
 	h := newPairingHarness(t, srv, 1, storePath)
