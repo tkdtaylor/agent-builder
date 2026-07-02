@@ -1339,6 +1339,25 @@ func assembleTelegramInbound(ctx context.Context, getenv func(string) string, si
 		return nil, nil, err
 	}
 
+	// REQ-159-01/02 (task 159): seed the owner's own ID into the approved-sender store at
+	// startup, additively (union — same semantics as assembleTelegramAuthMode's APPROVED_IDS
+	// seeding above; never removes IDs already on disk) and persisted (0600, survives a
+	// restart from the same store path). Without this, DecidePairing's step 3 treats the
+	// owner's own first ordinary plaintext command exactly like a stranger's — routed to the
+	// pending flow — because store.Contains(ownerID) would otherwise never be true until the
+	// owner approved themselves. authStore is guaranteed non-nil here: ModePairing.ConsultsStore()
+	// is true, so assembleTelegramAuthMode always returns a non-nil store or a non-nil error
+	// for this mode (never both nil).
+	if authMode == authz.ModePairing {
+		ownerIDStr := strconv.FormatInt(ownerID, 10)
+		if err := authStore.Add(ownerIDStr); err != nil {
+			return nil, nil, fmt.Errorf("%w: seeding %s into approved store: %v", errUsageConfig, EnvTelegramOwnerID, err)
+		}
+		if err := authStore.Persist(); err != nil {
+			return nil, nil, fmt.Errorf("%w: %s: %v", errUsageConfig, EnvTelegramApprovedStore, err)
+		}
+	}
+
 	botToken := strings.TrimSpace(getenv(EnvTelegramBotToken))
 	if botToken == "" {
 		return nil, nil, fmt.Errorf("orchestrate: %s is required when %s=telegram", EnvTelegramBotToken, EnvInbound)

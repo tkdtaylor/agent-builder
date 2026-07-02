@@ -408,15 +408,23 @@ func TestTC152_06_ApprovedSenderRoutesNormally(t *testing.T) {
 // "everything from the owner skips routing" rule.
 func TestTC152_07_ApproveConsumedButOwnerStatusRoutes(t *testing.T) {
 	dir := t.TempDir()
-	// The owner (1) approves 123, then — now itself approved via... no: the owner must be
-	// approved to route "status". Approve the OWNER's own ID first is contrived; instead
-	// seed the owner as approved so its non-grammar commands route (owner identity ≠
-	// approved by itself). This isolates the ordering property under test.
+	// The owner (1) must be present in the approved-sender store for its "status" command
+	// to route as an ordinary message (DecidePairing step 3: store.Contains(rawSenderID)).
+	// In PRODUCTION this is no longer a gap to work around: assembleTelegramInbound seeds
+	// the owner's own ID into the store automatically at startup in pairing mode (task 159)
+	// — TestTC159_04_OwnerFirstCommandRoutesWithoutPendingExchange (internal/cli) is the
+	// test of record proving that REAL wiring end-to-end, through the actual production
+	// assembly seam, with no manual pre-seed. This package-level fixture cannot call
+	// internal/cli's assembleTelegramInbound directly (this test targets the lower-level
+	// telegram.Adapter/authz.Store wiring in isolation), so it pre-seeds the owner here as
+	// a package-level test convenience — a deliberate simplification to isolate the
+	// per-message/grammar-gated ordering property this test is actually about, not a
+	// workaround papering over a real gap.
 	srv := scriptedServer(t,
 		pairingUpdate{text: "approve 123", senderID: 1}, // consumed by grammar
 		pairingUpdate{text: "status", senderID: 1},      // routes normally
 	)
-	h := newPairingHarness(t, srv, 1, filepath.Join(dir, "approved.json"), "1") // owner pre-approved
+	h := newPairingHarness(t, srv, 1, filepath.Join(dir, "approved.json"), "1") // owner pre-approved (test convenience — production auto-seeds this, see task 159)
 
 	// (1) approve 123 → consumed, no message.
 	if _, ok, err := h.adapter.Next(); err != nil || ok {
