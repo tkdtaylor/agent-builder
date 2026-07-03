@@ -28,6 +28,8 @@ plan, review the result) rather than by trust. Part of the
 - [Running it](#running-it)
 - [Develop locally](#develop-locally)
 - [Tech stack](#tech-stack)
+- [Sponsorship](#sponsorship)
+- [Enterprise support](#enterprise-support)
 - [License](#license)
 
 ## Quick start
@@ -153,6 +155,14 @@ Contributing runs through a test-spec-first, one-task-one-branch workflow. Read
 
 Go 1.26 — CLI and container orchestration over provider CLIs and rootless Podman. See
 [tech-stack.md](docs/architecture/tech-stack.md).
+
+## Sponsorship
+
+agent-builder is independent, open-source security tooling. If it saves you time or risk, [sponsoring its development](https://github.com/sponsors/tkdtaylor) is the most direct way to keep it maintained.
+
+## Enterprise support
+
+Commercial support, integration help, and SLAs are available. Apache-2.0 means you can build on agent-builder freely; paid support is a partner if you want one, never a requirement. Contact [tools@taylorguard.me](mailto:tools@taylorguard.me).
 
 ## License
 
