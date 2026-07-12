@@ -1,7 +1,7 @@
 # Architecture Diagrams
 
 **Project:** agent-builder
-**Last updated:** 2026-07-02 (drift audit — Command Surface box now lists all six dispatched subcommands `run/orchestrate/ask/version/verify/verify-checkpoint`; previously omitted `orchestrate` and `ask`, both live in `internal/cli/cli.go` and the `architecture.md` catalog. No box/edge change. Prior: task 153 — Telegram `open` mode closes out the sender-ID auth-mode branch: an explicit-opt-in footgun value that accepts plaintext from any sender with no gate at all, plus a mandatory startup `WARNING`; another branch alongside `allowlist`/`pairing` on the existing decision point, ADR 063 Decision 1)
+**Last updated:** 2026-07-12 (task 168: orchestrator §5 flow gains the optional durable run-journal write/read points (`WithRunStore`, per-sub-goal AttemptState, `RehydrateInFlight`/`ResumeFromRecord`), ADR 065; prose overlay, no box/edge change). Prior: 2026-07-02 (drift audit — Command Surface box now lists all six dispatched subcommands `run/orchestrate/ask/version/verify/verify-checkpoint`; previously omitted `orchestrate` and `ask`, both live in `internal/cli/cli.go` and the `architecture.md` catalog. No box/edge change. Prior: task 153 — Telegram `open` mode closes out the sender-ID auth-mode branch: an explicit-opt-in footgun value that accepts plaintext from any sender with no gate at all, plus a mandatory startup `WARNING`; another branch alongside `allowlist`/`pairing` on the existing decision point, ADR 063 Decision 1)
 
 C4-structured Mermaid diagrams covering the system at three progressively detailed levels (Context → Container → Component), plus the runtime sequence flows that show how those pieces collaborate. See [overview.md](overview.md) for prose context, [decisions/](decisions/) for the ADRs referenced here, and [`../spec/architecture.md`](../spec/architecture.md) for the structured element catalog these diagrams render.
 
@@ -480,6 +480,21 @@ sets `Cancelled`, consumes the plan from the `PlanStore` under the same delete p
 in the goal report as a leak; the wall-clock timeout remains the backstop. The
 status-query handler body (task 114) and apply-info fold (task 115) are live; this leaves
 only L6 live-sandbox cancellation operator-deferred.
+
+**Durable run journal, optional (task 168 / ADR 065).** When the orchestrator is
+constructed `WithRunStore(runstore.Store)`, two write points and one read/resume point
+overlay the flow above without changing it. On the `spawn-plan` allow (inside
+`ConfirmAndPlan`, before the approval pause or `dispatchPlan`), it persists a
+`runstore.Record{GoalID, Goal, Plan, Status: running}`. Inside each per-sub-goal goroutine
+(`dispatchOne`), it records that sub-goal's `AttemptState` as `running` before `o.dispatch`
+and updates the SAME entry to `completed`/`failed` after (serialized across goroutines by
+an orchestrator mutex). When all sub-goals are completed the goal `Status` flips to
+`completed` (dropping it from `ListInFlight`). A fresh process reads the journal with
+`RehydrateInFlight(store)` and calls `ResumeFromRecord(ctx, rec)`, which re-drives the
+SAME `dispatchSubGoals` path for ONLY the sub-goals with no `completed` attempt (never
+double-dispatching a completed one). All journal writes are best-effort and behind an
+`o.runStore != nil` guard, so an orchestrator built without `WithRunStore` is byte-for-byte
+unchanged. `internal/runstore` stays a leaf (F-015); the orchestrator is its first consumer.
 
 ---
 

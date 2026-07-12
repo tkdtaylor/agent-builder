@@ -201,6 +201,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Nil sink on a transport failure is a no-op (no panic). A genuine deny/allow/require_approval response (no error) is completely unaffected: same reason string, same `audit_emit`-gated emission as before.
 - **References:** ADR 038; `docs/tasks/test-specs/166-audit-policy-transport-failure-test-spec.md`.
 
+### B-042: Crash-mid-plan recovery via idempotent resume from the run journal
+
+- **Trigger:** An `Orchestrator` constructed with `WithRunStore(store)` admits a plan (spawn-plan allow), and later a fresh process calls `RehydrateInFlight(store)` + `ResumeFromRecord(ctx, rec)` for an interrupted goal.
+- **Response:** On admission, the orchestrator persists a `runstore.Record{GoalID, Goal, Plan, Status: StatusRunning}` before dispatch. Each sub-goal dispatch records an `AttemptState` as `running` before `o.dispatch` and updates the SAME entry to `completed`/`failed` after. When every sub-goal has a completed attempt the goal's `Status` becomes `StatusCompleted` (dropping it from `ListInFlight`); otherwise it stays `StatusRunning` (in-flight, resumable). `ResumeFromRecord` re-drives dispatch for ONLY the sub-goals with no `completed` attempt: a `completed` sub-goal is never re-dispatched (idempotency), a `running` (crashed mid-dispatch) or absent one IS re-dispatched, since running-and-crashed is indistinguishable from never-started at this scope.
+- **Side effects:** Journal writes are best-effort (a `Save` error is reported, not fatal to dispatch), matching the audit/tamper side-effect convention. The read-modify-write of a goal's `Record` across concurrent per-sub-goal goroutines is serialized by an orchestrator mutex so no attempt update is lost.
+- **Failure modes:** `WithRunStore` unset (the default): behavior is byte-for-byte unchanged and no `runstore` call is ever made (every write is behind an `o.runStore != nil` guard). A `rec.Plan` that fails to unmarshal makes `ResumeFromRecord` return an error and dispatch nothing.
+- **References:** ADR 065; `docs/tasks/test-specs/168-resume-after-restart-test-spec.md`.
+
 ### B-021: Verify audit chain integrity via the block's own verifier
 
 - **Trigger:** A caller invokes `audit.VerifyChain(binPath, logfile)` after a run has produced an audit-trail chain via `audit.BlockSink`.

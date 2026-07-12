@@ -42,6 +42,7 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/loop"
 	"github.com/tkdtaylor/agent-builder/internal/policy"
 	"github.com/tkdtaylor/agent-builder/internal/recipe"
+	"github.com/tkdtaylor/agent-builder/internal/runstore"
 	"github.com/tkdtaylor/agent-builder/internal/runtime"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
@@ -297,6 +298,18 @@ type Orchestrator struct {
 	// holding a multi-turn conversation (ADR 060 §6).
 	convMu        sync.Mutex
 	conversations map[string]*conversation
+	// runStore is the optional durable run journal (ADR 065, task 167). When set
+	// (via WithRunStore), the orchestrator persists a Record on plan admission and
+	// per-sub-goal AttemptState across dispatch, so a crashed process can rehydrate
+	// and idempotently resume the interrupted remainder (task 168). nil by default:
+	// behavior is then byte-for-byte unchanged and no runstore call is ever made.
+	runStore runstore.Store
+	// runStoreMu serializes the read-modify-write of a goal's Record across the
+	// concurrent per-sub-goal dispatch goroutines (dispatchOne runs N at once). The
+	// FileStore's own mutex makes each Save/Load atomic, but the attempt-recording
+	// RMW spans a Load and a Save, so it needs this coarser guard to avoid a lost
+	// update when two sub-goals of the same goal update the shared Record at once.
+	runStoreMu sync.Mutex
 }
 
 // Option configures an Orchestrator.
@@ -400,6 +413,15 @@ func WithGoalAnalyzer(a GoalAnalyzer) Option {
 // WithAnswerer sets the single-shot Answerer used for KindAnswer goals (ADR 060).
 func WithAnswerer(a Answerer) Option {
 	return func(o *Orchestrator) { o.answerer = a }
+}
+
+// WithRunStore sets the durable run journal (ADR 065, task 168). When set, the
+// orchestrator persists a Record on plan admission and per-sub-goal AttemptState
+// across dispatch, enabling crash-recovery via RehydrateInFlight/ResumeFromRecord.
+// When unset (nil, the default), behavior is byte-for-byte unchanged and no
+// runstore call is ever made. Mirrors WithAuditSink's optional-seam shape.
+func WithRunStore(s runstore.Store) Option {
+	return func(o *Orchestrator) { o.runStore = s }
 }
 
 // New constructs an Orchestrator. planner, pol, and reporter are required.
@@ -567,6 +589,11 @@ func (o *Orchestrator) ConfirmAndPlan(ctx context.Context, goal supervisor.Task)
 
 	switch decision {
 	case policy.DecisionAllow:
+		// Durable run journal (ADR 065, task 168): persist the admitted plan BEFORE
+		// dispatch (or the approval pause) so a crash after this point can rehydrate
+		// and resume it. Best-effort: a Save failure is reported, not fatal, matching
+		// the audit/tamper side-effect convention (a nil runStore is a no-op).
+		o.persistPlanRecord(ctx, plan)
 		if o.requireApproval {
 			return o.pauseForApproval(ctx, plan)
 		}
@@ -850,7 +877,18 @@ func (o *Orchestrator) decideSpawn(plan Plan) (policy.Decision, error) {
 // collected from the goroutines and, if any occurred, returned after the join so the
 // plan does not silently proceed on an un-audited deny.
 func (o *Orchestrator) dispatchPlan(ctx context.Context, plan Plan) (PlanResult, error) {
-	n := len(plan.SubGoals)
+	return o.dispatchSubGoals(ctx, plan, plan.SubGoals)
+}
+
+// dispatchSubGoals is the shared dispatch implementation for both the normal path
+// (dispatchPlan, all of plan.SubGoals) and the resume path (ResumeFromRecord, only
+// the non-completed remainder). It dispatches the given subs concurrently against
+// the plan's authorization set, aggregates outcomes, runs post-join reevaluation,
+// and emits the completion event. Passing an explicit subs slice is what lets the
+// resume path re-drive exactly the interrupted sub-goals without re-running the
+// completed ones (task 168).
+func (o *Orchestrator) dispatchSubGoals(ctx context.Context, plan Plan, subs []SubGoal) (PlanResult, error) {
+	n := len(subs)
 	result := PlanResult{
 		Goal:     plan.Goal,
 		Outcomes: make([]SubGoalOutcome, n),
@@ -865,13 +903,13 @@ func (o *Orchestrator) dispatchPlan(ctx context.Context, plan Plan) (PlanResult,
 
 	var wg sync.WaitGroup
 	wg.Add(n)
-	for i := range plan.SubGoals {
+	for i := range subs {
 		go func(i int, sub SubGoal) {
 			defer wg.Done()
 			outcome, auditErr := o.dispatchOne(ctx, plan, sub)
 			result.Outcomes[i] = outcome
 			denyAuditErrs[i] = auditErr
-		}(i, plan.SubGoals[i])
+		}(i, subs[i])
 	}
 	wg.Wait()
 
@@ -920,6 +958,12 @@ func (o *Orchestrator) dispatchPlan(ctx context.Context, plan Plan) (PlanResult,
 			}
 		}
 	}
+
+	// Durable run journal (task 168): if every sub-goal of the plan now has a
+	// completed attempt in the Record, mark the goal terminal (StatusCompleted) so
+	// it drops out of ListInFlight. A goal with any non-completed sub-goal stays
+	// StatusRunning (in-flight, resumable). Nil runStore is a no-op.
+	o.finalizeGoalStatus(plan)
 
 	// Fleet-audit: record plan completion on the shared chain after aggregation. This
 	// runs after the join, so completion is the LAST orchestrator event on the chain
@@ -1024,16 +1068,24 @@ func (o *Orchestrator) dispatchOne(ctx context.Context, plan Plan, sub SubGoal) 
 	// written here from inside the task-086 dispatch goroutine — the same place the
 	// outcome is produced.
 	o.registry.SetSubGoal(plan.GoalID, SubGoalProgress{Name: sub.Task.ID, Recipe: sub.RecipeName, State: "running"})
+	// Durable run journal (task 168): record this attempt as running BEFORE the
+	// dispatch, so a crash mid-dispatch leaves a "running" (non-completed) attempt
+	// that resume re-drives. A nil runStore is a no-op.
+	o.recordAttempt(plan.GoalID, sub.Task.ID, runstore.StatusRunning, "")
 
 	dispatchErr := o.dispatchWithSemaphore(ctx, sub)
 	if dispatchErr != nil {
 		outcome.Success = false
 		outcome.Detail = dispatchErr.Error()
 		o.registry.SetSubGoal(plan.GoalID, SubGoalProgress{Name: sub.Task.ID, Recipe: sub.RecipeName, State: "failed"})
+		// Update the SAME attempt entry to failed with the error detail (task 168).
+		o.recordAttempt(plan.GoalID, sub.Task.ID, runstore.StatusFailed, dispatchErr.Error())
 	} else {
 		outcome.Success = true
 		outcome.Detail = "dispatched"
 		o.registry.SetSubGoal(plan.GoalID, SubGoalProgress{Name: sub.Task.ID, Recipe: sub.RecipeName, State: "done"})
+		// Update the SAME attempt entry to completed (task 168).
+		o.recordAttempt(plan.GoalID, sub.Task.ID, runstore.StatusCompleted, "")
 	}
 	return outcome, nil
 }
