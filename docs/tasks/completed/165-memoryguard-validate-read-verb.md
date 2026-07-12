@@ -2,7 +2,7 @@
 
 **Project:** agent-builder
 **Created:** 2026-07-11
-**Status:** backlog
+**Status:** completed
 
 ## Goal
 
@@ -57,7 +57,7 @@ scope)", task 084's own doc comment naming this exact follow-on.
 
 - [x] Test spec `docs/tasks/test-specs/165-memoryguard-validate-read-verb-test-spec.md` exists (written first)
 - [x] Task 084 merged (`Client`, `ExecRunner` seam, `ValidateWrite`/`VerifyDelete` exist)
-- [ ] `make check` green on `main` before branching
+- [x] `make check` green on `main` before branching
 
 ## Implementation outline
 
@@ -109,11 +109,11 @@ scope)", task 084's own doc comment naming this exact follow-on.
 
 ## Acceptance criteria
 
-- [ ] [REQ-165-01] TC-165-01/02: wire request/response shapes exact, field-by-field.
-- [ ] [REQ-165-02] TC-165-03: `allow=false` yields `ErrReadGateDenied` with flags preserved.
-- [ ] [REQ-165-03] TC-165-04/05: transport and parse errors wrapped per convention.
-- [ ] [REQ-165-04] TC-165-06: `make fitness-memoryguard-isolation` still passes.
-- [ ] [REQ-165-05] TC-165-07: `go test -race -count=1 ./internal/memoryguard/... ./internal/orchestrator/...` passes; `make check` passes.
+- [x] [REQ-165-01] TC-165-01/02: wire request/response shapes exact, field-by-field.
+- [x] [REQ-165-02] TC-165-03: `allow=false` yields `ErrReadGateDenied` with flags preserved.
+- [x] [REQ-165-03] TC-165-04/05: transport and parse errors wrapped per convention.
+- [x] [REQ-165-04] TC-165-06: `make fitness-memoryguard-isolation` still passes.
+- [x] [REQ-165-05] TC-165-07: `go test -race -count=1 ./internal/memoryguard/... ./internal/orchestrator/...` passes; `make check` passes.
 
 ## Verification plan
 

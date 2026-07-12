@@ -4,10 +4,11 @@
 // speaks memory-guard's JSON IPC contract to the configured binary over per-op
 // subprocess calls (one subprocess per validate_write / verify_delete call).
 //
-// Two verbs are implemented:
+// Three verbs are implemented:
 //
 //	validate_write(entry, identity) → { allow, stored_id, flags }   — write-gate
 //	verify_delete(id)               → { confirmed, residue_detected, … } — delete-verify
+//	validate_read(query, identity)  → { allow, content_redacted, flags } — read-gate
 //
 // The adapter is a strict leaf: it imports only the Go standard library, never
 // any other agent-builder/internal package. The F-012 fitness check enforces this.
@@ -37,6 +38,11 @@ var ErrWriteGateDenied = errors.New("memoryguard: write-gate denied by memory-gu
 // reports tamper: confirmed=false or residue_detected=true. The caller must treat
 // this as a security signal and halt the in-flight plan.
 var ErrTamperDetected = errors.New("memoryguard: tamper detected by memory-guard block (delete-verify failed)")
+
+// ErrReadGateDenied is returned by ValidateRead when the memory-guard block
+// denies the read (allow=false). It is distinct from transport/parse errors so
+// callers can distinguish a security rejection from an IPC failure.
+var ErrReadGateDenied = errors.New("memoryguard: read-gate denied by memory-guard block")
 
 // ExecRunner is the subprocess seam for the memory-guard binary. Tests supply a
 // recording stub via Client.WithRunner; the default is realRunner (shells out to
@@ -106,6 +112,18 @@ type verifyDeleteResponse struct {
 	DeletionHash    string `json:"deletion_hash"`
 }
 
+type validateReadRequest struct {
+	Op       string `json:"op"`
+	Query    string `json:"query"`
+	Identity string `json:"identity"`
+}
+
+type validateReadResponse struct {
+	Allow           bool     `json:"allow"`
+	ContentRedacted string   `json:"content_redacted"`
+	Flags           []string `json:"flags"`
+}
+
 // ValidateWrite sends a validate_write IPC request to the memory-guard binary.
 // It returns the stored_id on success. It returns ErrWriteGateDenied when the
 // block denies the write (allow=false). Any transport or parse error is returned
@@ -168,3 +186,34 @@ func (c *Client) VerifyDelete(storedID string) error {
 	return nil
 }
 
+// ValidateRead sends a validate_read IPC request to the memory-guard binary.
+// It returns the redacted content on success. It returns ErrReadGateDenied
+// when the block denies the read (allow=false); the response's flags are
+// still returned alongside the error so a caller can log why the read was
+// denied. Any transport or parse error is returned as-is (wrapped).
+func (c *Client) ValidateRead(query, identity string) (contentRedacted string, flags []string, err error) {
+	req := validateReadRequest{
+		Op:       "validate_read",
+		Query:    query,
+		Identity: identity,
+	}
+	reqJSON, err := json.Marshal(req)
+	if err != nil {
+		return "", nil, fmt.Errorf("memoryguard: marshal validate_read request: %w", err)
+	}
+
+	out, err := c.runner.Run(c.binPath, reqJSON)
+	if err != nil {
+		return "", nil, fmt.Errorf("memoryguard: validate_read subprocess: %w", err)
+	}
+
+	var resp validateReadResponse
+	if err := json.Unmarshal(out, &resp); err != nil {
+		return "", nil, fmt.Errorf("memoryguard: parse validate_read response %q: %w", out, err)
+	}
+
+	if !resp.Allow {
+		return "", resp.Flags, ErrReadGateDenied
+	}
+	return resp.ContentRedacted, resp.Flags, nil
+}

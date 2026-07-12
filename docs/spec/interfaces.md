@@ -903,13 +903,15 @@ type TamperAwarePlanStore interface {
 
 Binary IPC adapter leaf for the memory-guard block (ADR 049). The block is `package
 main` (not importable as a Go library); this package speaks its JSON IPC contract via
-per-op subprocess calls (one subprocess per `validate_write` / `verify_delete`).
+per-op subprocess calls (one subprocess per `validate_write` / `verify_delete` /
+`validate_read`).
 
 ```go
 const EnvVarMemoryGuardBin = "AGENT_BUILDER_MEMORY_GUARD_BIN"
 
 var ErrWriteGateDenied error // allow=false from validate_write
 var ErrTamperDetected  error // confirmed=false OR residue_detected=true from verify_delete
+var ErrReadGateDenied  error // allow=false from validate_read
 
 type ExecRunner interface {
     Run(binPath string, reqJSON []byte) ([]byte, error)
@@ -920,6 +922,7 @@ func NewClient(binPath string) *Client
 func NewClientWithRunner(binPath string, runner ExecRunner) *Client
 func (c *Client) ValidateWrite(entry, identity string) (storedID string, err error)
 func (c *Client) VerifyDelete(storedID string) error
+func (c *Client) ValidateRead(query, identity string) (contentRedacted string, flags []string, err error)
 
 type MemoryGuardStore[P any] struct { /* unexported */ }
 func NewMemoryGuardStore[P any](client *Client, identity string) *MemoryGuardStore[P]
@@ -954,6 +957,7 @@ func WithAuditSink(sink audit.Sink) Option
 - **IPC contract (memory-guard JSON, ADR 049):**
   - `validate_write`: `{"op":"validate_write","entry":"<json>","identity":"<actor>"}` → `{"allow":bool,"stored_id":"…","flags":[…]}`
   - `verify_delete`: `{"op":"verify_delete","id":"<stored_id>"}` → `{"confirmed":bool,"residue_detected":bool,"residue_summary":"…","deletion_hash":"…"}`
+  - `validate_read`: `{"op":"validate_read","query":"<query>","identity":"<actor>"}` → `{"allow":bool,"content_redacted":"…","flags":[…]}`. `ValidateRead` returns `ErrReadGateDenied` on `allow=false`, with the response's `flags` still returned alongside the error. Not yet wired into any caller (`MemoryGuardStore[P].Get` remains purely in-process); task 172 wires it.
 - **Leaf isolation (F-012):** `internal/memoryguard` imports only stdlib. Enforced by `make fitness-memoryguard-isolation`.
 - **Degraded mode (REQ-084-04):** when `AGENT_BUILDER_MEMORY_GUARD_BIN` is unset, `NewPlanStoreFromEnv` returns `MemoryPlanStore` and calls `logFn` with a structured warning naming `AGENT_BUILDER_MEMORY_GUARD_BIN` and `"memory-guard"`. No IPC, no subprocess. Existing e2e tests pass unchanged.
 - **Tamper halt (REQ-084-05):** when `VerifyDelete` returns `ErrTamperDetected`, `Resume` returns an error (plan halted, no dispatch) and emits `audit.AuditEvent{Action: ActionTamper, Detail: EventDetail{TamperDetected: true}}` through the wired `audit.Sink`.
