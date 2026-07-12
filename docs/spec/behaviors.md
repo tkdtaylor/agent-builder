@@ -217,6 +217,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** A hard error from `Handle` (not a plan-level sub-goal failure) is returned immediately, not retried by this loop. `RunStore` unset: the loop still functions with in-memory counting only (no cross-process durability). A malformed `AGENT_BUILDER_GOAL_MAX_ATTEMPTS` fails `orchestrate` assembly fast (`ExitUsage`).
 - **References:** ADR 065; `docs/tasks/test-specs/169-sustained-autonomy-loop-test-spec.md`.
 
+### B-044: Sub-goal-level require_approval pause recorded in the run journal
+
+- **Trigger:** A dispatched sub-goal's per-sub-goal `run-task` policy gate inside `runtime.Run` (task 073's `decideGate`) returns `require_approval`, and the worker's `runtime.Config.OnRequireApproval` hook is set (the orchestrator sets it when a `RunStore` is configured). This is a DISTINCT layer from the plan-level `pauseForApproval`/`Resume` flow (B-022 / the `spawn-plan` gate), which is unchanged.
+- **Response:** `Run` fires the hook with the task and the halt reason, then returns nil (REQ-073-01 unchanged: the box never started, the task is written `needs-human`). The orchestrator's hook persists a `runstore.PendingApproval{TaskID, Reason, RequestedAt}` onto the goal's `Record.Pending` and sets `Record.Status = StatusAwaitingApproval`.
+- **Side effects:** Once the plan's `Record` is `StatusAwaitingApproval`, `dispatchSubGoals` does not START any further not-yet-dispatched sub-goal of that plan (checked inside the held worker semaphore, so deterministic under a single-worker cap; best-effort under a wider cap, already-started goroutines are never cancelled per ADR 046 §5). `finalizeGoalStatus` never downgrades an awaiting-approval record to completed. The paused sub-goal's attempt stays non-completed so a later resume re-drives it.
+- **Failure modes:** The hook fires ONLY on `require_approval`, never on a genuine deny. A nil hook (the single-task `run` subcommand, or a RunStore-less orchestrator) is a no-op: the require_approval path is byte-for-byte unchanged. Nil `RunStore`: the orchestrator never supplies the hook.
+- **References:** ADR 065; `docs/tasks/test-specs/170-approval-pause-on-require-approval-test-spec.md`.
+
 ### B-021: Verify audit chain integrity via the block's own verifier
 
 - **Trigger:** A caller invokes `audit.VerifyChain(binPath, logfile)` after a run has produced an audit-trail chain via `audit.BlockSink`.

@@ -1,6 +1,8 @@
 package e2e_test
 
 import (
+	"context"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"testing"
 
 	runtimewiring "github.com/tkdtaylor/agent-builder/internal/runtime"
+	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
 
 // TC-072-06 (covering TC-072-02/03 end-to-end): L5 fake-binary acceptance.
@@ -310,6 +313,73 @@ func TestPolicyGateTransportFailureAudited(t *testing.T) {
 	}
 	// Box never started: no PR/publish activity.
 	assertNoPublishLog(t, fixture.publishLog)
+}
+
+// TestTC170_02_OnRequireApprovalFiresThroughDaemon (TC-170-01 + TC-170-02, L5):
+// drive the REAL fake-policy-engine daemon through an in-process runtime.Run with
+// Config.OnRequireApproval set. The daemon returns require_approval, so decideGate
+// halts BEFORE the box (no exec-sandbox needed) and Run fires the hook with the
+// dispatched task and the halt reason, then returns nil (REQ-073-01 unchanged).
+func TestTC170_02_OnRequireApprovalFiresThroughDaemon(t *testing.T) {
+	fakePolicy := buildFakePolicyEngine(t)
+	fixture := newPublicationFixture(t, publicationFixtureConfig{})
+	argsLog := filepath.Join(t.TempDir(), "policy-args.log")
+	socket := filepath.Join(t.TempDir(), "policy.sock")
+	env := policyEnv(fixture, fakePolicy, socket, argsLog,
+		`{"decision":"require_approval","context":{"reason":"high risk task","obligations":[]}}`)
+	// Set the env in the REAL process so both ConfigFromEnv AND the fake policy-engine
+	// daemon (a subprocess started by decideGate that inherits os.Environ, reading
+	// FAKE_POLICY_RESPONSE) see it.
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
+
+	cfg, err := runtimewiring.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+
+	var fired int
+	var gotTaskID, gotReason string
+	cfg.OnRequireApproval = func(tk supervisor.Task, reason string) {
+		fired++
+		gotTaskID = tk.ID
+		gotReason = reason
+	}
+
+	if runErr := runtimewiring.Run(context.Background(), cfg, io.Discard); runErr != nil {
+		t.Fatalf("runtime.Run on require_approval = %v, want nil (REQ-073-01)", runErr)
+	}
+	if fired != 1 {
+		t.Fatalf("OnRequireApproval fired %d times, want exactly 1", fired)
+	}
+	if gotTaskID != "001" {
+		t.Errorf("hook task ID = %q, want %q (the fixture's dispatched task)", gotTaskID, "001")
+	}
+	if !strings.Contains(gotReason, "approval") {
+		t.Errorf("hook reason = %q, want it to contain %q", gotReason, "approval")
+	}
+
+	// TC-170-06 (runtime side): a nil hook on the require_approval path never panics
+	// and Run still returns nil. Fresh fixture so task 001 is ready (the run above
+	// marked its own fixture's task needs-human).
+	t.Run("nil_hook_no_panic", func(t *testing.T) {
+		fixture2 := newPublicationFixture(t, publicationFixtureConfig{})
+		env2 := policyEnv(fixture2, fakePolicy, filepath.Join(t.TempDir(), "policy.sock"),
+			filepath.Join(t.TempDir(), "policy-args.log"),
+			`{"decision":"require_approval","context":{"reason":"x","obligations":[]}}`)
+		for k, v := range env2 {
+			t.Setenv(k, v)
+		}
+		cfg2, err := runtimewiring.ConfigFromEnv(os.Getenv)
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		// cfg2.OnRequireApproval left nil.
+		if runErr := runtimewiring.Run(context.Background(), cfg2, io.Discard); runErr != nil {
+			t.Fatalf("runtime.Run with nil hook = %v, want nil (no panic)", runErr)
+		}
+	})
 }
 
 // policyEnv extends the publication fixture env with the policy gate vars and a

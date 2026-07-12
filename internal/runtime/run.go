@@ -126,6 +126,15 @@ type Config struct {
 	// its existing file-discovery behaviour unchanged.
 	DispatchedTask *supervisor.Task
 
+	// OnRequireApproval is an optional hook (ADR 065, task 170) fired from Run's
+	// policy-gate require_approval branch, with the dispatched task and the halt
+	// reason, BEFORE Run returns nil. It lets a caller (the orchestrator, when a
+	// RunStore is configured) persist a pending approval and pause further dispatch,
+	// without changing Run's existing return contract (REQ-073-01 unmodified). Nil
+	// for the single-task `run` subcommand: the require_approval path is byte-for-byte
+	// unchanged. Only fired for require_approval, never for a genuine deny.
+	OnRequireApproval func(task supervisor.Task, reason string)
+
 	// Vault wiring (ADR 036, task 066). VaultBin empty => vault disabled.
 	VaultBin       string
 	VaultSocket    string
@@ -851,6 +860,12 @@ func Run(ctx context.Context, config Config, stdout io.Writer) error {
 			if _, werr := statusWriter.WriteStatus(task.ID, tasksource.WritableStatusNeedsHuman); werr != nil {
 				return fmt.Errorf("run: %s: write needs-human status for task %s: %w", outcome.reason, task.ID, werr)
 			}
+			// Approval-pause hook (ADR 065, task 170): on require_approval ONLY (never a
+			// genuine deny), fire the optional hook so a caller can persist a pending
+			// approval and pause further dispatch. The return contract is unchanged.
+			if outcome.policyDecision == requireApprovalDecision && config.OnRequireApproval != nil {
+				config.OnRequireApproval(task, outcome.reason)
+			}
 			_, _ = fmt.Fprintf(stdout, "run halted: task %s — %s\n", task.ID, outcome.reason)
 			return nil
 		}
@@ -1005,6 +1020,11 @@ func newTransportFailureOutcome(decideErr error, policyReason string) gateOutcom
 		classifyReason:   policyTransportErrorReason,
 	}
 }
+
+// requireApprovalDecision is the policy require_approval decision string, captured
+// at package scope so Run (which has a local variable shadowing the policy import)
+// can compare gateOutcome.policyDecision against it (task 170).
+var requireApprovalDecision = string(policy.DecisionRequireApproval)
 
 // gateOutcome is the result of the host-side policy decide gate.
 type gateOutcome struct {

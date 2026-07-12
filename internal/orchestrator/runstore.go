@@ -114,6 +114,11 @@ func (o *Orchestrator) finalizeGoalStatus(plan Plan) {
 			completed[a.TaskID] = true
 		}
 	}
+	// Never downgrade a pause: a plan awaiting approval stays awaiting, even if the
+	// sub-goals that DID run all completed (task 170).
+	if rec.Status == runstore.StatusAwaitingApproval {
+		return
+	}
 	allDone := len(plan.SubGoals) > 0
 	for _, s := range plan.SubGoals {
 		if !completed[s.Task.ID] {
@@ -125,6 +130,48 @@ func (o *Orchestrator) finalizeGoalStatus(plan Plan) {
 		rec.Status = runstore.StatusCompleted
 		_ = o.runStore.Save(rec)
 	}
+}
+
+// recordPendingApproval appends a PendingApproval for a sub-goal that hit the
+// per-sub-goal run-task require_approval gate and marks the goal's Record
+// StatusAwaitingApproval (ADR 065, task 170). Guarded by runStoreMu so concurrent
+// sub-goals of the same plan never lose an update. Nil runStore is a no-op.
+func (o *Orchestrator) recordPendingApproval(goalID, taskID, reason string) {
+	if o.runStore == nil {
+		return
+	}
+	o.runStoreMu.Lock()
+	defer o.runStoreMu.Unlock()
+	rec, ok, err := o.runStore.Load(goalID)
+	if err != nil {
+		return
+	}
+	if !ok {
+		rec = runstore.Record{GoalID: goalID}
+	}
+	rec.Pending = append(rec.Pending, runstore.PendingApproval{
+		TaskID:      taskID,
+		Reason:      reason,
+		RequestedAt: time.Now().UTC(),
+	})
+	rec.Status = runstore.StatusAwaitingApproval
+	_ = o.runStore.Save(rec)
+}
+
+// planAwaitingApproval reports whether the plan's Record has been marked
+// StatusAwaitingApproval by an earlier sub-goal's require_approval pause (task 170).
+// Nil runStore or no record is false.
+func (o *Orchestrator) planAwaitingApproval(goalID string) bool {
+	if o.runStore == nil {
+		return false
+	}
+	o.runStoreMu.Lock()
+	defer o.runStoreMu.Unlock()
+	rec, ok, err := o.runStore.Load(goalID)
+	if err != nil || !ok {
+		return false
+	}
+	return rec.Status == runstore.StatusAwaitingApproval
 }
 
 // RehydrateInFlight returns every non-terminal run record in the store, so a fresh
