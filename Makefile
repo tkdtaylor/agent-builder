@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation fitness-no-self-repo-sink fitness-llm-planner-no-executor check l6-preflight l6-probe
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation fitness-runstore-isolation fitness-no-self-repo-sink fitness-llm-planner-no-executor check l6-preflight l6-probe
 
 lint:
 	golangci-lint run
@@ -10,7 +10,7 @@ test:
 	go test ./...
 
 # Fitness functions — see docs/spec/fitness-functions.md
-fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation fitness-no-self-repo-sink fitness-llm-planner-no-executor
+fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation fitness-runstore-isolation fitness-no-self-repo-sink fitness-llm-planner-no-executor
 	@echo "All fitness checks passed."
 
 fitness-no-docker:
@@ -299,6 +299,22 @@ fitness-memoryguard-isolation:
 		exit 1; \
 	fi; \
 	echo "PASS fitness-memoryguard-isolation: internal/memoryguard import graph contains no other agent-builder/internal packages."
+
+# fitness-runstore-isolation covers test-spec TC-167-12 (F-015, ADR 065):
+# internal/runstore is the durable run-journal leaf: its transitive dependency
+# graph must contain no github.com/tkdtaylor/agent-builder/internal/ path other
+# than internal/runstore itself (only stdlib packages are permitted). This keeps
+# the journal a portable seam the orchestrator composes on top, never one that
+# pulls the orchestrator/executor side back in.
+fitness-runstore-isolation:
+	@rs_deps=$$(go list -deps ./internal/runstore/...) || exit $$?; \
+	rs_forbidden=$$(printf '%s\n' "$$rs_deps" | grep 'github.com/tkdtaylor/agent-builder/internal/' | grep -v 'agent-builder/internal/runstore' || true); \
+	if [ -n "$$rs_forbidden" ]; then \
+		echo "FAIL fitness-runstore-isolation: internal/runstore imports forbidden agent-builder/internal package(s):"; \
+		printf '%s\n' "$$rs_forbidden"; \
+		exit 1; \
+	fi; \
+	echo "PASS fitness-runstore-isolation: internal/runstore import graph contains no other agent-builder/internal packages."
 
 fitness-diagrams-render:
 	@python3 scripts/check-mermaid.py > /dev/null && \
