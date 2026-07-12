@@ -1050,6 +1050,33 @@ func NewFileStore(dir string) (*FileStore, error) // *FileStore implements Store
 
 ---
 
+### `internal/skill` seam (general skill system)
+
+A stdlib-only leaf that adds a governance/selection layer above `internal/recipe`'s execution strategies (ADR 066, task 176). A skill is a governed capability that DECLARES which `recipe.Recipe` it executes through; the recipe (unchanged) still owns the execution factories. This is the seam only: no runtime path selects skills yet (task 177 registers `coding-agent` as a skill and wires selection into dispatch).
+
+```go
+type Manifest struct {
+    Name                string   // unique registry key + human name; matched by SelectForGoal
+    Description         string   // human summary; also matched by SelectForGoal
+    RecipeName          string   // the recipe.Register name this skill executes through
+    RequiredPermissions []string // declared now, enforced by a follow-on
+    GateChecks          []string // declared now, enforced by a follow-on
+}
+
+func Register(name string, m Manifest) error // ERROR (not panic) on a duplicate name
+func Select(name string) (Manifest, error)   // descriptive not-found error
+func List() []string                         // registered names, sorted
+func Registry() map[string]Manifest          // snapshot copy of the live registry
+// Pure v1 selection: case-insensitive substring match of goalText against each
+// manifest's Name then Description, sorted-key iteration; no match → registry[fallback].
+func SelectForGoal(goalText string, registry map[string]Manifest, fallback string) (Manifest, error)
+```
+
+- **Register errors (not panics)**, unlike `recipe.Register` which panics: skill registration is expected to eventually come from config/discovery (schedule-file precedent, task 175), where a bad entry must surface as a clean startup error, not crash the daemon.
+- **Leaf isolation (F-016):** `internal/skill` imports only stdlib (not even `internal/recipe`). Enforced by `make fitness-skill-isolation`.
+
+---
+
 ### Orchestrator↔worker transport (`internal/channel/worker`)
 
 The transport adapter carries work-items and results across the orchestrator↔worker

@@ -1,4 +1,4 @@
-.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation fitness-runstore-isolation fitness-no-self-repo-sink fitness-llm-planner-no-executor check l6-preflight l6-probe
+.PHONY: lint format test fitness fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation fitness-runstore-isolation fitness-skill-isolation fitness-no-self-repo-sink fitness-llm-planner-no-executor check l6-preflight l6-probe
 
 lint:
 	golangci-lint run
@@ -10,7 +10,7 @@ test:
 	go test ./...
 
 # Fitness functions — see docs/spec/fitness-functions.md
-fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation fitness-runstore-isolation fitness-no-self-repo-sink fitness-llm-planner-no-executor
+fitness: fitness-no-docker fitness-gate-blocking fitness-supervisor-isolation fitness-orchestrator-no-executor fitness-no-srt fitness-audit-isolation fitness-exec-sandbox-default fitness-policy-isolation fitness-envelope-isolation fitness-worker-transport-isolation fitness-diagrams-render fitness-memoryguard-isolation fitness-runstore-isolation fitness-skill-isolation fitness-no-self-repo-sink fitness-llm-planner-no-executor
 	@echo "All fitness checks passed."
 
 fitness-no-docker:
@@ -315,6 +315,22 @@ fitness-runstore-isolation:
 		exit 1; \
 	fi; \
 	echo "PASS fitness-runstore-isolation: internal/runstore import graph contains no other agent-builder/internal packages."
+
+# fitness-skill-isolation covers test-spec TC-176-10 (F-016, ADR 066):
+# internal/skill is the general skill-system seam leaf: its transitive dependency
+# graph must contain no github.com/tkdtaylor/agent-builder/internal/ path other than
+# internal/skill itself (only stdlib is permitted; it does not even import
+# internal/recipe). This keeps the governance/selection seam a portable leaf the
+# orchestrator (or a future config/discovery loader) composes without a layering cycle.
+fitness-skill-isolation:
+	@sk_deps=$$(go list -deps ./internal/skill/...) || exit $$?; \
+	sk_forbidden=$$(printf '%s\n' "$$sk_deps" | grep 'github.com/tkdtaylor/agent-builder/internal/' | grep -v 'agent-builder/internal/skill' || true); \
+	if [ -n "$$sk_forbidden" ]; then \
+		echo "FAIL fitness-skill-isolation: internal/skill imports forbidden agent-builder/internal package(s):"; \
+		printf '%s\n' "$$sk_forbidden"; \
+		exit 1; \
+	fi; \
+	echo "PASS fitness-skill-isolation: internal/skill import graph contains no other agent-builder/internal packages."
 
 fitness-diagrams-render:
 	@python3 scripts/check-mermaid.py > /dev/null && \
