@@ -847,9 +847,21 @@ type Containment struct {
 - **v1 Planner concrete — `StructuredPlanner`** (ADR 046 §1 Option A, rule-based, no
   LLM, no `internal/executor` import). Structured-plan text format: each non-blank,
   non-`#` line is one sub-goal `"<recipe>: <spec>"`; a line with no recognized recipe
-  prefix uses the default recipe (`coding-agent`) with the whole line as the spec; a
-  goal with no parseable sub-goal line collapses to a single sub-goal on the default
-  recipe. The `LLMPlanner` is a named follow-on (ADR 046 §6) behind the same seam.
+  prefix, and a goal with no parseable sub-goal line (which collapses to a single
+  sub-goal), resolve their recipe through the **skill registry** rather than the raw
+  default (ADR 066 / task 177): `skill.SelectForGoal(text, <registered skills>,
+  DefaultRecipeName)` keyword-matches the text against each registered `Manifest` and
+  returns the selected `Manifest.RecipeName`, with `DefaultRecipeName` (`coding-agent`)
+  as the **fallback** parameter, no longer the sole selector. The built-in
+  `coding-agent` skill is registered at package init (`internal/orchestrator/skills.go`)
+  and declares `RecipeName: "coding-agent"`, so with only that skill registered every
+  free-form goal still resolves to `coding-agent` (a true no-op for the single-skill
+  deployment shape). An explicit `"<recipe>:"` prefix bypasses skill selection (the
+  operator named a recipe directly). `Plan` errors only on a hard configuration fault
+  (an unregistered fallback skill). The `StructuredPlanner.Skills` field injects a
+  registry snapshot for testing; nil means the live package registry. The `LLMPlanner`
+  is a named follow-on (ADR 046 §6) behind the same seam; its recipe names are always
+  model-named explicitly (fail-closed), so it has no default-resolution path to route.
 - **Approval gate (ADR 046 §4):** `Handle` issues `policy.Decide` with action
   `"spawn-plan"` (distinct from the worker `"run-task"`). `allow` → dispatch
   immediately; `deny` → report + stop; `require_approval` → **pause**: report the

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"strings"
 
+	"github.com/tkdtaylor/agent-builder/internal/skill"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
 
@@ -30,6 +31,12 @@ type StructuredPlanner struct {
 	// colon are not mis-split). When empty, any leading "<token>:" where token
 	// has no spaces is treated as a recipe prefix.
 	KnownRecipes map[string]bool
+	// Skills is the skill-registry snapshot a no-prefix goal/line is resolved
+	// against via skill.SelectForGoal (ADR 066 / task 177). When nil, the live
+	// package-level registry snapshot (liveSkillRegistry) is used, i.e. the
+	// production path. Tests inject a fixture here to exercise multi-skill
+	// routing without touching global registry state.
+	Skills map[string]skill.Manifest
 }
 
 // NewStructuredPlanner constructs a StructuredPlanner with the given known recipe
@@ -50,11 +57,18 @@ func NewStructuredPlanner(knownRecipes ...string) *StructuredPlanner {
 }
 
 // Plan decomposes the goal into an ordered plan (ADR 046 §1). It never calls a
-// model and never errors on well-formed input.
+// model. It errors only on a hard configuration fault: an unregistered fallback
+// skill (see resolveRecipeName), which cannot happen once the built-in
+// coding-agent skill is registered (skills.go init).
 func (p *StructuredPlanner) Plan(goal supervisor.Task) (Plan, error) {
 	defRecipe := p.DefaultRecipe
 	if defRecipe == "" {
 		defRecipe = DefaultRecipeName
+	}
+
+	registry := p.Skills
+	if registry == nil {
+		registry = liveSkillRegistry()
 	}
 
 	plan := Plan{
@@ -70,7 +84,18 @@ func (p *StructuredPlanner) Plan(goal supervisor.Task) (Plan, error) {
 			continue
 		}
 
-		recipeName, spec := p.splitLine(line, defRecipe)
+		recipeName, spec, explicit := p.splitLine(line)
+		if !explicit {
+			// No explicit "<recipe>:" prefix: the recipe is chosen by routing the
+			// goal/line text through the skill registry (ADR 066 / task 177),
+			// with defRecipe as the fallback. This replaces the old direct
+			// defRecipe assignment.
+			resolved, err := resolveRecipeName(spec, registry, defRecipe)
+			if err != nil {
+				return Plan{}, err
+			}
+			recipeName = resolved
+		}
 		plan.SubGoals = append(plan.SubGoals, SubGoal{
 			RecipeName: recipeName,
 			Task: supervisor.Task{
@@ -82,15 +107,20 @@ func (p *StructuredPlanner) Plan(goal supervisor.Task) (Plan, error) {
 		idx++
 	}
 
-	// No parseable sub-goal line: collapse the whole goal into one sub-goal on
-	// the default recipe (ADR 046 §1).
+	// No parseable sub-goal line: collapse the whole goal into one sub-goal, its
+	// recipe resolved through the skill registry (ADR 046 §1 + ADR 066).
 	if len(plan.SubGoals) == 0 {
+		spec := strings.TrimSpace(goal.Spec)
+		resolved, err := resolveRecipeName(spec, registry, defRecipe)
+		if err != nil {
+			return Plan{}, err
+		}
 		plan.SubGoals = append(plan.SubGoals, SubGoal{
-			RecipeName: defRecipe,
+			RecipeName: resolved,
 			Task: supervisor.Task{
 				ID:   subGoalID(goal.ID, 0),
 				Repo: goal.Repo,
-				Spec: strings.TrimSpace(goal.Spec),
+				Spec: spec,
 			},
 		})
 	}
@@ -99,24 +129,25 @@ func (p *StructuredPlanner) Plan(goal supervisor.Task) (Plan, error) {
 }
 
 // splitLine separates a "<recipe>: <spec>" line into a recipe name and spec text.
-// When the line has no recognized recipe prefix, it returns the default recipe and
-// the whole line as the spec.
-func (p *StructuredPlanner) splitLine(line, defRecipe string) (recipeName, spec string) {
+// explicit reports whether the line named a recognized recipe prefix. When
+// explicit is false the recipe name is left empty for the caller to resolve
+// through the skill registry, and spec is the whole line.
+func (p *StructuredPlanner) splitLine(line string) (recipeName, spec string, explicit bool) {
 	colon := strings.IndexByte(line, ':')
 	if colon <= 0 {
-		return defRecipe, line
+		return "", line, false
 	}
 	candidate := strings.TrimSpace(line[:colon])
 	rest := strings.TrimSpace(line[colon+1:])
 	// A recipe prefix must be a single token (no spaces) and, when a known-recipe
 	// set is configured, must be in it.
 	if candidate == "" || strings.ContainsAny(candidate, " \t") || rest == "" {
-		return defRecipe, line
+		return "", line, false
 	}
 	if p.KnownRecipes != nil && !p.KnownRecipes[candidate] {
-		return defRecipe, line
+		return "", line, false
 	}
-	return candidate, rest
+	return candidate, rest, true
 }
 
 // subGoalID derives a stable sub-goal Task ID from the goal ID and sub-goal index.
