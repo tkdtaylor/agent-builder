@@ -197,6 +197,19 @@ func (s *DurableStore[P]) Put(key string, value P) error {
 	return nil
 }
 
+// StoredID returns the memory-guard stored_id handle recorded for key on its last
+// Put, and whether the key is present. Used by callers (and tests) that need the
+// opaque handle; not gated (it returns no memory content, only the handle).
+func (s *DurableStore[P]) StoredID(key string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.index[key]
+	if !ok {
+		return "", false
+	}
+	return e.StoredID, true
+}
+
 // Get gates the read through the memory-guard read-gate. A key that was never
 // written returns (zero, false, nil) WITHOUT a gate call. A present key is gated:
 // on ErrReadGateDenied it returns (zero, false, wrapped err), NEVER the cached

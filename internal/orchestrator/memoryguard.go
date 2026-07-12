@@ -1,11 +1,18 @@
 package orchestrator
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/tkdtaylor/agent-builder/internal/audit"
 	"github.com/tkdtaylor/agent-builder/internal/memoryguard"
 )
+
+// EnvVarPlanStoreDir configures the on-disk directory backing the durable,
+// read-gated plan store (task 173). When unset, a default under the OS temp dir is
+// used; operators wanting cross-reboot durability should set it to a persistent path.
+const EnvVarPlanStoreDir = "AGENT_BUILDER_PLAN_STORE_DIR"
 
 // EnvVarMemoryGuardBin is the environment variable that configures the path to
 // the memory-guard binary. When unset the orchestrator degrades to MemoryPlanStore
@@ -20,26 +27,32 @@ const EnvVarMemoryGuardBin = memoryguard.EnvVarMemoryGuardBin
 // leaf package never imports internal/orchestrator. The F-012 fitness check asserts
 // internal/memoryguard has no other agent-builder/internal imports.
 type MemoryGuardPlanStore struct {
-	inner *memoryguard.MemoryGuardStore[Plan]
+	inner *memoryguard.DurableStore[Plan]
 }
 
 // NewMemoryGuardPlanStore constructs a MemoryGuardPlanStore backed by the given
-// memory-guard binary path. identity is the actor label sent to memory-guard
-// (e.g. "agent-builder/orchestrator").
-func NewMemoryGuardPlanStore(binPath, identity string) *MemoryGuardPlanStore {
+// memory-guard binary path and a durable on-disk directory (task 173). identity is
+// the actor label sent to memory-guard (e.g. "agent-builder/orchestrator"). It
+// returns an error when the durable store cannot rebuild from a malformed on-disk
+// state (fail loud, not silent degradation).
+func NewMemoryGuardPlanStore(binPath, identity, dir string) (*MemoryGuardPlanStore, error) {
 	client := memoryguard.NewClient(binPath)
-	return &MemoryGuardPlanStore{
-		inner: memoryguard.NewMemoryGuardStore[Plan](client, identity),
+	inner, err := memoryguard.NewDurableStore[Plan](client, identity, dir)
+	if err != nil {
+		return nil, fmt.Errorf("orchestrator: durable plan store: %w", err)
 	}
+	return &MemoryGuardPlanStore{inner: inner}, nil
 }
 
 // NewMemoryGuardPlanStoreWithRunner constructs a MemoryGuardPlanStore with an
-// injectable ExecRunner (for tests — substitutes a spy/stub for the real binary).
-func NewMemoryGuardPlanStoreWithRunner(binPath, identity string, runner memoryguard.ExecRunner) *MemoryGuardPlanStore {
+// injectable ExecRunner (for tests: substitutes a spy/stub for the real binary).
+func NewMemoryGuardPlanStoreWithRunner(binPath, identity, dir string, runner memoryguard.ExecRunner) (*MemoryGuardPlanStore, error) {
 	client := memoryguard.NewClientWithRunner(binPath, runner)
-	return &MemoryGuardPlanStore{
-		inner: memoryguard.NewMemoryGuardStore[Plan](client, identity),
+	inner, err := memoryguard.NewDurableStore[Plan](client, identity, dir)
+	if err != nil {
+		return nil, fmt.Errorf("orchestrator: durable plan store: %w", err)
 	}
+	return &MemoryGuardPlanStore{inner: inner}, nil
 }
 
 // TryPut serialises plan as JSON, sends it through the memory-guard write-gate,
@@ -56,9 +69,16 @@ func (s *MemoryGuardPlanStore) Put(plan Plan) {
 	_ = s.inner.Put(plan.GoalID, plan)
 }
 
-// Get returns the plan held for goalID and whether one was found.
+// Get returns the plan held for goalID and whether one was found. The read is now
+// gated through the memory-guard read-gate (task 173): a read-gate denial or any
+// transport error returns (Plan{}, false), matching PlanStore.Get's void "not found"
+// contract, so a denied read NEVER leaks the plan.
 func (s *MemoryGuardPlanStore) Get(goalID string) (Plan, bool) {
-	return s.inner.Get(goalID)
+	plan, ok, err := s.inner.Get(goalID)
+	if err != nil || !ok {
+		return Plan{}, false
+	}
+	return plan, true
 }
 
 // Delete removes the plan for goalID after calling verify_delete. It returns
@@ -94,7 +114,7 @@ type MemoryGuardLogFunc func(msg string, keysAndValues ...any)
 // a MemoryGuardPlanStore backed by the configured binary. When unset, it calls logFn
 // with a structured warning and returns MemoryPlanStore (the in-memory v1 backend).
 // This is the live-path constructor called from the CLI / runtime wiring.
-func NewPlanStoreFromEnv(logFn MemoryGuardLogFunc) PlanStore {
+func NewPlanStoreFromEnv(logFn MemoryGuardLogFunc) (PlanStore, error) {
 	binPath := os.Getenv(EnvVarMemoryGuardBin)
 	if binPath == "" {
 		logFn("memory-guard write-gate DISABLED — running in-memory-only mode",
@@ -102,9 +122,15 @@ func NewPlanStoreFromEnv(logFn MemoryGuardLogFunc) PlanStore {
 			"component", "memory-guard",
 			"degraded", true,
 		)
-		return NewMemoryPlanStore()
+		return NewMemoryPlanStore(), nil
 	}
-	return NewMemoryGuardPlanStore(binPath, "agent-builder/orchestrator")
+	dir := os.Getenv(EnvVarPlanStoreDir)
+	if dir == "" {
+		// Default under the OS temp dir. Operators wanting cross-reboot durability
+		// set AGENT_BUILDER_PLAN_STORE_DIR to a persistent path.
+		dir = filepath.Join(os.TempDir(), "agent-builder-planstore")
+	}
+	return NewMemoryGuardPlanStore(binPath, "agent-builder/orchestrator", dir)
 }
 
 // WithAuditSink sets the audit.Sink the orchestrator uses to emit security events

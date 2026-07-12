@@ -984,8 +984,11 @@ func NewDurableStore[P any](client *Client, identity, dir string) (*DurableStore
 func (s *DurableStore[P]) Put(key string, value P) error          // ValidateWrite gated + durable; ErrWriteGateDenied writes nothing
 func (s *DurableStore[P]) Get(key string) (P, bool, error)        // ValidateRead gated; ErrReadGateDenied returns zero, never the cached value; an unknown key skips the gate
 func (s *DurableStore[P]) Delete(key string) error               // VerifyDelete; durable tombstone; drops the entry even on ErrTamperDetected
+func (s *DurableStore[P]) StoredID(key string) (string, bool)     // the memory-guard stored_id handle for key (used by MemoryGuardPlanStore, task 173)
 func (s *DurableStore[P]) Compact() error                        // atomic snapshot + journal truncate
 ```
+
+The orchestrator's `MemoryGuardPlanStore` is backed by `DurableStore[Plan]` since task 173: `NewMemoryGuardPlanStore(binPath, identity, dir string) (*MemoryGuardPlanStore, error)` and `NewMemoryGuardPlanStoreWithRunner(...)` now take a durable `dir` and return an error; `NewPlanStoreFromEnv(logFn) (PlanStore, error)` resolves `AGENT_BUILDER_PLAN_STORE_DIR`; `PlanStore.Get` is now read-gated (a denial returns "not found", never the plan).
 
 **In `internal/orchestrator`** (not in `internal/memoryguard` — leaf isolation):
 
