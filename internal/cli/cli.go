@@ -85,6 +85,8 @@ func Main(config Config) int {
 		return runVerifyCheckpoint(config, config.Args[1:])
 	case "orchestrate":
 		return runOrchestrate(config, config.Args[1:])
+	case "daemon":
+		return runDaemon(config, config.Args[1:])
 	case "ask":
 		return runAsk(config, config.Args[1:])
 	default:
