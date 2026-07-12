@@ -1073,14 +1073,42 @@ func (o *Orchestrator) dispatchOne(ctx context.Context, plan Plan, sub SubGoal) 
 	// that resume re-drives. A nil runStore is a no-op.
 	o.recordAttempt(plan.GoalID, sub.Task.ID, runstore.StatusRunning, "")
 
-	dispatchErr := o.dispatchWithSemaphore(ctx, sub)
-	if dispatchErr != nil {
+	// Approval-pause hook (ADR 065, task 170): when a RunStore is configured, hand
+	// the worker's runtime.Config a hook that persists a PendingApproval and pauses
+	// the plan if the sub-goal's run-task gate returns require_approval. Fired
+	// synchronously inside o.dispatch (runtime.Run), so approvalRequested is safe to
+	// read after the call on this same goroutine. Nil RunStore leaves the hook nil.
+	cfg := o.baseConfig
+	approvalRequested := false
+	if o.runStore != nil {
+		cfg.OnRequireApproval = func(t supervisor.Task, reason string) {
+			approvalRequested = true
+			o.recordPendingApproval(plan.GoalID, t.ID, reason)
+		}
+	}
+
+	paused, dispatchErr := o.dispatchWithSemaphore(ctx, plan, sub, cfg)
+	switch {
+	case paused:
+		// A prior sub-goal of this plan already recorded a pending approval, so this
+		// not-yet-started sub-goal is skipped (best-effort halt, ADR 046 §5). Its
+		// attempt stays "running" (non-completed), so a later resume re-drives it.
+		outcome.Success = false
+		outcome.Detail = "paused: plan awaiting approval"
+	case approvalRequested:
+		// THIS sub-goal hit require_approval. runtime.Run returned nil, but it did not
+		// complete: mark it awaiting-approval, not completed, so the goal is not
+		// finalized as done.
+		outcome.Success = false
+		outcome.Detail = "awaiting approval"
+		o.recordAttempt(plan.GoalID, sub.Task.ID, runstore.StatusAwaitingApproval, "requires human approval")
+	case dispatchErr != nil:
 		outcome.Success = false
 		outcome.Detail = dispatchErr.Error()
 		o.registry.SetSubGoal(plan.GoalID, SubGoalProgress{Name: sub.Task.ID, Recipe: sub.RecipeName, State: "failed"})
 		// Update the SAME attempt entry to failed with the error detail (task 168).
 		o.recordAttempt(plan.GoalID, sub.Task.ID, runstore.StatusFailed, dispatchErr.Error())
-	} else {
+	default:
 		outcome.Success = true
 		outcome.Detail = "dispatched"
 		o.registry.SetSubGoal(plan.GoalID, SubGoalProgress{Name: sub.Task.ID, Recipe: sub.RecipeName, State: "done"})
@@ -1098,14 +1126,23 @@ func (o *Orchestrator) dispatchOne(ctx context.Context, plan Plan, sub SubGoal) 
 // (its goal stays Dispatching) until a permit frees, which is exactly the
 // total-live-workers cap. An acquire failure (ctx cancelled) is returned as the
 // dispatch error so the sub-goal is recorded failed rather than silently skipped.
-func (o *Orchestrator) dispatchWithSemaphore(ctx context.Context, sub SubGoal) error {
+func (o *Orchestrator) dispatchWithSemaphore(ctx context.Context, plan Plan, sub SubGoal, cfg runtime.Config) (paused bool, err error) {
 	if o.workerSem != nil {
-		if err := o.workerSem.Acquire(ctx); err != nil {
-			return fmt.Errorf("orchestrator: acquire worker permit for %q: %w", sub.Task.ID, err)
+		if aerr := o.workerSem.Acquire(ctx); aerr != nil {
+			return false, fmt.Errorf("orchestrator: acquire worker permit for %q: %w", sub.Task.ID, aerr)
 		}
 		defer o.workerSem.Release()
 	}
-	return o.dispatch(ctx, sub, o.baseConfig)
+	// Approval-pause halt (ADR 065, task 170): if an earlier sub-goal of this plan
+	// already recorded a pending approval, do NOT start this not-yet-dispatched
+	// sub-goal. The check is inside the held semaphore, so under a single-worker cap
+	// it is deterministic (the approval-recording dispatch completes and releases
+	// before the next sub-goal acquires and checks). Best-effort under a wider cap:
+	// already-started goroutines are never cancelled (ADR 046 §5 unmodified).
+	if o.planAwaitingApproval(plan.GoalID) {
+		return true, nil
+	}
+	return false, o.dispatch(ctx, sub, cfg)
 }
 
 // decideSpawnWorker issues the per-sub-goal spawn-worker policy decision (task 085

@@ -1141,6 +1141,14 @@ type Config struct {
 	// file-based GoalSourceFactory. Set by the orchestrate dispatch closure;
 	// nil for the single-task `run` subcommand (file-discovery unchanged).
 	DispatchedTask *supervisor.Task
+
+	// OnRequireApproval (ADR 065, task 170): optional hook fired from Run's policy
+	// gate require_approval branch ONLY (never a genuine deny), with the dispatched
+	// task and the halt reason, BEFORE Run returns nil. Lets the orchestrator (when
+	// a RunStore is configured) persist a runstore.PendingApproval and pause further
+	// dispatch. Nil for the single-task `run` subcommand: the require_approval path
+	// is byte-for-byte unchanged (REQ-073-01 preserved).
+	OnRequireApproval func(task supervisor.Task, reason string)
 }
 
 func ConfigFromEnv(getenv func(string) string) (Config, error)
