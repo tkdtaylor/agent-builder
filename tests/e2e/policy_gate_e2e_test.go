@@ -267,6 +267,51 @@ func TestPolicyGateRequireApprovalDistinctFromDeny(t *testing.T) {
 	}
 }
 
+// TestPolicyGateTransportFailureAudited (TC-166-02): a Decide transport/parse
+// failure (the fake engine returns unparseable output) fails closed to deny with
+// a halt message NAMING the decide-call failure, observably distinct from a
+// genuine policy-authored deny's "decision denied" wording. The task is marked
+// needs-human and the box never starts (zero exec-sandbox invocations), exactly
+// like the deny/require_approval halts. The distinct wording is what lets an
+// operator tell "the engine said no" (change policy) from "the engine crashed"
+// (debug the daemon).
+func TestPolicyGateTransportFailureAudited(t *testing.T) {
+	binary := buildAgentBuilder(t)
+	fakePolicy := buildFakePolicyEngine(t)
+
+	fixture := newPublicationFixture(t, publicationFixtureConfig{})
+	argsLog := filepath.Join(t.TempDir(), "policy-args.log")
+	socket := filepath.Join(t.TempDir(), "policy.sock")
+
+	// Unparseable decide response → policy.Decide returns a non-nil error and
+	// fail-closed deny. decideGate must now capture that error (task 166).
+	env := policyEnv(fixture, fakePolicy, socket, argsLog, `not valid json`)
+
+	stdout, stderr, code := runAgentBuilder(t, binary, env, "run")
+	if code != 0 {
+		t.Fatalf("transport-failure run exit code = %d, want 0 (a halt is a terminal outcome, not a process crash); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "run halted") {
+		t.Fatalf("transport-failure stdout = %q, want it to contain 'run halted'", stdout)
+	}
+	// Distinct wording: names the decide-call failure...
+	if !strings.Contains(stdout, "decide call failed") {
+		t.Fatalf("transport-failure stdout = %q, want it to contain the distinct 'decide call failed' wording", stdout)
+	}
+	// ...and is NOT confusable with a genuine policy-authored deny.
+	if strings.Contains(stdout, "decision denied") {
+		t.Fatalf("transport-failure stdout = %q, must NOT reuse the genuine-deny 'decision denied' wording", stdout)
+	}
+
+	// Task marked needs-human (same halt shape as deny/require_approval).
+	taskFile := readFile(t, filepath.Join(fixture.taskRoot, "docs/tasks/backlog/001-first.md"))
+	if !strings.Contains(taskFile, "**Status:** needs-human") {
+		t.Fatalf("transport-failure did not mark task needs-human:\n%s", taskFile)
+	}
+	// Box never started: no PR/publish activity.
+	assertNoPublishLog(t, fixture.publishLog)
+}
+
 // policyEnv extends the publication fixture env with the policy gate vars and a
 // fake-policy-engine binary launched as AGENT_BUILDER_POLICY_BIN.
 func policyEnv(f publicationFixture, fakePolicyBin, socket, argsLog, response string) map[string]string {

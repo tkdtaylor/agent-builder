@@ -193,6 +193,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** Nil sink when `audit_emit` is present is a no-op (no panic). Absence of `audit_emit` obligation means no `ActionPolicyDecision` event is ever emitted.
 - **References:** ADR 038; `docs/tasks/test-specs/073-require-approval-and-audit-emit-obligations-test-spec.md`.
 
+### B-041: Distinguish a policy `Decide` transport/parse failure from a genuine deny
+
+- **Trigger:** The host-side policy decide gate calls `policy.Decide` and the call returns a non-nil error (dial failure, timeout, malformed JSON, error-shaped response, or unknown decision value). `Decide` is fail-closed, so the response is still `deny`.
+- **Response:** `decideGate` captures the error (no longer discarded) and produces a halt reason naming the decide-call failure (`"policy: decide call failed, fail-closed to deny: <err>"`), observably distinct from a policy-authored deny's `"policy: decision denied"`. The task is written `needs-human` and the box never starts, identical to any other halt.
+- **Side effects:** When an `audit.Sink` is configured, an `ActionPolicyDecision` event is emitted **unconditionally** for this case (independent of the `audit_emit` obligation, which can never be present because no response arrived), with `Detail.PolicyDecision == "deny"` and `Detail.Reason == "policy_transport_error"` classifying it. An obligation-driven emission (B-023) still leaves `Detail.Reason` empty, so the two are distinguishable in the audit chain. This lets an operator tell "the engine said no" (change policy) from "the engine crashed" (debug the daemon).
+- **Failure modes:** Nil sink on a transport failure is a no-op (no panic). A genuine deny/allow/require_approval response (no error) is completely unaffected: same reason string, same `audit_emit`-gated emission as before.
+- **References:** ADR 038; `docs/tasks/test-specs/166-audit-policy-transport-failure-test-spec.md`.
+
 ### B-021: Verify audit chain integrity via the block's own verifier
 
 - **Trigger:** A caller invokes `audit.VerifyChain(binPath, logfile)` after a run has produced an audit-trail chain via `audit.BlockSink`.
