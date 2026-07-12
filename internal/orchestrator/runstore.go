@@ -31,11 +31,19 @@ func (o *Orchestrator) persistPlanRecord(ctx context.Context, plan Plan) {
 	}
 	o.runStoreMu.Lock()
 	defer o.runStoreMu.Unlock()
+	// Preserve the goal-level re-plan attempt counter (task 169) across the fresh
+	// plan a re-plan iteration admits; a new plan resets Attempts (sub-goal state)
+	// but the goal-level Attempt budget must carry forward.
+	var attempt int
+	if prev, ok, _ := o.runStore.Load(plan.GoalID); ok {
+		attempt = prev.Attempt
+	}
 	if err := o.runStore.Save(runstore.Record{
-		GoalID: plan.GoalID,
-		Goal:   plan.Goal,
-		Plan:   planJSON,
-		Status: runstore.StatusRunning,
+		GoalID:  plan.GoalID,
+		Goal:    plan.Goal,
+		Plan:    planJSON,
+		Status:  runstore.StatusRunning,
+		Attempt: attempt,
 	}); err != nil {
 		_ = o.reporter.Report(ctx, fmt.Sprintf("run-journal: persist plan %q: %v", plan.GoalID, err))
 	}

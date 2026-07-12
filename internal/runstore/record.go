@@ -82,4 +82,10 @@ type Record struct {
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
 	Deleted   bool              `json:"deleted,omitempty"`
+	// Attempt is the goal-level re-plan attempt counter for the bounded
+	// sustained-autonomy loop (task 169). It is distinct from and one layer above
+	// each sub-goal's own runtime.Run retry budget, and survives a crash mid-loop
+	// so a restart resumes counting rather than resetting to zero. Zero on a record
+	// that never entered a RunToCompletion loop.
+	Attempt int `json:"attempt,omitempty"`
 }

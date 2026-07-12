@@ -740,6 +740,18 @@ func RehydrateInFlight(store runstore.Store) ([]runstore.Record, error)
 // completed attempt; re-runs an interrupted `running`/absent one).
 func (o *Orchestrator) ResumeFromRecord(ctx context.Context, rec runstore.Record) (PlanResult, error)
 
+// Bounded goal-level re-plan loop (ADR 065, task 169). RunToCompletion calls Handle;
+// on a terminal sub-goal failure it folds the failure detail into the goal text via
+// FoldGoalText and re-plans, up to maxAttempts. On exhaustion it escalates once over
+// the Reporter (naming the goal ID, attempt count, and "exhausted") and returns the
+// last PlanResult plus a wrapped ErrGoalAttemptsExhausted. The attempt counter rides
+// on runstore.Record.Attempt when a RunStore is configured (survives a crash mid-loop).
+var ErrGoalAttemptsExhausted = errors.New("orchestrator: goal attempts exhausted")
+func (o *Orchestrator) RunToCompletion(ctx context.Context, goal supervisor.Task, maxAttempts int) (PlanResult, error)
+// PlanResult failure inspectors used by the loop:
+func (r PlanResult) HasTerminalFailure() bool   // any sub-goal outcome Success == false
+func (r PlanResult) FailureDetails() []string   // Detail of each failed outcome, folded into the re-plan goal
+
 // Clarifier interface (ADR 056):
 // Implementations:
 //   - HeuristicClarifier (rule-based static regexes; local-test default)
