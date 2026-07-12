@@ -906,6 +906,8 @@ Terminal       bool                         true when this retry cycle is comple
 
 The crash-safe, file-backed per-goal run state. A stdlib-only leaf; no caller is wired yet (task 168). See `interfaces.md` §`internal/runstore` seam for the `Store` contract and on-disk layout.
 
+**`internal/memoryguard.DurableStore[P]` (task 172)** uses the SAME on-disk layout and crash-safety rules (append-only fsync'd `journal.jsonl` of `{key, value, stored_id}` lines and tombstones, atomic temp+rename `snapshot.json` of a `map[key]{value, stored_id}` index, truncated-final-line tolerance, mid-file-corruption fail-loud). It is a fully INDEPENDENT reimplementation, not a shared package: `internal/memoryguard` must stay a stdlib-only leaf (F-012) and cannot import `internal/runstore`. Beyond the journal, every `DurableStore` write is memory-guard write-gated and every read is memory-guard read-gated (fail-closed).
+
 #### Value: `runstore.Status` (closed enum)
 
 ```

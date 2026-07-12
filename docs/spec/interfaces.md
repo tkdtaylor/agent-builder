@@ -972,6 +972,19 @@ func (s *MemoryGuardStore[P]) Put(key string, plan P) error
 func (s *MemoryGuardStore[P]) Get(key string) (P, bool)
 func (s *MemoryGuardStore[P]) Delete(key string) error // returns ErrTamperDetected on tamper
 func (s *MemoryGuardStore[P]) StoredID(key string) (string, bool)
+
+// DurableStore[P] (ADR 065, task 172): a memory-guard-gated, CRASH-SAFE sibling of
+// MemoryGuardStore. Unlike MemoryGuardStore (in-process, no read gate), every write
+// is durably persisted and every read is gated. It reimplements internal/runstore's
+// crash-safe journal locally (append-only fsync'd JSONL + temp+rename snapshot),
+// because internal/memoryguard must stay a stdlib-only leaf (F-012) and cannot import
+// internal/runstore.
+type DurableStore[P any] struct { /* unexported */ }
+func NewDurableStore[P any](client *Client, identity, dir string) (*DurableStore[P], error)
+func (s *DurableStore[P]) Put(key string, value P) error          // ValidateWrite gated + durable; ErrWriteGateDenied writes nothing
+func (s *DurableStore[P]) Get(key string) (P, bool, error)        // ValidateRead gated; ErrReadGateDenied returns zero, never the cached value; an unknown key skips the gate
+func (s *DurableStore[P]) Delete(key string) error               // VerifyDelete; durable tombstone; drops the entry even on ErrTamperDetected
+func (s *DurableStore[P]) Compact() error                        // atomic snapshot + journal truncate
 ```
 
 **In `internal/orchestrator`** (not in `internal/memoryguard` — leaf isolation):
