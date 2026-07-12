@@ -1179,6 +1179,15 @@ type RunWiring struct {
 	InjectionMode string   // "proxy" when vault wiring is active; "" otherwise
 }
 
+const (
+	TierBubblewrap = "bubblewrap"
+	TierGvisor     = "gvisor"
+)
+
+// ValidTier reports whether tier is a recognized exec-sandbox execution tier.
+// The empty string is valid (it means "backend default").
+func ValidTier(tier string) bool
+
 type Limits struct {
 	WallClockTimeout time.Duration
 	MemoryBytes      int64
@@ -1198,6 +1207,7 @@ type Result struct {
 - **Consumers:** supervisor construction accepts the interface. Dispatch lifecycle code uses the interface when task execution is implemented.
 - **Stability:** governed by ADR 020 and updated with any task that changes contained-run inputs, outputs, or error semantics.
 - **Required behavior:** `Command` is argv-style and must contain a non-blank executable at index 0. `Worktree` is the target repo worktree path mounted or made available to the backend (non-empty, must exist, must be a directory). `Limits` is a typed struct, not a map, and carries wall-clock timeout, memory limit, CPU count, process ID limit, and egress allowlist values. `Result` captures stdout, stderr, and duration. The integer return is the process exit code. A non-zero exit code is returned with nil error when the backend ran the command; non-nil error means adapter/backend failure or invalid request.
+- **Tier value validation (task 164):** `TierBubblewrap`/`TierGvisor` are the only two recognized tier values; `ValidTier` also accepts `""` (backend default). `internal/runtime`'s policy decide gate calls `ValidTier` on the `tier_select` obligation's value before constructing an allowed `gateOutcome`; an unrecognized tier is treated as a fail-closed halt (the request never reaches this seam), matching the fail-closed posture ADR 038 established for the rest of the policy-decide path.
 - **Vault wiring contract (ADR 036, task 066):** `Request.Wiring` carries the vault token-brokering wiring from the trusted host into the box. The **zero-value `RunWiring`** produces empty `wiring.vault_socket`, empty `wiring.injection_mode`, and an empty `run.secret_refs` array — the ADR 035 deferred default, with no behavior change. When populated by `runtime` (only when `AGENT_BUILDER_VAULT_BIN` is set), `Wiring.VaultSocket` is the live vault daemon socket, `Wiring.SecretRefs` are **opaque vault handles** (never plaintext token values), and `Wiring.InjectionMode` is `"proxy"`. The `execsandbox.Runner` maps these onto `wiring.vault_socket`, `run.secret_refs`, and `wiring.injection_mode` in the block's JSON RunRequest; exec-sandbox calls `vault.inject` per handle at spawn time and the egress proxy injects the credential. The raw git/GitHub token values are therefore never present in the RunRequest JSON.
 
 ### Concrete backend: `sandboxruntime.Runner`
