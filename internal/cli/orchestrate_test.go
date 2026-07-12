@@ -243,10 +243,13 @@ func TestPlanStoreFromEnvUnsetIsMemoryWithWarning(t *testing.T) {
 
 	var warned bool
 	var warnMsg string
-	store := orchestrator.NewPlanStoreFromEnv(func(msg string, _ ...any) {
+	store, psErr := orchestrator.NewPlanStoreFromEnv(func(msg string, _ ...any) {
 		warned = true
 		warnMsg = msg
 	})
+	if psErr != nil {
+		t.Fatalf("NewPlanStoreFromEnv: %v", psErr)
+	}
 
 	if store == nil {
 		t.Fatal("NewPlanStoreFromEnv returned nil store")
@@ -266,7 +269,10 @@ func TestPlanStoreFromEnvSetIsMemoryGuard(t *testing.T) {
 	t.Setenv(orchestrator.EnvVarMemoryGuardBin, filepath.Join(t.TempDir(), "memory-guard"))
 
 	var warned bool
-	store := orchestrator.NewPlanStoreFromEnv(func(string, ...any) { warned = true })
+	store, psErr := orchestrator.NewPlanStoreFromEnv(func(string, ...any) { warned = true })
+	if psErr != nil {
+		t.Fatalf("NewPlanStoreFromEnv: %v", psErr)
+	}
 
 	if _, ok := store.(*orchestrator.MemoryGuardPlanStore); !ok {
 		t.Fatalf("store dynamic type = %T, want *orchestrator.MemoryGuardPlanStore", store)

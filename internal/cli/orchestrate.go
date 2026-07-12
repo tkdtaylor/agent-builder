@@ -418,9 +418,13 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 	//    else in-memory + structured warning.
 	store := ov.planStore
 	if store == nil {
-		store = orchestrator.NewPlanStoreFromEnv(func(msg string, kv ...any) {
+		s, perr := orchestrator.NewPlanStoreFromEnv(func(msg string, kv ...any) {
 			logger.Warn(msg, kv...)
 		})
+		if perr != nil {
+			return orchestrateConfig{}, noop, fmt.Errorf("orchestrate: plan store: %w", perr)
+		}
+		store = s
 	}
 
 	// 3. Worker transport replay caches — ONE per direction, created ONCE here.

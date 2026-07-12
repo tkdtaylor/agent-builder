@@ -72,9 +72,12 @@ func TestTC084_01_WriteGoalThroughWriteGate(t *testing.T) {
 		"allow": true, "stored_id": "stub-id-1", "flags": nil,
 	})
 
-	store := orchestrator.NewMemoryGuardPlanStoreWithRunner(
-		"/stub/mg", "agent-builder/orchestrator", stub,
+	store, mgErr := orchestrator.NewMemoryGuardPlanStoreWithRunner(
+		"/stub/mg", "agent-builder/orchestrator", t.TempDir(), stub,
 	)
+	if mgErr != nil {
+		t.Fatalf("NewMemoryGuardPlanStoreWithRunner: %v", mgErr)
+	}
 
 	spy := newDispatchSpy()
 	rep := &fakeReporter{}
@@ -127,9 +130,12 @@ func TestTC084_01_WriteGateDenied(t *testing.T) {
 		"allow": false, "stored_id": "", "flags": []string{"injection_detected"},
 	})
 
-	store := orchestrator.NewMemoryGuardPlanStoreWithRunner(
-		"/stub/mg", "agent-builder/orchestrator", stub,
+	store, mgErr := orchestrator.NewMemoryGuardPlanStoreWithRunner(
+		"/stub/mg", "agent-builder/orchestrator", t.TempDir(), stub,
 	)
+	if mgErr != nil {
+		t.Fatalf("NewMemoryGuardPlanStoreWithRunner: %v", mgErr)
+	}
 	rep := &fakeReporter{}
 	pol := &fakePolicy{decision: policy.DecisionRequireApproval}
 
@@ -165,10 +171,15 @@ func TestTC084_02_DeleteBypassTamperDetected(t *testing.T) {
 		"residue_summary":  "unexpected residue",
 		"deletion_hash":    "abc123",
 	})
+	// task 173: PlanStore.Get is now read-gated, so Resume's plan read calls validate_read.
+	stub.setResponse("validate_read", map[string]any{"allow": true, "content_redacted": ""})
 
-	store := orchestrator.NewMemoryGuardPlanStoreWithRunner(
-		"/stub/mg", "agent-builder/orchestrator", stub,
+	store, mgErr := orchestrator.NewMemoryGuardPlanStoreWithRunner(
+		"/stub/mg", "agent-builder/orchestrator", t.TempDir(), stub,
 	)
+	if mgErr != nil {
+		t.Fatalf("NewMemoryGuardPlanStoreWithRunner: %v", mgErr)
+	}
 	spy := newDispatchSpy()
 	rep := &fakeReporter{}
 	pol := &fakePolicy{decision: policy.DecisionRequireApproval}
@@ -205,10 +216,11 @@ func TestTC084_02_DeleteBypassTamperDetected(t *testing.T) {
 		t.Errorf("TC-084-02: plan must not be pending after tamper Delete")
 	}
 
-	// ops: validate_write (Put) + verify_delete (TryDelete in Resume).
+	// ops: validate_write (Put) + validate_read (Resume's read-gated Get, task 173)
+	// + verify_delete (TryDelete in Resume).
 	ops := stub.opsInOrder()
-	if len(ops) != 2 || ops[0] != "validate_write" || ops[1] != "verify_delete" {
-		t.Errorf("TC-084-02: want ops [validate_write, verify_delete], got %v", ops)
+	if len(ops) != 3 || ops[0] != "validate_write" || ops[1] != "validate_read" || ops[2] != "verify_delete" {
+		t.Errorf("TC-084-02: want ops [validate_write, validate_read, verify_delete], got %v", ops)
 	}
 }
 
@@ -232,7 +244,10 @@ func TestTC084_04_DegradedModeWarning(t *testing.T) {
 		}{msg, kvs})
 	}
 
-	store := orchestrator.NewPlanStoreFromEnv(logFn)
+	store, psErr := orchestrator.NewPlanStoreFromEnv(logFn)
+	if psErr != nil {
+		t.Fatalf("NewPlanStoreFromEnv: %v", psErr)
+	}
 	if store == nil {
 		t.Fatal("TC-084-04: NewPlanStoreFromEnv returned nil store")
 	}
@@ -294,10 +309,15 @@ func TestTC084_05_TamperHaltsAndEmitsAuditEvent(t *testing.T) {
 		"residue_summary":  "injected",
 		"deletion_hash":    "deadbeef",
 	})
+	// task 173: Resume's plan read is now read-gated (validate_read).
+	stub.setResponse("validate_read", map[string]any{"allow": true, "content_redacted": ""})
 
-	store := orchestrator.NewMemoryGuardPlanStoreWithRunner(
-		"/stub/mg", "agent-builder/orchestrator", stub,
+	store, mgErr := orchestrator.NewMemoryGuardPlanStoreWithRunner(
+		"/stub/mg", "agent-builder/orchestrator", t.TempDir(), stub,
 	)
+	if mgErr != nil {
+		t.Fatalf("NewMemoryGuardPlanStoreWithRunner: %v", mgErr)
+	}
 	fakeSink := audit.NewFakeSink()
 	spy := newDispatchSpy()
 	rep := &fakeReporter{}
