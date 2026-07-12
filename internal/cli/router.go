@@ -157,6 +157,18 @@ func parseMessageLine(line string, autoSeq *int) (supervisor.Message, bool, erro
 			return supervisor.Message{Kind: supervisor.MsgConfirm}, false, fmt.Errorf("%w: %q (want: confirm <goalID>)", ErrMalformedInput, line)
 		}
 		return supervisor.Message{Kind: supervisor.MsgConfirm, GoalID: fields[1]}, true, nil
+	case "approve":
+		// `approve <goalID> <taskID>` — both required (task 171).
+		if len(fields) < 3 {
+			return supervisor.Message{Kind: supervisor.MsgApprove}, false, fmt.Errorf("%w: %q (want: approve <goalID> <taskID>)", ErrMalformedInput, line)
+		}
+		return supervisor.Message{Kind: supervisor.MsgApprove, GoalID: fields[1], TaskID: fields[2]}, true, nil
+	case "deny":
+		// `deny <goalID> <taskID>` — both required (task 171).
+		if len(fields) < 3 {
+			return supervisor.Message{Kind: supervisor.MsgDeny}, false, fmt.Errorf("%w: %q (want: deny <goalID> <taskID>)", ErrMalformedInput, line)
+		}
+		return supervisor.Message{Kind: supervisor.MsgDeny, GoalID: fields[1], TaskID: fields[2]}, true, nil
 	default:
 		// Bare line → a new goal. Auto-assign a collision-free ID.
 		*autoSeq++

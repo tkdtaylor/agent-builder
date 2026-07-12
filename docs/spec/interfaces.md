@@ -517,14 +517,24 @@ const (
     MsgInfo                       // new info for an in-flight goal (GoalID + Text)
     MsgCancel                     // cancel a goal + tear down its workers (GoalID)
     MsgConfirm                    // confirm clarification is complete and proceed to planning (ADR 058)
+    MsgApprove                    // approve a paused sub-goal (GoalID + TaskID) → re-dispatch (task 171)
+    MsgDeny                       // deny a paused sub-goal (GoalID + TaskID) → needs-human (task 171)
 )
 
 type Message struct {
     Kind   MessageKind // how the control loop dispatches this message
-    GoalID string      // addresses status/info/cancel/confirm; the new goal's ID for new-goal
+    GoalID string      // addresses status/info/cancel/confirm/approve/deny; the new goal's ID for new-goal
     Goal   Task        // populated for MsgNewGoal
     Text   string      // info payload / free-form
+    TaskID string      // the paused sub-goal addressed by MsgApprove/MsgDeny (task 171)
 }
+
+// Stdin command grammar (parseMessageLine) and Telegram reply-to derivation
+// (deriveMessage) both recognize, in addition to status/info/cancel/confirm:
+//   approve <goalID> <taskID>   → MsgApprove (Telegram reply-to form: "approve <taskID>")
+//   deny <goalID> <taskID>      → MsgDeny    (Telegram reply-to form: "deny <taskID>")
+// Missing tokens are ErrMalformedInput on stdin; a standalone approve/deny with no
+// reply-to falls through to MsgNewGoal on Telegram, mirroring confirm.
 
 type MessageSource interface {
     Next() (msg Message, ok bool, err error)
@@ -748,6 +758,15 @@ func (o *Orchestrator) ResumeFromRecord(ctx context.Context, rec runstore.Record
 // on runstore.Record.Attempt when a RunStore is configured (survives a crash mid-loop).
 var ErrGoalAttemptsExhausted = errors.New("orchestrator: goal attempts exhausted")
 func (o *Orchestrator) RunToCompletion(ctx context.Context, goal supervisor.Task, maxAttempts int) (PlanResult, error)
+
+// Sub-goal approval resume/abort + timeout escalation (ADR 065, task 171):
+// ResumeApproval resolves a task-170 pending approval, re-dispatching the sub-goal
+// on approved (reusing dispatchOne) or marking it needs-human on !approved, then
+// finalizing the plan when no pending approval remains. SweepApprovalTimeouts
+// escalates each pending approval older than timeout over the Reporter exactly once
+// (the per-pending Escalated flag makes it idempotent); now is injected for testing.
+func (o *Orchestrator) ResumeApproval(ctx context.Context, goalID, taskID string, approved bool) error
+func (o *Orchestrator) SweepApprovalTimeouts(ctx context.Context, now time.Time, timeout time.Duration)
 // PlanResult failure inspectors used by the loop:
 func (r PlanResult) HasTerminalFailure() bool   // any sub-goal outcome Success == false
 func (r PlanResult) FailureDetails() []string   // Detail of each failed outcome, folded into the re-plan goal

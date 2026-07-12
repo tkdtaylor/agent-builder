@@ -174,6 +174,171 @@ func (o *Orchestrator) planAwaitingApproval(goalID string) bool {
 	return rec.Status == runstore.StatusAwaitingApproval
 }
 
+// ResumeApproval resolves a paused sub-goal (task 171): it removes the matching
+// PendingApproval and, on approved, re-dispatches JUST that sub-goal (reusing
+// dispatchOne); on !approved, marks that sub-goal's attempt needs-human without
+// dispatching. When no pending approval remains, the plan is finalized to a terminal
+// status and reported.
+func (o *Orchestrator) ResumeApproval(ctx context.Context, goalID, taskID string, approved bool) error {
+	if o.runStore == nil {
+		return fmt.Errorf("orchestrator: ResumeApproval: no run store configured")
+	}
+
+	// 1. Remove the pending approval for taskID.
+	o.runStoreMu.Lock()
+	rec, ok, err := o.runStore.Load(goalID)
+	if err != nil {
+		o.runStoreMu.Unlock()
+		return fmt.Errorf("orchestrator: ResumeApproval: load goal %q: %w", goalID, err)
+	}
+	if !ok {
+		o.runStoreMu.Unlock()
+		return fmt.Errorf("orchestrator: ResumeApproval: no record for goal %q", goalID)
+	}
+	found := false
+	kept := make([]runstore.PendingApproval, 0, len(rec.Pending))
+	for _, p := range rec.Pending {
+		if p.TaskID == taskID {
+			found = true
+			continue
+		}
+		kept = append(kept, p)
+	}
+	if !found {
+		o.runStoreMu.Unlock()
+		return fmt.Errorf("orchestrator: ResumeApproval: no pending approval for goal %q task %q", goalID, taskID)
+	}
+	rec.Pending = kept
+	// On approve, clear the awaiting-approval status BEFORE re-dispatch so the
+	// task-170 pause-halt does not block this resumed sub-goal (it stops NEW
+	// sub-goals; a resume is an explicit continuation). finalizeAfterApproval sets
+	// the final status once the re-dispatch completes.
+	if approved {
+		rec.Status = runstore.StatusRunning
+	}
+	planJSON := rec.Plan
+	_ = o.runStore.Save(rec)
+	o.runStoreMu.Unlock()
+
+	// 2. Resume (re-dispatch) or abort (mark needs-human).
+	if approved {
+		var plan Plan
+		if uerr := json.Unmarshal(planJSON, &plan); uerr != nil {
+			return fmt.Errorf("orchestrator: ResumeApproval: unmarshal plan for goal %q: %w", goalID, uerr)
+		}
+		var target *SubGoal
+		for i := range plan.SubGoals {
+			if plan.SubGoals[i].Task.ID == taskID {
+				target = &plan.SubGoals[i]
+				break
+			}
+		}
+		if target == nil {
+			return fmt.Errorf("orchestrator: ResumeApproval: task %q not in plan for goal %q", taskID, goalID)
+		}
+		if _, derr := o.dispatchOne(ctx, plan, *target); derr != nil {
+			return fmt.Errorf("orchestrator: ResumeApproval: re-dispatch task %q: %w", taskID, derr)
+		}
+	} else {
+		o.recordAttempt(goalID, taskID, runstore.StatusNeedsHuman, "denied by operator")
+	}
+
+	// 3. Finalize the plan when no pending approval remains.
+	o.finalizeAfterApproval(ctx, goalID)
+	return nil
+}
+
+// finalizeAfterApproval sets a terminal status and reports once when a goal has no
+// remaining pending approvals (task 171). A denied/needs-human sub-goal makes the
+// plan terminal-Failed; all-completed makes it Completed; anything else stays
+// StatusRunning (some sub-goal is neither done nor pending).
+func (o *Orchestrator) finalizeAfterApproval(ctx context.Context, goalID string) {
+	if o.runStore == nil {
+		return
+	}
+	o.runStoreMu.Lock()
+	rec, ok, err := o.runStore.Load(goalID)
+	if err != nil || !ok {
+		o.runStoreMu.Unlock()
+		return
+	}
+	if len(rec.Pending) > 0 {
+		// Still awaiting other approvals.
+		rec.Status = runstore.StatusAwaitingApproval
+		_ = o.runStore.Save(rec)
+		o.runStoreMu.Unlock()
+		return
+	}
+	anyUnresolved := false
+	allCompleted := len(rec.Attempts) > 0
+	for _, a := range rec.Attempts {
+		switch a.Status {
+		case runstore.StatusNeedsHuman, runstore.StatusFailed:
+			anyUnresolved = true
+		case runstore.StatusCompleted:
+			// ok
+		default:
+			allCompleted = false
+		}
+		if a.Status != runstore.StatusCompleted {
+			allCompleted = false
+		}
+	}
+	var final runstore.Status
+	switch {
+	case anyUnresolved:
+		final = runstore.StatusFailed
+	case allCompleted:
+		final = runstore.StatusCompleted
+	default:
+		final = runstore.StatusRunning
+	}
+	rec.Status = final
+	_ = o.runStore.Save(rec)
+	o.runStoreMu.Unlock()
+
+	if final == runstore.StatusCompleted || final == runstore.StatusFailed {
+		_ = o.reporter.Report(ctx, fmt.Sprintf("Goal %q resolved after approval: %s", goalID, final))
+	}
+}
+
+// SweepApprovalTimeouts scans in-flight records for pending approvals older than
+// timeout and escalates each over the Reporter exactly once (task 171). The
+// per-pending Escalated flag makes a later sweep idempotent. now is injected so the
+// sweep is testable with a fake clock. Nil runStore is a no-op.
+func (o *Orchestrator) SweepApprovalTimeouts(ctx context.Context, now time.Time, timeout time.Duration) {
+	if o.runStore == nil {
+		return
+	}
+	records, err := o.runStore.ListInFlight()
+	if err != nil {
+		return
+	}
+	for _, rec := range records {
+		changed := false
+		for i := range rec.Pending {
+			p := &rec.Pending[i]
+			if p.Escalated {
+				continue
+			}
+			elapsed := now.Sub(p.RequestedAt)
+			if elapsed <= timeout {
+				continue
+			}
+			_ = o.reporter.Report(ctx, fmt.Sprintf(
+				"Approval timeout: goal %q task %q has awaited approval for %s, escalating to human",
+				rec.GoalID, p.TaskID, elapsed.Round(time.Second)))
+			p.Escalated = true
+			changed = true
+		}
+		if changed {
+			o.runStoreMu.Lock()
+			_ = o.runStore.Save(rec)
+			o.runStoreMu.Unlock()
+		}
+	}
+}
+
 // RehydrateInFlight returns every non-terminal run record in the store, so a fresh
 // process (task 174's daemon) can discover the goals interrupted by a crash. It is
 // a thin, documented wrapper over Store.ListInFlight naming the operation at the

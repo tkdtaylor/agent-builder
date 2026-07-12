@@ -20,6 +20,12 @@ const (
 	// MsgConfirm signals that clarification is complete and the orchestrator should
 	// proceed to planning (ADR 058).
 	MsgConfirm
+	// MsgApprove approves a paused sub-goal (GoalID + TaskID) so it re-dispatches
+	// (ADR 065, task 171). It resolves a task 170 sub-goal-level require_approval pause.
+	MsgApprove
+	// MsgDeny denies a paused sub-goal (GoalID + TaskID) so it is marked needs-human
+	// without dispatching (ADR 065, task 171).
+	MsgDeny
 )
 
 // String renders a MessageKind as its lowercase grammar name for reports and
@@ -36,6 +42,10 @@ func (k MessageKind) String() string {
 		return "cancel"
 	case MsgConfirm:
 		return "confirm"
+	case MsgApprove:
+		return "approve"
+	case MsgDeny:
+		return "deny"
 	default:
 		return "unknown"
 	}
@@ -49,6 +59,9 @@ type Message struct {
 	GoalID string      // addresses status/info/cancel; the new goal's ID for new-goal
 	Goal   Task        // populated for MsgNewGoal
 	Text   string      // info payload / free-form
+	// TaskID addresses a specific paused sub-goal for MsgApprove/MsgDeny (ADR 065,
+	// task 171). Zero value for every other kind.
+	TaskID string
 }
 
 // MessageSource is the inbound operator seam for the async control plane (ADR 054

@@ -66,6 +66,10 @@ type PendingApproval struct {
 	TaskID      string    `json:"task_id"`
 	Reason      string    `json:"reason"`
 	RequestedAt time.Time `json:"requested_at"`
+	// Escalated marks that this pending approval has already been auto-escalated on
+	// timeout (task 171), so a later sweep tick does not re-escalate it. Omitted from
+	// the wire form until set.
+	Escalated bool `json:"escalated,omitempty"`
 }
 
 // Record is the full durable state of one goal's run. Plan is stored as raw JSON
