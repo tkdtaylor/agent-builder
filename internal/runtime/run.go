@@ -975,6 +975,37 @@ func startVault(config Config) (*vault.Daemon, *secrets.VaultSecretSource, error
 	return daemon, src, nil
 }
 
+// policyTransportErrorReason classifies an ActionPolicyDecision audit event
+// emitted because the policy Decide call failed (dial/timeout/parse/unknown
+// decision) and agent-builder fail-closed to deny. It is a NEW Detail.Reason
+// value, distinct from every other reason constant, so a fail-closed deny is
+// distinguishable from a policy-authored deny in the audit chain (task 166).
+const policyTransportErrorReason = "policy_transport_error"
+
+// genuineDenyReason is the operator-facing halt reason for a policy-authored
+// deny. It is byte-identical to the pre-task-166 string; the transport-failure
+// reason must never equal it (task 166).
+const genuineDenyReason = "policy: decision denied"
+
+// newTransportFailureOutcome builds the gateOutcome for a Decide call that failed
+// (dial/timeout/parse/unknown decision) and fail-closed to deny. The reason names
+// the decide-call failure (distinct from genuineDenyReason), auditEmit is false
+// (no obligation can exist in a response that never arrived), and transportFailure
+// forces an unconditional, classified audit emission (task 166). decideErr's %v is
+// safe here: policy.Decide's contract guarantees its errors carry no secret payload
+// (dial/timeout/parse only), unlike internal/vault which guards secret VALUES.
+func newTransportFailureOutcome(decideErr error, policyReason string) gateOutcome {
+	return gateOutcome{
+		allowed:          false,
+		reason:           fmt.Sprintf("policy: decide call failed, fail-closed to deny: %v", decideErr),
+		auditEmit:        false,
+		policyDecision:   string(policy.DecisionDeny),
+		policyReason:     policyReason,
+		transportFailure: true,
+		classifyReason:   policyTransportErrorReason,
+	}
+}
+
 // gateOutcome is the result of the host-side policy decide gate.
 type gateOutcome struct {
 	allowed        bool   // true => proceed to box.Create; false => halt (deny/require_approval)
@@ -983,6 +1014,14 @@ type gateOutcome struct {
 	auditEmit      bool   // true => emit ActionPolicyDecision event (audit_emit obligation present)
 	policyDecision string // raw policy engine decision string for the audit event
 	policyReason   string // policy engine reason string for the audit event
+	// transportFailure is true when the Decide call itself failed (dial/timeout/
+	// parse/unknown-decision) and agent-builder fail-closed to deny. It forces an
+	// unconditional ActionPolicyDecision emission (no obligation can exist in a
+	// response that never arrived) and classifies the event's Detail.Reason.
+	transportFailure bool
+	// classifyReason is the audit Detail.Reason classification string set only for
+	// a transport failure ("policy_transport_error"); empty on all normal paths.
+	classifyReason string
 }
 
 // decideGate starts the policy daemon, builds the AuthZEN decide request, calls
@@ -1033,8 +1072,18 @@ func decideGate(config Config, task supervisor.Task, egressHosts []string, wirin
 	}
 
 	// Decide is fail-closed: any error yields DecisionDeny. We deliberately route
-	// on resp.Decision (not the error) so an error path halts dispatch.
-	resp, _ := policy.NewClient(socketPath).Decide(req)
+	// on resp.Decision (not the error) so an error path halts dispatch, but we now
+	// capture the error so a transport/parse failure is distinguishable from a
+	// policy-authored deny in both the halt message and the audit trail (task 166).
+	resp, decideErr := policy.NewClient(socketPath).Decide(req)
+
+	// A transport/parse/unknown-decision failure fail-closed to deny. The response
+	// never arrived, so no obligation (including audit_emit) can be present: emit
+	// the ActionPolicyDecision event UNCONDITIONALLY and give it a distinct reason
+	// and classification. This returns before the decision switch (task 166).
+	if decideErr != nil {
+		return newTransportFailureOutcome(decideErr, resp.Context.Reason), nil
+	}
 
 	// Apply obligations regardless of decision shape; on allow they take effect,
 	// on deny they are inert (the box never starts).
@@ -1075,7 +1124,7 @@ func decideGate(config Config, task supervisor.Task, egressHosts []string, wirin
 		// deny and any fail-closed deny.
 		return gateOutcome{
 			allowed:        false,
-			reason:         "policy: decision denied",
+			reason:         genuineDenyReason,
 			auditEmit:      auditEmit,
 			policyDecision: string(policy.DecisionDeny),
 			policyReason:   policyReason,
@@ -1515,23 +1564,35 @@ func writeCommand(streams supervisor.RunStreams, format string, args ...any) {
 	_, _ = fmt.Fprintf(streams.Command, format, args...)
 }
 
-// maybeEmitPolicyDecision emits an ActionPolicyDecision audit event when the
-// audit_emit obligation is present (outcome.auditEmit == true) and sink is non-nil.
-// It is a no-op when the obligation is absent or the sink is unconfigured.
-// Append errors are intentionally swallowed — the event is a side-effect and does
-// not affect routing (same error-swallow convention as emitAudit for in-loop events).
+// maybeEmitPolicyDecision emits an ActionPolicyDecision audit event when either
+// the audit_emit obligation is present (outcome.auditEmit == true) OR the Decide
+// call itself failed and fail-closed to deny (outcome.transportFailure == true).
+// The transport-failure case forces emission regardless of the normal audit_emit
+// gate, because no obligation can exist in a response that never arrived (task
+// 166); it also sets Detail.Reason to the classification string so the fail-closed
+// deny is distinguishable in the audit chain from an obligation-driven emission
+// (which leaves Detail.Reason empty, unchanged from task 073). A nil sink is a
+// no-op in both cases. Append errors are intentionally swallowed: the event is a
+// side-effect and does not affect routing (same convention as emitAudit).
 func maybeEmitPolicyDecision(sink audit.Sink, taskID string, outcome gateOutcome) {
-	if !outcome.auditEmit || sink == nil {
+	if !outcome.auditEmit && !outcome.transportFailure {
 		return
+	}
+	if sink == nil {
+		return
+	}
+	detail := audit.EventDetail{
+		PolicyDecision: outcome.policyDecision,
+		PolicyReason:   outcome.policyReason,
+	}
+	if outcome.transportFailure {
+		detail.Reason = outcome.classifyReason
 	}
 	_ = sink.Append(audit.AuditEvent{
 		Action: audit.ActionPolicyDecision,
 		RunID:  taskID,
 		TaskID: taskID,
-		Detail: audit.EventDetail{
-			PolicyDecision: outcome.policyDecision,
-			PolicyReason:   outcome.policyReason,
-		},
+		Detail: detail,
 	})
 }
 
