@@ -955,6 +955,7 @@ Status      Status                     run-level lifecycle status
 CreatedAt   time.Time                  stamped on the first Save for the goal
 UpdatedAt   time.Time                  stamped on every Save
 Deleted     bool                       tombstone marker (omitempty); a Deleted record removes the goal on replay
+Attempt     int                        goal-level re-plan attempt counter (omitempty; task 169); distinct from and one layer above each sub-goal's runtime.Run retry budget; survives a crash mid-loop
 ```
 
 - **Identity:** one `Record` is the full durable state of one goal's run, keyed by `GoalID`.

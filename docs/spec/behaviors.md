@@ -209,6 +209,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** `WithRunStore` unset (the default): behavior is byte-for-byte unchanged and no `runstore` call is ever made (every write is behind an `o.runStore != nil` guard). A `rec.Plan` that fails to unmarshal makes `ResumeFromRecord` return an error and dispatch nothing.
 - **References:** ADR 065; `docs/tasks/test-specs/168-resume-after-restart-test-spec.md`.
 
+### B-043: Bounded goal-level re-plan loop with escalation on exhaustion
+
+- **Trigger:** A caller invokes `Orchestrator.RunToCompletion(ctx, goal, maxAttempts)` (the goal-level budget comes from `AGENT_BUILDER_GOAL_MAX_ATTEMPTS`, default 3).
+- **Response:** It calls `Handle` once; on a fully-successful `PlanResult` (no `HasTerminalFailure`) it returns immediately (attempt 1). On a terminal sub-goal failure it folds the failure detail(s) into the ORIGINAL goal text via `FoldGoalText` and re-plans through the same `Planner`, incrementing the attempt counter, up to `maxAttempts` GOAL-level attempts (distinct from, one layer above, each sub-goal's `runtime.Run` retry budget). On reaching `maxAttempts` still failing, it escalates exactly once over the `Reporter` with a message naming the goal ID, the attempt count, and the word `"exhausted"`, and returns the last `PlanResult` plus a wrapped `ErrGoalAttemptsExhausted`.
+- **Side effects:** When a `RunStore` is configured, the attempt counter is persisted to the goal's `runstore.Record.Attempt` before each attempt, so a fresh `RunToCompletion` sharing the same store and goal ID resumes counting from where a crashed invocation left off rather than resetting to 1. `persistPlanRecord` preserves the counter across the fresh plan each re-plan admits.
+- **Failure modes:** A hard error from `Handle` (not a plan-level sub-goal failure) is returned immediately, not retried by this loop. `RunStore` unset: the loop still functions with in-memory counting only (no cross-process durability). A malformed `AGENT_BUILDER_GOAL_MAX_ATTEMPTS` fails `orchestrate` assembly fast (`ExitUsage`).
+- **References:** ADR 065; `docs/tasks/test-specs/169-sustained-autonomy-loop-test-spec.md`.
+
 ### B-021: Verify audit chain integrity via the block's own verifier
 
 - **Trigger:** A caller invokes `audit.VerifyChain(binPath, logfile)` after a run has produced an audit-trail chain via `audit.BlockSink`.

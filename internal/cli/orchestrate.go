@@ -81,12 +81,21 @@ const (
 	EnvMaxGoals   = "AGENT_BUILDER_MAX_GOALS"
 )
 
+// EnvGoalMaxAttempts bounds the goal-level sustained-autonomy re-plan loop
+// (ADR 065, task 169): the maximum number of goal-level Handle attempts
+// RunToCompletion makes before escalating on exhaustion. Distinct from
+// AGENT_BUILDER_MAX_ATTEMPTS (each sub-goal's own runtime.Run retry budget).
+const EnvGoalMaxAttempts = "AGENT_BUILDER_GOAL_MAX_ATTEMPTS"
+
 // Conservative defaults (ADR 054 §1): a small worker cap bounds sandbox pressure;
 // a looser goal cap bounds planning-state growth. Both are overridable by env.
 const (
 	defaultMaxWorkers = 4
 	defaultMaxGoals   = 8
 )
+
+// defaultGoalMaxAttempts is the default goal-level re-plan budget (task 169).
+const defaultGoalMaxAttempts = 3
 
 // Telegram inbound channel env vars (task 117, ADR 054 §2). All are required when
 // AGENT_BUILDER_INBOUND=telegram; missing any is a fail-fast assembly error.
@@ -227,6 +236,11 @@ type orchestrateConfig struct {
 	// Excess goals park with Queued status until a slot frees. Enforced at the
 	// control loop, not the orchestrator core.
 	maxGoals int
+	// goalMaxAttempts is the goal-level re-plan budget (AGENT_BUILDER_GOAL_MAX_ATTEMPTS,
+	// default 3) threaded into Orchestrator.RunToCompletion (ADR 065, task 169). The
+	// control loop's use of it is a follow-on (task 174/175); this task parses and
+	// carries it so the value is available and its malformed-value handling is tested.
+	goalMaxAttempts int
 	// mailboxes is the per-goal command-mailbox map (ADR 054 §3). When nil,
 	// runControlLoop creates a fresh one; a router test injects its own so it can
 	// read the delivered MsgInfo/MsgCancel and assert addressing (TC-113-04/06).
@@ -540,6 +554,14 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		getenv = os.Getenv
 	}
 
+	// Goal-level re-plan budget (ADR 065, task 169). Unlike the lenient concurrency
+	// bounds (envInt), a malformed value here is a fail-fast errUsageConfig error,
+	// mirroring the strict integer parse for AGENT_BUILDER_MAX_ATTEMPTS.
+	goalMaxAttempts, gmaErr := parseGoalMaxAttempts(getenv)
+	if gmaErr != nil {
+		return orchestrateConfig{}, noop, gmaErr
+	}
+
 	// 10d. Clarifier and GoalAnalyzer LLM seams (shared) (REQ-131-03, REQ-142-03)
 	// Build seams upfront if either clarifier or analyzer needs them.
 	clarifierChoice := strings.TrimSpace(getenv(EnvClarifier))
@@ -639,14 +661,34 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 	}
 
 	return orchestrateConfig{
-		orch:          orch,
-		source:        source,
-		stdout:        config.Stdout,
-		registry:      registry,
-		maxGoals:      maxGoals,
-		reporter:      reporter,
-		statusHandler: statusHandler,
+		orch:            orch,
+		source:          source,
+		stdout:          config.Stdout,
+		registry:        registry,
+		maxGoals:        maxGoals,
+		goalMaxAttempts: goalMaxAttempts,
+		reporter:        reporter,
+		statusHandler:   statusHandler,
 	}, cleanup, nil
+}
+
+// parseGoalMaxAttempts reads AGENT_BUILDER_GOAL_MAX_ATTEMPTS: unset/blank returns
+// the default (3); a valid integer >= 1 is used; anything else (non-integer, or a
+// value < 1) is a fail-fast errUsageConfig error, mirroring the strict integer
+// parse convention (unlike the lenient concurrency-bound envInt).
+func parseGoalMaxAttempts(getenv func(string) string) (int, error) {
+	raw := strings.TrimSpace(getenv(EnvGoalMaxAttempts))
+	if raw == "" {
+		return defaultGoalMaxAttempts, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%w: %s=%q is not an integer", errUsageConfig, EnvGoalMaxAttempts, raw)
+	}
+	if n < 1 {
+		return 0, fmt.Errorf("%w: %s=%q must be >= 1", errUsageConfig, EnvGoalMaxAttempts, raw)
+	}
+	return n, nil
 }
 
 // goalSourceAsMessages adapts a goal-only GoalSource into a MessageSource that
