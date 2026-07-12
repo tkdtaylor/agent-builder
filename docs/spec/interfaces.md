@@ -729,6 +729,17 @@ func (o *Orchestrator) SolicitApproval(ctx context.Context, goalID string) error
 func (o *Orchestrator) ResumeWithFold(ctx context.Context, approval Approval, goal supervisor.Task) (PlanResult, error)
 func FoldGoalText(original string, info []string) string
 
+// Durable run journal / crash recovery (ADR 065, task 168). Opt-in via WithRunStore;
+// when unset behavior is byte-for-byte unchanged and no runstore call is made.
+func WithRunStore(s runstore.Store) Option
+// RehydrateInFlight returns every non-terminal run record (wraps Store.ListInFlight),
+// so a fresh process can discover the goals a crash interrupted.
+func RehydrateInFlight(store runstore.Store) ([]runstore.Record, error)
+// ResumeFromRecord re-drives dispatch for a rehydrated record, re-dispatching ONLY
+// sub-goals with no `completed` attempt in rec.Attempts (never double-dispatches a
+// completed attempt; re-runs an interrupted `running`/absent one).
+func (o *Orchestrator) ResumeFromRecord(ctx context.Context, rec runstore.Record) (PlanResult, error)
+
 // Clarifier interface (ADR 056):
 // Implementations:
 //   - HeuristicClarifier (rule-based static regexes; local-test default)
