@@ -964,6 +964,33 @@ func WithAuditSink(sink audit.Sink) Option
 
 ---
 
+### `internal/runstore` seam (durable run journal)
+
+A stdlib-only leaf implementing the crash-safe, file-backed run journal ADR 065 commits to. It records per-goal run state (goal, plan, per-task attempt history, pending approvals, terminal status) so a crash mid-goal does not lose attempt history or pending-approval records. This task (167) builds the storage primitive only; no caller is wired yet (task 168 wires the orchestrator).
+
+```go
+type Store interface {
+    Save(rec Record) error                         // durable, fsync'd, last-write-wins per GoalID
+    Load(goalID string) (Record, bool, error)      // latest record; (Record{}, false, nil) if unknown/deleted
+    ListInFlight() ([]Record, error)               // latest non-terminal records, sorted by GoalID
+    Delete(goalID string) error                    // durable tombstone
+    Compact() error                                // atomic snapshot + journal truncate
+}
+
+func NewFileStore(dir string) (*FileStore, error) // *FileStore implements Store
+```
+
+- **On-disk layout** under `dir`:
+  - `journal.jsonl`: append-only, one JSON `Record` per line, `0600`, `fsync`'d per `Save`.
+  - `snapshot.json`: a compacted `map[GoalID]Record` index, written atomically (temp file + `fsync` + `os.Rename`) by `Compact`, `0600`.
+- **Replay order:** `NewFileStore` reads `snapshot.json` first, then replays `journal.jsonl`, both last-write-wins per `GoalID`. A `Record` with `Deleted == true` is a tombstone that removes the goal and survives replay.
+- **Crash-safety (REQ-167-05):** a truncated/partial FINAL journal line (a crash mid-append, no trailing newline) is tolerated and silently dropped; a malformed line anywhere earlier is a fail-loud corruption error naming the file and line number, never a silent reset to empty state (mirrors `router.LoadState`'s "state file may be corrupted" convention).
+- **Atomic compaction (REQ-167-06):** `Compact` only truncates the journal AFTER the snapshot rename succeeds; a failure before the rename leaves `snapshot.json`/`journal.jsonl` byte-for-byte unchanged. The rename is performed through an unexported `renameFunc` seam (defaults to `os.Rename`) so an interrupted compact is testable without a real process kill.
+- **Terminal statuses:** `StatusCompleted` and `StatusFailed` are excluded from `ListInFlight`; `StatusPending`/`StatusRunning`/`StatusAwaitingApproval`/`StatusNeedsHuman` are in-flight.
+- **Leaf isolation (F-015):** `internal/runstore` imports only stdlib. Enforced by `make fitness-runstore-isolation`.
+
+---
+
 ### Orchestrator↔worker transport (`internal/channel/worker`)
 
 The transport adapter carries work-items and results across the orchestrator↔worker

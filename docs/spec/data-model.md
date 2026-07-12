@@ -902,6 +902,67 @@ Terminal       bool                         true when this retry cycle is comple
 
 ---
 
+### State: Durable Run Journal (`internal/runstore`, ADR 065)
+
+The crash-safe, file-backed per-goal run state. A stdlib-only leaf; no caller is wired yet (task 168). See `interfaces.md` §`internal/runstore` seam for the `Store` contract and on-disk layout.
+
+#### Value: `runstore.Status` (closed enum)
+
+```
+value               constant                notes
+──────────────────────────────────────────────────────────────────
+"pending"           StatusPending           in-flight
+"running"           StatusRunning           in-flight
+"awaiting_approval" StatusAwaitingApproval  in-flight; a human approval is pending
+"needs-human"       StatusNeedsHuman        in-flight; escalated for a human
+"completed"         StatusCompleted         TERMINAL; excluded from ListInFlight
+"failed"            StatusFailed            TERMINAL; excluded from ListInFlight
+```
+
+#### Value: `runstore.AttemptState`
+
+```
+field       type      notes
+────────────────────────────────────────────────
+TaskID      string    the task this attempt ran
+Attempt     int       1-based attempt number
+Status      Status    per-attempt lifecycle status
+Detail      string    optional free-text detail (omitempty)
+UpdatedAt   time.Time when this attempt state was last written
+```
+
+#### Value: `runstore.PendingApproval`
+
+```
+field        type      notes
+────────────────────────────────────────────────
+TaskID       string    the task blocked awaiting approval
+Reason       string    the gate's reason for requiring approval
+RequestedAt  time.Time when approval was requested
+```
+
+#### Value: `runstore.Record`
+
+```
+field       type                       notes
+──────────────────────────────────────────────────────────────────
+GoalID      string                     primary key; last-write-wins on replay
+Goal        string                     the goal text (omitempty)
+Plan        json.RawMessage            the plan, stored as raw JSON so runstore stays a leaf (omitempty)
+Attempts    []AttemptState             per-task attempt history (omitempty)
+Pending     []PendingApproval          tasks awaiting a human approval decision (omitempty)
+Status      Status                     run-level lifecycle status
+CreatedAt   time.Time                  stamped on the first Save for the goal
+UpdatedAt   time.Time                  stamped on every Save
+Deleted     bool                       tombstone marker (omitempty); a Deleted record removes the goal on replay
+```
+
+- **Identity:** one `Record` is the full durable state of one goal's run, keyed by `GoalID`.
+- **Lifecycle:** appended (never mutated in place) to `journal.jsonl` on every `Save`/`Delete`; folded into an in-memory index at construction and after each write; snapshotted to `snapshot.json` by `Compact`.
+- **Relationships:** `Plan` is opaque JSON (runstore never imports the orchestrator's plan type). A `Deleted == true` record is a tombstone: it removes the goal from `Load`/`ListInFlight` and survives replay.
+
+---
+
 ## Wire / interchange formats
 
 Data formats agent-builder exchanges across process boundaries. Each is a stable
