@@ -1,6 +1,7 @@
 package e2e_test
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -142,6 +143,56 @@ func TestPolicyGateFakeBinaryE2E(t *testing.T) {
 		}
 		assertPolicyArgsLogged(t, argsLog, socket)
 	})
+}
+
+// TestPolicyGateUnknownTierHalts (TC-164-04): an allow decision carrying a
+// tier_select obligation naming a tier agent-builder does not recognize never
+// starts the box (zero exec-sandbox block invocations) and marks the task
+// needs-human, mirroring the deny/require_approval halt shape. Mirrors
+// TC-072-03's setup exactly; only the obligation value differs.
+func TestPolicyGateUnknownTierHalts(t *testing.T) {
+	binary := buildAgentBuilder(t)
+	fakePolicy := buildFakePolicyEngine(t)
+
+	fixture := newPublicationFixture(t, publicationFixtureConfig{})
+	argsLog := filepath.Join(t.TempDir(), "policy-args.log")
+	socket := filepath.Join(t.TempDir(), "policy.sock")
+	boxLog := filepath.Join(t.TempDir(), "box.log")
+	fakeBlock := buildFakeBlock(t, boxLog)
+
+	env := policyEnv(fixture, fakePolicy, socket, argsLog,
+		`{"decision":"allow","context":{"reason":"ok","obligations":[{"type":"tier_select","value":"quantum-tier"}]}}`)
+	env[runtimewiring.EnvExecSandboxBin] = fakeBlock
+
+	stdout, stderr, code := runAgentBuilder(t, binary, env, "run")
+	if code != 0 {
+		t.Fatalf("unknown-tier run exit code = %d, want 0 (a halt is a terminal outcome, not a process error); stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout, "run halted") {
+		t.Fatalf("unknown-tier stdout = %q, want it to contain 'run halted'", stdout)
+	}
+	if !strings.Contains(stdout, "unknown tier") {
+		t.Fatalf("unknown-tier stdout = %q, want it to contain 'unknown tier'", stdout)
+	}
+	if !strings.Contains(stdout, "quantum-tier") {
+		t.Fatalf("unknown-tier stdout = %q, want it to contain the offending value 'quantum-tier'", stdout)
+	}
+
+	// The box never started: the fake block's log file is either absent or
+	// contains zero REQUEST occurrences (mirrors assertNoPublishLog's proof
+	// pattern that the box never started).
+	if _, err := os.Stat(boxLog); err == nil {
+		recorded := readFile(t, boxLog)
+		if got := strings.Count(recorded, "REQUEST"); got != 0 {
+			t.Fatalf("block invoked %d times, want 0 (unknown tier must halt before box.Create); log=%q", got, recorded)
+		}
+	}
+
+	taskFile := readFile(t, filepath.Join(fixture.taskRoot, "docs/tasks/backlog/001-first.md"))
+	if !strings.Contains(taskFile, "**Status:** needs-human") {
+		t.Fatalf("unknown-tier did not mark task needs-human:\n%s", taskFile)
+	}
+	assertPolicyArgsLogged(t, argsLog, socket)
 }
 
 // TestPolicyGateRequireApprovalDistinctFromDeny (TC-073-01): require_approval

@@ -1045,6 +1045,15 @@ func decideGate(config Config, task supervisor.Task, egressHosts []string, wirin
 
 	switch resp.Decision {
 	case policy.DecisionAllow:
+		if !sandbox.ValidTier(tier) {
+			return gateOutcome{
+				allowed:        false,
+				reason:         fmt.Sprintf("policy: tier_select obligation names unknown tier %q", tier),
+				auditEmit:      auditEmit,
+				policyDecision: string(policy.DecisionAllow),
+				policyReason:   policyReason,
+			}, nil
+		}
 		return gateOutcome{
 			allowed:        true,
 			tier:           tier,
