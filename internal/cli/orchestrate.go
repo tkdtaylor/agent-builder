@@ -28,6 +28,7 @@ import (
 	"github.com/tkdtaylor/agent-builder/internal/loop"
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator"
 	llmplanner "github.com/tkdtaylor/agent-builder/internal/orchestrator/planner"
+	"github.com/tkdtaylor/agent-builder/internal/runstore"
 	"github.com/tkdtaylor/agent-builder/internal/policy"
 	"github.com/tkdtaylor/agent-builder/internal/registry"
 	"github.com/tkdtaylor/agent-builder/internal/router"
@@ -258,6 +259,10 @@ type orchestrateConfig struct {
 	// runControlLoop creates a fresh one; a router test injects its own so it can
 	// read the delivered MsgInfo/MsgCancel and assert addressing (TC-113-04/06).
 	mailboxes *commandMailboxes
+	// runStore is the durable run journal (ADR 065, task 167/168) when
+	// AGENT_BUILDER_RUN_STORE_DIR is set. Held on the config so the daemon (task 174)
+	// can rehydrate in-flight runs at startup. Nil when unset (no durable journaling).
+	runStore runstore.Store
 }
 
 // assembleOverrides lets tests inject the security-relevant collaborators that the
@@ -338,7 +343,17 @@ type assembleOverrides struct {
 	// Only consulted on the env-built Telegram inbound path (a messageSource/source
 	// override bypasses it, since those sources carry their own termination contract).
 	ctx context.Context
+	// runStore overrides the durable run journal (task 174 daemon rehydration). When
+	// nil, the env-built store (AGENT_BUILDER_RUN_STORE_DIR) is used; tests inject a
+	// pre-seeded store here.
+	runStore runstore.Store
 }
+
+// EnvRunStoreDir configures the on-disk directory for the durable run journal
+// (ADR 065, task 167/168). When set, the orchestrator persists per-goal run state
+// and the daemon (task 174) rehydrates in-flight runs at startup. Unset = no
+// durable journaling (byte-for-byte pre-task behavior).
+const EnvRunStoreDir = "AGENT_BUILDER_RUN_STORE_DIR"
 
 // runOrchestrate is the CLI dispatch for the orchestrate subcommand. It parses
 // flags, assembles the orchestrator stack from the environment, and drives the
@@ -625,9 +640,25 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		requireApproval = false
 	}
 
+	// Durable run journal (task 167/168; wired for daemon rehydration task 174). An
+	// override wins; otherwise build from AGENT_BUILDER_RUN_STORE_DIR when set. Nil =
+	// no durable journaling (byte-for-byte pre-task behavior). A malformed on-disk
+	// state fails assembly loud, before goal intake.
+	runStore := ov.runStore
+	if runStore == nil {
+		if dir := strings.TrimSpace(getenv(EnvRunStoreDir)); dir != "" {
+			fs, rserr := runstore.NewFileStore(dir)
+			if rserr != nil {
+				return orchestrateConfig{}, noop, fmt.Errorf("orchestrate: run store: %w", rserr)
+			}
+			runStore = fs
+		}
+	}
+
 	orch := orchestrator.New(
 		planner, pol, reporter, baseConfig,
 		orchestrator.WithPlanStore(store),
+		orchestrator.WithRunStore(runStore),
 		orchestrator.WithAuditSink(auditSink),
 		orchestrator.WithDispatchFunc(dispatch),
 		orchestrator.WithStatusRegistry(registry),
@@ -695,6 +726,7 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		maxGoals:        maxGoals,
 		goalMaxAttempts: goalMaxAttempts,
 		approvalTimeout: approvalTimeout,
+		runStore:        runStore,
 		reporter:        reporter,
 		statusHandler:   statusHandler,
 	}, cleanup, nil

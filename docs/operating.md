@@ -184,3 +184,20 @@ ready task.
 
 For the full host bring-up and per-probe verification, see
 [plans/l6-operator-runbook.md](plans/l6-operator-runbook.md).
+
+## Running as a daemon
+
+`agent-builder daemon` runs the orchestrate control plane as a long-lived process, so the agent keeps running unattended instead of only while a terminal is open. It reuses the orchestrate assembly and control loop unchanged; it adds only process lifecycle.
+
+```bash
+export AGENT_BUILDER_INBOUND=telegram        # (or leave unset for the env/stdin channel)
+export AGENT_BUILDER_RUN_STORE_DIR=/var/lib/agent-builder/runs   # durable run journal (survives restart)
+export AGENT_BUILDER_DAEMON_LOCK=/var/run/agent-builder-daemon.lock
+# ... plus the same AGENT_BUILDER_* vars orchestrate needs (worker signing key, channel keys, etc.)
+agent-builder daemon
+```
+
+- **Single instance.** The daemon creates its lock file (`AGENT_BUILDER_DAEMON_LOCK`, default under the OS temp dir) with `O_CREATE|O_EXCL` and writes its PID. A second `agent-builder daemon` against the same lock path exits immediately with a clear error naming the path. After a hard crash, clear a stale lock file manually (there is no PID-liveness detection in v1).
+- **Graceful shutdown.** `Ctrl-C` (SIGINT) or `SIGTERM` cancels the control loop, waits for in-flight cleanup, prints a graceful-shutdown message, removes the lock file, and exits `0`.
+- **Crash recovery.** When `AGENT_BUILDER_RUN_STORE_DIR` is set, the daemon rehydrates in-flight runs from the durable journal at startup (re-dispatching only the sub-goals a prior process had not yet completed) before entering the steady-state loop.
+- **Note.** SIGTERM shuts down cleanly when the inbound channel is context-aware (Telegram). The line-oriented env/stdin channel blocks on stdin and is intended for local interactive use, not long-lived daemon operation.
