@@ -571,6 +571,19 @@ func (a *Adapter) deriveMessage(update Update, plaintext []byte) supervisor.Mess
 		}
 		fallthrough
 
+	case "approve", "deny":
+		// "approve <taskID>" / "deny <taskID>" → MsgApprove/MsgDeny (task 171); the
+		// reply-to threads the goalID, `rest` is the taskID. Without a reply-to (or an
+		// unknown cache entry) it falls through to MsgNewGoal, mirroring confirm.
+		if replyToGoalID != "" {
+			kind := supervisor.MsgApprove
+			if strings.ToLower(verb) == "deny" {
+				kind = supervisor.MsgDeny
+			}
+			return supervisor.Message{Kind: kind, GoalID: replyToGoalID, TaskID: strings.TrimSpace(rest)}
+		}
+		fallthrough
+
 	default:
 		// Any other plaintext (including multi-word goals) → MsgNewGoal.
 		// Derive a fresh goalID from the chat+message identity (no collision across

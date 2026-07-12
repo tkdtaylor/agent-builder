@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator"
 	"github.com/tkdtaylor/agent-builder/internal/supervisor"
@@ -231,6 +232,32 @@ func (a *goalActor) handleCommand(ctx context.Context, msg supervisor.Message, c
 		a.applyCancel(ctx)
 	case supervisor.MsgConfirm:
 		a.applyConfirm(ctx, confirmChan)
+	case supervisor.MsgApprove:
+		a.applyApproval(ctx, msg.TaskID, true)
+	case supervisor.MsgDeny:
+		a.applyApproval(ctx, msg.TaskID, false)
+	}
+
+	// On-check approval-timeout sweep (ADR 065, task 171): every processed command
+	// is an opportunity to escalate any pending approval that has now waited past
+	// AGENT_BUILDER_APPROVAL_TIMEOUT. Reusing the command-drain path (rather than a
+	// new poll loop) keeps the sweep on the existing single control goroutine. A zero
+	// timeout (unset in a direct-constructed test config) or nil orchestrator skips it.
+	if a.oc.approvalTimeout > 0 && a.oc.orch != nil {
+		a.oc.orch.SweepApprovalTimeouts(ctx, time.Now().UTC(), a.oc.approvalTimeout)
+	}
+}
+
+// applyApproval resolves a paused sub-goal by routing the operator's approve/deny
+// decision to Orchestrator.ResumeApproval (ADR 065, task 171), mirroring
+// applyConfirm's wiring shape. A ResumeApproval error is reported, not fatal.
+func (a *goalActor) applyApproval(ctx context.Context, taskID string, approved bool) {
+	if err := a.oc.orch.ResumeApproval(ctx, a.goal.ID, taskID, approved); err != nil {
+		verb := "approve"
+		if !approved {
+			verb = "deny"
+		}
+		a.oc.report(ctx, fmt.Sprintf("%s for goal %q task %q failed: %v", verb, a.goal.ID, taskID, err))
 	}
 }
 

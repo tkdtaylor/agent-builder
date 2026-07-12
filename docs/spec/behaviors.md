@@ -225,6 +225,14 @@ Behaviors are numbered `B-001`, `B-002`, … sequentially. Numbers are stable re
 - **Failure modes:** The hook fires ONLY on `require_approval`, never on a genuine deny. A nil hook (the single-task `run` subcommand, or a RunStore-less orchestrator) is a no-op: the require_approval path is byte-for-byte unchanged. Nil `RunStore`: the orchestrator never supplies the hook.
 - **References:** ADR 065; `docs/tasks/test-specs/170-approval-pause-on-require-approval-test-spec.md`.
 
+### B-045: Route approve/deny over the channel; resume, abort, or timeout-escalate a paused sub-goal
+
+- **Trigger:** An operator sends `approve <goalID> <taskID>` / `deny <goalID> <taskID>` over the stdin/worker channel (`parseMessageLine`) or, on Telegram, replies `approve <taskID>` / `deny <taskID>` to the goal's message (`deriveMessage`, goalID threaded from the reply-to cache). Separately, each processed control-plane command drives an on-check timeout sweep (`goalActor.handleCommand` calls `SweepApprovalTimeouts`) against any pending approval older than `AGENT_BUILDER_APPROVAL_TIMEOUT`.
+- **Response:** The verb derives a `MsgApprove`/`MsgDeny` (carrying `GoalID` + `TaskID`); the goal actor routes it to `Orchestrator.ResumeApproval`. On approve, the named sub-goal is re-dispatched (reusing `dispatchOne`; the record's status is set back to running so the task-170 pause-halt does not block the resume). On deny, the sub-goal's attempt is marked `needs-human` and NOT dispatched. When no pending approval remains, the plan is finalized to a terminal status (`Failed` if any sub-goal is needs-human/failed, else `Completed`) and reported once. `SweepApprovalTimeouts` escalates each timed-out pending approval over the `Reporter` exactly once (a per-pending `Escalated` flag makes a later sweep idempotent), naming the goal, task, and elapsed wait.
+- **Side effects:** The matching `PendingApproval` is removed from `Record.Pending`; the goal `Record.Status` transitions (running → terminal, or stays awaiting if other approvals remain). Malformed stdin `approve`/`deny` (missing a token) is `ErrMalformedInput`, never silently downgraded to a new goal; a standalone Telegram `approve`/`deny` with no reply-to is `MsgNewGoal`, mirroring confirm.
+- **Failure modes:** A `ResumeApproval` for an unknown goal, an unknown pending task, or a nil RunStore returns an error the goal actor reports (not fatal). The pre-existing `confirm`/`cancel`/`status`/`info` grammar and the plan-level `pauseForApproval`/`Resume` flow are unaffected.
+- **References:** ADR 065; tasks 125/126/128 (the mirrored patterns); `docs/tasks/test-specs/171-approval-routing-and-resume-test-spec.md`.
+
 ### B-021: Verify audit chain integrity via the block's own verifier
 
 - **Trigger:** A caller invokes `audit.VerifyChain(binPath, logfile)` after a run has produced an audit-trail chain via `audit.BlockSink`.

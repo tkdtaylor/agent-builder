@@ -939,6 +939,7 @@ field        type      notes
 TaskID       string    the task blocked awaiting approval
 Reason       string    the gate's reason for requiring approval
 RequestedAt  time.Time when approval was requested
+Escalated    bool      timeout auto-escalation marker (omitempty; task 171); set once by SweepApprovalTimeouts so a later sweep does not re-escalate
 ```
 
 #### Value: `runstore.Record`

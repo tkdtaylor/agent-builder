@@ -87,6 +87,14 @@ const (
 // AGENT_BUILDER_MAX_ATTEMPTS (each sub-goal's own runtime.Run retry budget).
 const EnvGoalMaxAttempts = "AGENT_BUILDER_GOAL_MAX_ATTEMPTS"
 
+// EnvApprovalTimeout bounds how long an unresolved sub-goal-level pending approval
+// waits before SweepApprovalTimeouts auto-escalates it over the Reporter (ADR 065,
+// task 171). Parsed as a Go duration; unset/blank/invalid falls back to the default.
+const EnvApprovalTimeout = "AGENT_BUILDER_APPROVAL_TIMEOUT"
+
+// defaultApprovalTimeout is the default sub-goal approval-wait budget (task 171).
+const defaultApprovalTimeout = time.Hour
+
 // Conservative defaults (ADR 054 §1): a small worker cap bounds sandbox pressure;
 // a looser goal cap bounds planning-state growth. Both are overridable by env.
 const (
@@ -241,6 +249,11 @@ type orchestrateConfig struct {
 	// control loop's use of it is a follow-on (task 174/175); this task parses and
 	// carries it so the value is available and its malformed-value handling is tested.
 	goalMaxAttempts int
+	// approvalTimeout is the sub-goal approval-wait budget (AGENT_BUILDER_APPROVAL_TIMEOUT,
+	// default 1h) passed to Orchestrator.SweepApprovalTimeouts (ADR 065, task 171). The
+	// goal actor runs the on-check sweep from handleCommand using this value, so every
+	// processed control-plane command escalates any pending approval past the budget.
+	approvalTimeout time.Duration
 	// mailboxes is the per-goal command-mailbox map (ADR 054 §3). When nil,
 	// runControlLoop creates a fresh one; a router test injects its own so it can
 	// read the delivered MsgInfo/MsgCancel and assert addressing (TC-113-04/06).
@@ -562,6 +575,16 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		return orchestrateConfig{}, noop, gmaErr
 	}
 
+	// Sub-goal approval-wait timeout (ADR 065, task 171). Lenient: a malformed value
+	// falls back to the default rather than failing the subcommand, since it is a
+	// tuning knob for escalation timing, not a security gate.
+	approvalTimeout := defaultApprovalTimeout
+	if raw := strings.TrimSpace(getenv(EnvApprovalTimeout)); raw != "" {
+		if d, perr := time.ParseDuration(raw); perr == nil && d > 0 {
+			approvalTimeout = d
+		}
+	}
+
 	// 10d. Clarifier and GoalAnalyzer LLM seams (shared) (REQ-131-03, REQ-142-03)
 	// Build seams upfront if either clarifier or analyzer needs them.
 	clarifierChoice := strings.TrimSpace(getenv(EnvClarifier))
@@ -667,6 +690,7 @@ func assembleOrchestrate(config Config, ov assembleOverrides) (orchestrateConfig
 		registry:        registry,
 		maxGoals:        maxGoals,
 		goalMaxAttempts: goalMaxAttempts,
+		approvalTimeout: approvalTimeout,
 		reporter:        reporter,
 		statusHandler:   statusHandler,
 	}, cleanup, nil
