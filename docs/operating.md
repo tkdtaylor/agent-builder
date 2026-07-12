@@ -201,3 +201,23 @@ agent-builder daemon
 - **Graceful shutdown.** `Ctrl-C` (SIGINT) or `SIGTERM` cancels the control loop, waits for in-flight cleanup, prints a graceful-shutdown message, removes the lock file, and exits `0`.
 - **Crash recovery.** When `AGENT_BUILDER_RUN_STORE_DIR` is set, the daemon rehydrates in-flight runs from the durable journal at startup (re-dispatching only the sub-goals a prior process had not yet completed) before entering the steady-state loop.
 - **Note.** SIGTERM shuts down cleanly when the inbound channel is context-aware (Telegram). The line-oriented env/stdin channel blocks on stdin and is intended for local interactive use, not long-lived daemon operation.
+
+### Scheduled goals
+
+`AGENT_BUILDER_SCHEDULE_PATH` points the daemon at a JSON schedule file so it acts on a timer without an inbound message. Each entry sets exactly one of `every` (a Go duration) or `at` (a daily `HH:MM`):
+
+```json
+{
+  "entries": [
+    {"goal": "run the nightly dependency audit", "every": "24h"},
+    {"goal": "post the morning status report", "at": "09:00"}
+  ]
+}
+```
+
+```bash
+export AGENT_BUILDER_SCHEDULE_PATH=/etc/agent-builder/schedule.json
+agent-builder daemon
+```
+
+Fired entries flow through the same goal-intake path as any channel goal (no parallel dispatch). A malformed schedule file fails the daemon fast at startup. Firing state is not persisted across a restart, so a restart near a schedule boundary can fire an entry twice (a v1 limitation). For richer cron-style syntax, a cron parser is a dependency-approval follow-on.

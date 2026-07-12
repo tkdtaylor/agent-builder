@@ -14,6 +14,7 @@ import (
 
 	"github.com/tkdtaylor/agent-builder/internal/orchestrator"
 	"github.com/tkdtaylor/agent-builder/internal/runstore"
+	"github.com/tkdtaylor/agent-builder/internal/supervisor"
 )
 
 // EnvDaemonLock configures the single-instance lock file path for `agent-builder
@@ -29,6 +30,11 @@ var daemonRunLoop = runControlLoop
 // BEFORE the control loop, so a test can assert rehydration precedes steady state.
 // Nil in production.
 var daemonOnRehydrated func(records []runstore.Record)
+
+// daemonOnSchedulerStarted is a test-only hook fired when the goal scheduler is
+// started (task 175). Nil in production; a test uses it to assert a scheduler is
+// started only when AGENT_BUILDER_SCHEDULE_PATH is set.
+var daemonOnSchedulerStarted func()
 
 func daemonUsage(w io.Writer) {
 	writef(w, "usage: agent-builder daemon\n\n"+
@@ -114,6 +120,33 @@ func runDaemonWith(config Config, args []string, ctx context.Context, ov assembl
 		return ExitGeneric
 	}
 	defer cleanup()
+
+	// Scheduled goals (ADR 065, task 175): parse the schedule file up front so a
+	// malformed schedule fails fast (ExitUsage) BEFORE the control loop, matching the
+	// fail-fast-before-goal-intake convention. Unset schedule path = no scheduler
+	// (zero goroutines). When set, the scheduler fires goals into the SAME control-loop
+	// intake path via a merged message source (no parallel dispatch).
+	if schedPath := strings.TrimSpace(os.Getenv(EnvSchedulePath)); schedPath != "" {
+		entries, perr := ParseScheduleFile(schedPath)
+		if perr != nil {
+			writef(config.Stderr, "error: %v\n", perr)
+			return ExitUsage
+		}
+		schedCh := make(chan supervisor.Message, 16)
+		scheduler := NewScheduler(entries, realClock{}, func(t supervisor.Task) {
+			select {
+			case schedCh <- supervisor.Message{Kind: supervisor.MsgNewGoal, GoalID: t.ID, Goal: t}:
+			case <-ctx.Done():
+			}
+		})
+		go scheduler.Run(ctx)
+		if daemonOnSchedulerStarted != nil {
+			daemonOnSchedulerStarted()
+		}
+		oc.source = newMergedMessageSource(ctx, oc.source, schedCh)
+		// On shutdown, confirm the scheduler goroutine exited (no leak).
+		defer func() { <-scheduler.Done() }()
+	}
 
 	// Startup rehydration (task 167/168): resume in-flight runs BEFORE steady state,
 	// so a crash mid-goal is picked back up when the daemon restarts. No-op when no
